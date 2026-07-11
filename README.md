@@ -52,6 +52,11 @@ seriously.
 
 ## How it works
 
+> **New here?** [**ARCHITECTURE.md**](ARCHITECTURE.md) is a layered field guide
+> (plain-English → under-the-hood, with a glossary) that walks the whole system
+> from a single tap to the countdown. The security review of this design lives in
+> [**SECURITY-CASESTUDY.md**](SECURITY-CASESTUDY.md).
+
 ```
  iPhone / laptop
      │  routes through the box (Tailscale exit node; browser proxy on desktop)
