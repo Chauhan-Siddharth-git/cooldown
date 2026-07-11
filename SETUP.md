@@ -16,7 +16,7 @@ The reference deployment is a Raspberry Pi running the three services natively
   ```
 - Clone and set up the venv:
   ```bash
-  git clone <your-fork> ~/lull && cd ~/lull
+  git clone <your-fork> ~/cooldown && cd ~/cooldown
   python3 -m venv venv
   venv/bin/pip install -r requirements.txt
   ```
@@ -50,7 +50,7 @@ Never commit or share the CA. See SECURITY.md.
 
 ## 5. Redirect + QUIC block
 
-`deploy/budget-redirect.sh` transparently redirects `:80/:443` from the Tailscale
+`deploy/cooldown-redirect.sh` transparently redirects `:80/:443` from the Tailscale
 interface into mitmproxy and blocks QUIC (UDP/443) so clients fall back to
 interceptable TCP. It installs the QUIC block in both the `filter` and (as a
 Tailscale-proof backstop) the `mangle` table — Tailscale rewrites `filter/FORWARD`
@@ -59,23 +59,23 @@ on restart and would otherwise demote the rule.
 ## 6. systemd services
 
 The units in `deploy/` run the three processes as the `pi` user from
-`/home/pi/lull` (adjust paths/user for your box):
+`/home/pi/cooldown` (adjust paths/user for your box):
 
-- `budget-app.service` — Flask (`app.py`)
-- `budget-proxy.service` — mitmproxy (`addon.py`). Its `--allow-hosts` regex is the
+- `cooldown-app.service` — Flask (`app.py`)
+- `cooldown-proxy.service` — mitmproxy (`addon.py`). Its `--allow-hosts` regex is the
   **TLS-decrypt allowlist**; every gated host must appear here.
-- `budget-redirect.service` — runs the iptables script on boot.
+- `cooldown-redirect.service` — runs the iptables script on boot.
 
 ```bash
 sudo cp deploy/*.service /etc/systemd/system/
-sudo cp deploy/budget-redirect.sh /usr/local/sbin/ && sudo chmod +x /usr/local/sbin/budget-redirect.sh
+sudo cp deploy/cooldown-redirect.sh /usr/local/sbin/ && sudo chmod +x /usr/local/sbin/cooldown-redirect.sh
 sudo systemctl daemon-reload
-sudo systemctl enable --now budget-app budget-proxy budget-redirect
+sudo systemctl enable --now cooldown-app cooldown-proxy cooldown-redirect
 ```
 
 ## 7. Verify
 
-- `systemctl is-active budget-app budget-proxy budget-redirect redis-server` → all `active`.
+- `systemctl is-active cooldown-app cooldown-proxy cooldown-redirect redis-server` → all `active`.
 - On a routed device, open a gated site in the browser → you should see the gate.
 - `curl http://127.0.0.1:5000/remaining` on the box → JSON with per-site budgets.
 - Visit `/budget/stats` for the usage dashboard.

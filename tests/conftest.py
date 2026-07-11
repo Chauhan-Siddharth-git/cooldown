@@ -1,4 +1,4 @@
-"""Fixtures for budget-proxy tests.
+"""Fixtures for Cooldown tests.
 
 Tests run against the LOCAL redis on db 15 (flushed around every test) so they can
 never touch dev state in db 0 — and never the Pi, which has its own redis. Time-of-day

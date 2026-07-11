@@ -96,7 +96,7 @@ Full walkthrough in **[SETUP.md](SETUP.md)**. The shape of it:
 The knobs live at the top of `app.py` — budgets, cooldown length, refill rate,
 night-curfew hours, the gated `SITES` map, and `STUDY_PLAYLISTS`. Adding a site
 touches **three** places: `SITES` in `app.py`, `SITES` in `addon.py`, and the
-`--allow-hosts` regex in `deploy/budget-proxy.service` (the TLS-decrypt allowlist —
+`--allow-hosts` regex in `deploy/cooldown-proxy.service` (the TLS-decrypt allowlist —
 miss it and the site is tunneled un-gated).
 
 ## Tests

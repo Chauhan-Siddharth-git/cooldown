@@ -16,7 +16,7 @@ no formality required.
 
 - **Consolidate the duplicated config.** The gated-site list lives in three places
   (`SITES` in `app.py`, `SITES` in `addon.py`, and `--allow-hosts` in
-  `deploy/budget-proxy.service`). One source of truth would prevent a whole class
+  `deploy/cooldown-proxy.service`). One source of truth would prevent a whole class
   of "site silently not gating" bugs.
 - **Bind mitmproxy to the Tailscale interface** instead of `0.0.0.0`.
 - **Swap the Flask dev server** for a production WSGI server (e.g. waitress).

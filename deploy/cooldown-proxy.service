@@ -1,0 +1,12 @@
+[Unit]
+Description=Cooldown mitmproxy (transparent + regular)
+After=network.target cooldown-app.service
+Requires=cooldown-app.service
+[Service]
+User=pi
+WorkingDirectory=/home/pi/cooldown
+ExecStart=/home/pi/cooldown/venv/bin/mitmdump --mode transparent@8080 --mode regular@8081 --showhost -s /home/pi/cooldown/addon.py --set http2=false --set block_global=false --allow-hosts "^(.+[.])?reddit[.]com([:][0-9]+)?$$|^(.+[.])?youtube[.]com([:][0-9]+)?$$|^(.+[.])?open[.]spotify[.]com([:][0-9]+)?$$|^(.+[.])?puzzmo[.]com([:][0-9]+)?$$|^(.+[.])?mitm[.]it([:][0-9]+)?$$"
+Restart=always
+RestartSec=2
+[Install]
+WantedBy=multi-user.target

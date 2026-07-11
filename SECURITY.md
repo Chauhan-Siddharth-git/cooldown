@@ -39,17 +39,17 @@ from that device — for *any* site, not just the ones Cooldown gates.
 
 - The reference deployment reaches the box over **Tailscale** (a private WireGuard
   mesh), so the proxy isn't exposed to the public internet.
-- mitmproxy binds `0.0.0.0`/`[::]` on its proxy ports, so `deploy/budget-redirect.sh`
+- mitmproxy binds `0.0.0.0`/`[::]` on its proxy ports, so `deploy/cooldown-redirect.sh`
   firewalls them: it adds interface-scoped `INPUT` rules (v4 + v6) that accept
   `8080/8081` only on the Tailscale interface (and loopback) and **DROP them
   everywhere else**. Without this the proxy is reachable from your LAN — and, if the
   box has a routable IPv6, from the public internet. Anything that can reach the
   proxy *and* trusts your CA can be MITM'd, so keep those rules in place (they're
-  re-applied on boot by `budget-redirect.service`). Verify with
+  re-applied on boot by `cooldown-redirect.service`). Verify with
   `sudo iptables -S INPUT` — you should see the `tailscale0`/`lo` ACCEPTs above a
   catch-all DROP for those ports.
 - QUIC (UDP/443) is blocked so clients fall back to interceptable TCP. See
-  `deploy/budget-redirect.sh`.
+  `deploy/cooldown-redirect.sh`.
 
 ## Data
 
