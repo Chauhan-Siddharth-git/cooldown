@@ -114,6 +114,31 @@ def test_enter_rejects_offsite_next(client, rdb, day):
         assert resp.headers["Location"] == budget.SITES["reddit"]["home"]
 
 
+def test_safe_next_blocks_parser_differential_bypasses():
+    # urlparse-vs-browser disagreements that must NOT be treated as same-site.
+    bypasses = [
+        "https://evil.com\\@reddit.com/",      # backslash -> browser reads as "/"
+        "https://evil.com%2f@reddit.com/",     # encoded slash + userinfo
+        "https://reddit.com@evil.com/",        # userinfo trick
+        "https://evil.com#@reddit.com/",
+        " https://evil.com/",                  # leading space
+        "https://reddit.com\t.evil.com/",      # tab injection
+        "javascript:alert(1)//reddit.com",     # non-http scheme
+        "//reddit.com/",                       # scheme-relative
+    ]
+    for b in bypasses:
+        assert budget._safe_next("reddit", b) == "", b
+    # ...while legitimate same-site URLs (incl. YouTube @handles) still pass.
+    assert budget._safe_next("reddit", "https://old.reddit.com/r/x/")
+    assert budget._safe_next("youtube", "https://www.youtube.com/@SomeChannel")
+
+
+def test_enter_blocks_bypass_next_falls_back_home(client, rdb, day):
+    resp = client.post("/enter?site=reddit&next=" +
+                       quote("https://evil.com\\@reddit.com/", safe=""))
+    assert resp.headers["Location"] == budget.SITES["reddit"]["home"]  # not evil.com
+
+
 def test_gate_enter_form_carries_next(client, rdb, day):
     deep = "https://www.reddit.com/r/python/comments/abc/"
     html = client.get("/budget?site=reddit&next=" + quote(deep, safe="")).data.decode()

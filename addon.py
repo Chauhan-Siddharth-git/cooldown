@@ -198,8 +198,12 @@ ytm-searchbox, .searchbox { display: none !important; }
 """
 
 def site_for_host(host):
+    # Suffix match on the registrable domain, NOT a substring: "reddit.com" must
+    # match reddit.com and *.reddit.com, but never evil-reddit.com or
+    # reddit.com.attacker.io (which a substring check would gate — and decrypt).
+    host = (host or "").rsplit(":", 1)[0].lower()   # drop any :port
     for site, cfg in SITES.items():
-        if any(m in host for m in cfg["match"]):
+        if any(host == m or host.endswith("." + m) for m in cfg["match"]):
             return site
     return None
 
@@ -236,6 +240,16 @@ class BudgetAddon:
         # Serve budget pages from any gated host under its /budget path. The query
         # string (which carries ?site=) is preserved so Flask charges the right site.
         if path.startswith("/budget") and site_for_host(host):
+            # CSRF: the mutating endpoints (/enter, /study, /exit, /heartbeat) are
+            # POSTed same-origin from the gate page / injected script. A forged POST
+            # from another site the user is visiting is "cross-site" — reject it so a
+            # malicious page can't drive the budget state (or the return redirect).
+            if flow.request.method == "POST" and \
+               flow.request.headers.get("Sec-Fetch-Site") == "cross-site":
+                flow.response = http.Response.make(
+                    403, b"cross-site request blocked",
+                    {"Content-Type": "text/plain; charset=utf-8"})
+                return
             parts = urlsplit(path)
             sub = parts.path[len("/budget"):]          # "" | "/heartbeat" | "/enter"
             flask_path = sub if sub else "/budget"

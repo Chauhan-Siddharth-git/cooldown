@@ -1,13 +1,15 @@
 from flask import Flask, jsonify, redirect, render_template_string, request
-from flask_cors import CORS
 from urllib.parse import urlparse
 import redis
 import time
 import uuid
 from apscheduler.schedulers.background import BackgroundScheduler
 
+# No CORS: every endpoint is same-origin (the gate pages and the injected heartbeat
+# both live on the gated host). A wildcard Access-Control-Allow-Origin only widened
+# the attack surface. CSRF on the mutating POSTs is enforced at the proxy boundary
+# (addon.py rejects cross-site requests to /budget/*).
 app = Flask(__name__)
-CORS(app)
 r = redis.Redis(host='localhost', port=6379, decode_responses=True)
 
 # Per-site config. Add a site here and the proxy + budget logic pick it up.
@@ -498,20 +500,34 @@ def start_cooldown(p, site, now=None):
     r.expire(f"cooldown_events:{day}", 100 * 86400)
 
 def _safe_next(site, nxt):
-    """Validate a return-URL: must be http(s) on the SAME gated site (its home's
-    registrable domain or a subdomain). Prevents the Enter button from becoming an
-    open redirect to an arbitrary host. Returns the URL if safe, else ""."""
+    """Validate a return-URL: http(s), no embedded credentials, host on the SAME
+    gated site (home's registrable domain or a subdomain). Returns the URL if safe,
+    else "".
+
+    Hardened against parser-differential open redirects — cases where urlparse and
+    the browser disagree on the host, e.g. "https://evil.com\\@reddit.com/" parses
+    as host=reddit.com in Python (so a naive check allows it) while the browser
+    reads "\\" as "/" and navigates to evil.com. We reject the characters that drive
+    those differentials (backslashes, whitespace, control chars) and any userinfo
+    "@" in the authority, then require a same-site host.
+    """
     if not nxt:
+        return ""
+    if any(c in nxt for c in "\\ \t\r\n") or any(ord(c) < 0x20 or ord(c) == 0x7f for c in nxt):
         return ""
     try:
         u = urlparse(nxt)
     except ValueError:
         return ""
-    if u.scheme not in ("http", "https") or not u.hostname:
+    if u.scheme not in ("http", "https"):
+        return ""
+    if u.username is not None or u.password is not None or "@" in (u.netloc or ""):
+        return ""
+    host = u.hostname
+    if not host:
         return ""
     home_host = urlparse(SITES[site]["home"]).hostname or ""
-    base = ".".join(home_host.split(".")[-2:])          # e.g. www.reddit.com -> reddit.com
-    host = u.hostname
+    base = ".".join(home_host.split(".")[-2:])          # www.reddit.com -> reddit.com
     return nxt if (host == base or host.endswith("." + base)) else ""
 
 def render_gate(site, label, *, overline, message, title="", mood="wait",
