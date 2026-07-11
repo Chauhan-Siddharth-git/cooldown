@@ -2,7 +2,7 @@
 # Pi (arm64) image. mitmproxy + cryptography ship prebuilt arm64 wheels, so no
 # compiler is needed in the image.
 flask==3.1.2
-flask-cors==6.0.2
+waitress==3.0.2
 redis==7.4.0
 requests==2.31.0
 apscheduler==3.11.2

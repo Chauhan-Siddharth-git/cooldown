@@ -855,4 +855,8 @@ scheduler.add_job(daily_reset, 'cron', hour=NIGHT_END_HOUR, minute=0)
 scheduler.start()
 
 if __name__ == '__main__':
-    app.run(port=5000)
+    # Production WSGI server (waitress) instead of the Werkzeug dev server: more
+    # robust for 24/7 operation, no dev-server warning. Localhost-only — it's only
+    # ever reached via the mitmproxy addon over loopback.
+    from waitress import serve
+    serve(app, host='127.0.0.1', port=5000)
