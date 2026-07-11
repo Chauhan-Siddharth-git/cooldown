@@ -1,0 +1,37 @@
+# ── Secrets & TLS material — NEVER commit ──────────────────────────────
+# The mitmproxy CA *private key* can decrypt traffic from any device that
+# trusts it. It must stay only on your own box.
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+.mitmproxy/
+certs/
+mitmproxy-ca*
+ca/
+.env
+.env.*
+!.env.example
+secrets*
+
+# ── Python ─────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+env/
+*.egg-info/
+.pytest_cache/
+
+# ── Redis persistence ──────────────────────────────────────────────────
+*.rdb
+*.aof
+appendonlydir/
+dump.rdb
+
+# ── Local / editor ─────────────────────────────────────────────────────
+.claude/
+.DS_Store
+*.local
+*.log

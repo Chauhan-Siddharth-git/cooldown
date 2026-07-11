@@ -1,0 +1,11 @@
+[Unit]
+Description=Budget transparent redirect (tailscale0 :80/:443 -> mitmproxy 8080)
+After=tailscaled.service budget-proxy.service
+Wants=tailscaled.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/budget-redirect.sh up
+ExecStop=/usr/local/sbin/budget-redirect.sh down
+[Install]
+WantedBy=multi-user.target

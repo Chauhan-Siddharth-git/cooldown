@@ -1,0 +1,12 @@
+# Pinned to the versions verified working on the dev laptop, for a reproducible
+# Pi (arm64) image. mitmproxy + cryptography ship prebuilt arm64 wheels, so no
+# compiler is needed in the image.
+flask==3.1.2
+flask-cors==6.0.2
+redis==7.4.0
+requests==2.31.0
+apscheduler==3.11.2
+mitmproxy==12.2.1
+# Provides zoneinfo data so a local TZ (for the midnight daily_reset) resolves
+# inside the slim image without installing system tzdata.
+tzdata==2024.1

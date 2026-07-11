@@ -1,0 +1,12 @@
+[Unit]
+Description=Budget mitmproxy (transparent + regular)
+After=network.target budget-app.service
+Requires=budget-app.service
+[Service]
+User=pi
+WorkingDirectory=/home/pi/budget-proxy
+ExecStart=/home/pi/budget-proxy/venv/bin/mitmdump --mode transparent@8080 --mode regular@8081 --showhost -s /home/pi/budget-proxy/addon.py --set http2=false --set block_global=false --allow-hosts "reddit[.]com|youtube[.]com|open[.]spotify[.]com|puzzmo[.]com|mitm[.]it"
+Restart=always
+RestartSec=2
+[Install]
+WantedBy=multi-user.target

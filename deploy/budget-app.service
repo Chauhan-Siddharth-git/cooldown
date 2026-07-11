@@ -1,0 +1,12 @@
+[Unit]
+Description=Budget proxy Flask app
+After=network.target redis-server.service
+Requires=redis-server.service
+[Service]
+User=pi
+WorkingDirectory=/home/pi/budget-proxy
+ExecStart=/home/pi/budget-proxy/venv/bin/python /home/pi/budget-proxy/app.py
+Restart=always
+RestartSec=2
+[Install]
+WantedBy=multi-user.target
