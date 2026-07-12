@@ -69,13 +69,75 @@ What actually happens, start to finish, when you open a Reddit link — the hear
 
 ---
 
-## The three parts, up close
+## …and the trip back
 
-| Job | Plain terms | Under the hood |
+Reaching the site was only half the round trip — the most interesting rewriting
+happens on the way **back** to you.
+
+```
+  Reddit ──▶  [ The box · rewriting on the way back ]  ──▶  Your phone
+  sends the    1. strip CSP (the page's script rules)        renders it &
+  real page    2. inject heartbeat + remove Shorts           runs the script
+               3. re-encrypt with the box's certificate
+```
+
+The page your phone shows is **not quite** the one the site sent — de-clawed (Shorts
+and the endless feed removed) and wired with the timer, all invisibly. Your browser
+can't tell: it arrives sealed with a certificate the phone already trusts.
+
+> *Under the hood:* mitmproxy's response hooks run on the return trip —
+> `responseheaders` deletes the site's `Content-Security-Policy` (which normally
+> forbids injected code), then the `response` hook splices in the heartbeat script
+> and the YouTube declutter. mitmproxy re-encrypts with its own certificate, so the
+> browser renders it as if it came straight from the site.
+
+From then on the loop runs itself: the injected heartbeat makes its **own** requests
+back to the box every few seconds — tunnel → redirect → proxy → brain → memory — so
+the box keeps the clock honest without you lifting a finger.
+
+---
+
+## The stack — what runs where
+
+Everything lives on one Raspberry Pi, in layers — the anatomy of the box:
+
+```
+┌─ Raspberry Pi · Debian Linux · always on ──────────────────────────┐
+│                                                                     │
+│  ① Network plumbing — how traffic gets in                          │
+│     Tailscale (tailscale0) · iptables :80/:443 → 8080               │
+│     firewall: proxy ports → Tailscale only · QUIC (UDP 443) blocked │
+│                                                                     │
+│  ② Processes — 3 systemd services (user "pi", Python venv)          │
+│     cooldown-proxy   mitmproxy   :8080 + :8081                      │
+│     cooldown-app     Flask       :5000  (localhost)                 │
+│     redis-server     Redis       :6379  (localhost)                 │
+│                                                                     │
+│  ③ On disk — what persists                                          │
+│     ~/.mitmproxy/   the CA key (never leaves the box)               │
+│     Redis AOF       spent time, cooldowns, history                  │
+│     ~/cooldown/     the code (app.py, addon.py)                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Who talks to whom** — everything but the proxy is localhost-only:
+
+```
+  Browser ──▶ mitmproxy ──▶ Flask ──▶ Redis
+   (tunnel)   :8080/:8081    :5000     :6379
+                            localhost  localhost
+```
+
+Only the interceptor faces the network (and it's locked to Tailscale). The brain
+and memory listen on localhost only — nothing off the box can reach them.
+
+### Each part, in depth
+
+| Part | Job | Where it lives · listens · talks to |
 |---|---|---|
-| **Interceptor** | Sits in the middle of your traffic; replaces the page with the gate or injects the timer. | **mitmproxy** — a man-in-the-middle proxy. Decrypts HTTPS with a trusted certificate, strips the site's script restrictions so injection works, adds the heartbeat, and removes YouTube Shorts + the feed. |
-| **Brain** | Owns the rules: budget size, when cooldowns start, night mode, refills. | **Flask** — a small Python web app serving the gate/stats pages and the `/heartbeat`, `/enter` endpoints. All the time-math lives here. |
-| **Memory** | Remembers spent time, cooldowns, and usage history. | **Redis** — a fast in-memory key-value store. Keys like `spent:main` / `cooldown:main` hold live state; survives reboots via disk persistence. |
+| **Interceptor** — mitmproxy | Reads each page; serves the gate or injects the timer. The only part facing the network. Decrypts HTTPS, strips CSP, injects the heartbeat, removes YouTube Shorts + feed. | `addon.py` · service `cooldown-proxy` · listens `:8080` (transparent) + `:8081` (regular) · → Flask `:5000` |
+| **Brain** — Flask | Owns all the rules: budget size, cooldowns, night mode, refills. Serves the gate/stats pages and `/heartbeat`, `/enter`. | `app.py` · service `cooldown-app` · listens `:5000` (localhost) · → Redis `:6379` · run by the waitress WSGI server |
+| **Memory** — Redis | Remembers spent time, cooldowns, usage history (keys like `spent:main`, `cooldown:main`). | service `redis-server` · listens `:6379` (localhost) · persists via an append-only file on disk |
 
 ---
 
@@ -149,6 +211,10 @@ off. A separate **Study mode** (locked to a course playlist) stays open at all h
 | **Flask** | A small Python web framework — the "brain." |
 | **Redis** | A fast in-memory database — the "memory." |
 | **iptables** | Linux's built-in firewall/routing; steers web traffic into the interceptor and blocks what it can't read. |
+| **Port** | A numbered "door" on a computer — programs listen on different ports so traffic reaches the right one (mitmproxy 8080/8081, Flask 5000, Redis 6379). |
+| **localhost** | The machine talking to *itself*. Flask and Redis only accept localhost connections, so nothing off the box can reach them. |
+| **systemd** | Linux's service manager — keeps the three programs running and restarts them on boot (why they're "services"). |
+| **WSGI / waitress** | The plumbing that lets a Python web app (Flask) receive real requests; **waitress** is the production-grade version used here. |
 | **QUIC** | A newer, faster web transport (used heavily by YouTube); blocked so browsers fall back to the inspectable kind. |
 | **Heartbeat** | The tiny injected script that pings the box every few seconds *while the tab is visible*. |
 | **Session / cooldown** | A *session* is an active "you're allowed in" pass; a *cooldown* is the enforced break once the budget is spent. |
