@@ -8,6 +8,9 @@ FROM python:3.12-slim
 # device's trust — survives `docker compose down`.
 RUN useradd --create-home --uid 10001 app
 ENV MITM_CONFDIR=/home/app/.mitmproxy
+# Flush stdout/stderr live instead of block-buffering — so `docker compose logs`
+# shows Flask and mitmproxy output in real time (both are Python processes).
+ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 COPY requirements.txt .
