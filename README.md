@@ -91,10 +91,17 @@ root, no Tailscale. Full step-by-step (with a troubleshooting table) in
 TZ=America/New_York docker compose up -d --build   # then set browser proxy to 127.0.0.1:8080, install the CA from http://mitm.it
 ```
 
-> ⚠️ **This does *not* gate your phone.** The proxy is locked to the local machine.
-> Phone gating (and cellular) is Option B.
+> ⚠️ **This does *not* gate your phone** — it's locked to the local machine. To gate a
+> phone *from* this computer, see the advanced Tailscale variant below (or Option B).
 
-### Option B — gate your phone / whole network (Raspberry Pi)
+### Option A+ — also gate your phone, from the same computer (advanced, Tailscale)
+
+Same Docker setup, plus Tailscale, so your **phone** routes through the container (an
+exit node) and gets gated too — even on cellular. It's a **privileged container** and
+only gates while your computer is awake and online, so it's a "no Pi yet" option, not
+the reliable one. Full walkthrough + warnings in **[DOCKER-PHONE.md](DOCKER-PHONE.md)**.
+
+### Option B — gate your phone / whole network, reliably (Raspberry Pi)
 
 The real daily-driver setup — full walkthrough in **[SETUP.md](SETUP.md)**. The shape of it:
 

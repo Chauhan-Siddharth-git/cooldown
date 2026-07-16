@@ -1,0 +1,34 @@
+# ── ADVANCED / opt-in variant ────────────────────────────────────────────────
+# Same app as the default image, PLUS Tailscale + iptables so a PHONE can be gated
+# transparently (the phone routes through this container as a Tailscale exit node,
+# and its web traffic is redirected into mitmproxy). See DOCKER-PHONE.md.
+#
+# This runs as ROOT and needs NET_ADMIN + /dev/net/tun + IP forwarding — it's a
+# privileged container acting as a little router. That's a real trust/security step;
+# the plain Dockerfile (non-root, one browser, no networking powers) is the safe
+# default. Only use this one if you understand the tradeoffs in DOCKER-PHONE.md.
+
+# Grab the Tailscale binaries from the official image (kept in sync, multi-arch).
+FROM tailscale/tailscale:stable AS ts
+
+FROM python:3.12-slim
+
+# iptables + iproute2: tailscaled and the transparent-redirect rules need them.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends iptables iproute2 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV MITM_CONFDIR=/root/.mitmproxy
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app.py addon.py docker-entrypoint-tailscale.sh ./
+COPY --from=ts /usr/local/bin/tailscale /usr/local/bin/tailscaled /usr/local/bin/
+RUN chmod +x docker-entrypoint-tailscale.sh && mkdir -p "$MITM_CONFDIR"
+
+# Root on purpose: managing iptables / routing / the tun device needs it.
+EXPOSE 8081
+ENTRYPOINT ["./docker-entrypoint-tailscale.sh"]

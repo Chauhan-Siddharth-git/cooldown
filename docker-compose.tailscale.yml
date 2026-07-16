@@ -1,0 +1,75 @@
+# ── ADVANCED / opt-in: gate a PHONE too (Tailscale) ──────────────────────────
+# Gates the tempting sites on your PHONE (transparently, over Tailscale — even on
+# cellular) AND in this computer's browser (explicit proxy on :8081), at once.
+#
+# This is NOT the simple onramp. Read DOCKER-PHONE.md first — it's a privileged
+# container that acts as a Tailscale exit node + router, and your computer must stay
+# awake and on the tailnet for the phone to stay gated. A Raspberry Pi is the better
+# home for this (always-on, dedicated); this variant is for "I don't have a Pi yet."
+#
+#   1. cp .env.example .env   and put your Tailscale auth key in it
+#   2. TZ=America/New_York docker compose -f docker-compose.tailscale.yml up -d --build
+#   3. Approve the exit node in the Tailscale admin console; enable it on the phone
+#   4. Install the CA on the phone (http://mitm.it through the exit node)
+
+name: cooldown-phone
+
+services:
+  redis:
+    image: redis:7-alpine
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --dir
+      - /data
+      - --protected-mode
+      - "no"
+    volumes:
+      - cooldown-redis:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  cooldown:
+    build:
+      context: .
+      dockerfile: Dockerfile.tailscale
+    image: cooldown-tailscale:latest
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env                       # TS_AUTHKEY lives here (gitignored — never commit it)
+    environment:
+      - REDIS_HOST=redis
+      - TZ=${TZ:-UTC}
+      - TS_HOSTNAME=${TS_HOSTNAME:-cooldown-docker}
+    # Powers needed to run Tailscale + act as a router. This is the privileged part.
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv6.conf.all.forwarding=1
+    ports:
+      # Explicit proxy for THIS computer's browser. Host-loopback only.
+      # The phone does NOT use this port — its traffic arrives over Tailscale and is
+      # redirected into the container's transparent listener (:8080) internally.
+      - "127.0.0.1:8081:8081"
+    volumes:
+      - cooldown-ca:/root/.mitmproxy      # persist the CA (re-trust once)
+      - cooldown-tsstate:/var/lib/tailscale  # persist Tailscale identity across restarts
+    restart: unless-stopped
+
+volumes:
+  cooldown-redis:
+  cooldown-ca:
+  cooldown-tsstate:
