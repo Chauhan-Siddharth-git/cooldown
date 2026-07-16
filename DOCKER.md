@@ -14,6 +14,40 @@ No iptables, no Tailscale, no root — that heavier setup is only needed for the
 
 ---
 
+## What this can and can't do
+
+**Can:** gate the tempting sites in **a browser on the same computer** that runs
+Docker. Great for trying Cooldown, or for gating your own laptop/desktop browsing.
+
+**Can't (by design):**
+
+| Question | Answer |
+|---|---|
+| **Will this gate my phone?** | **No.** The proxy is locked to this computer only (`127.0.0.1`). A phone can't reach it. Gating a phone — especially on cellular — needs the Raspberry Pi + Tailscale setup ([SETUP.md](SETUP.md)); that's what it's for. |
+| Will it gate other apps, or my whole computer? | Only what you point at the proxy. The steps below set it up for one browser. |
+| Will it work when I close the terminal? | Yes — the containers keep running in the background until you `docker compose down`. |
+
+If your goal is "stop *me* from doomscrolling on my **phone**," this Docker version
+is **not** the tool — use the Pi setup. If your goal is "try it out" or "gate my
+computer's browser," you're in the right place.
+
+---
+
+## Before you start
+
+You need **Docker** installed:
+
+- **Mac / Windows:** install [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+  — it includes everything (Compose too). Start it before running the commands.
+- **Linux:** install [Docker Engine](https://docs.docker.com/engine/install/) **and**
+  the Compose plugin (`sudo apt install docker-compose-v2` on Ubuntu/Debian). To run
+  `docker` without `sudo`, add yourself to the group once — `sudo usermod -aG docker $USER`
+  — then **log out and back in**.
+
+Check it works: `docker compose version` should print a version number.
+
+---
+
 ## What you get
 
 ```
@@ -109,6 +143,25 @@ Miss #3 and the site tunnels through un-intercepted. After editing, rebuild:
   TCP, so there's no QUIC to block (that's a transparent-mode concern only).
 - **The bypass is intentional.** Turn the proxy setting off and the gate is gone.
   Cooldown is a commitment device for a cooperative user, not an adversarial lock.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause & fix |
+|---|---|
+| `permission denied ... /var/run/docker.sock` | Your user isn't in the `docker` group. `sudo usermod -aG docker $USER`, then **log out and back in** (a new terminal alone isn't enough). Or prefix commands with `sudo`. |
+| `docker compose: unknown command` or `unknown shorthand flag: 'd'` | The Compose plugin isn't installed. Linux: `sudo apt install docker-compose-v2`. Mac/Windows: use Docker Desktop. |
+| `docker compose logs` shows nothing | If `docker compose ps` says the container is **Up**, it's just fine — nothing has needed to log yet. (Output is unbuffered, so real activity *will* show.) If it says **Exited/Restarting**, the log will have the error. |
+| Browser shows a **certificate warning** on a gated site | The CA isn't installed/trusted. Redo step 3 — visit `http://mitm.it` *through the proxy* and install the cert as trusted. Firefox has its **own** cert store (Settings → Certificates), separate from the OS. |
+| A gated site loads normally instead of the gate | The browser isn't actually using the proxy (recheck step 2), **or** you have an active session — you'd get the gate again after the budget runs out or you restart. |
+| `curl` through the proxy returns `503` / no gate | Not a bug — the gate only fires on a real *browser navigation*. See [Verifying from the command line](#verifying-from-the-command-line). |
+
+**Start fresh** if things get weird: `docker compose down -v` (wipes data **and** the
+CA — you'll re-trust a new one), then `docker compose up -d --build`.
+
+**Uninstall completely:** `docker compose down -v`, then untrust/remove the Cooldown
+CA from your browser/OS certificate store.
 
 ---
 

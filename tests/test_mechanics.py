@@ -101,6 +101,53 @@ def test_start_cooldown_is_idempotent(rdb, day):
     assert rdb.get("cooldown:main") == first         # timer not reset
 
 
+def test_lone_cooldown_uses_base_duration(rdb, day):
+    budget.start_cooldown("main", "reddit")
+    assert rdb.get("cooldown_secs:main") == str(budget.COOLDOWN_LADDER[0])   # 1h base
+
+
+def test_clustered_cooldowns_escalate(rdb, day):
+    now = time.time()
+    durations = []
+    for i in range(3):                              # three re-binges within the window
+        rdb.delete("cooldown:main")                 # let a fresh cooldown start each time
+        budget.start_cooldown("main", "youtube", now=now + i)
+        durations.append(int(rdb.get("cooldown_secs:main")))
+    assert durations == budget.COOLDOWN_LADDER[:3]  # 1h -> 1.5h -> 2h
+
+
+def test_cooldown_escalation_caps(rdb, day):
+    now = time.time()
+    for i in range(6):                              # more re-binges than the ladder is long
+        rdb.delete("cooldown:main")
+        budget.start_cooldown("main", "youtube", now=now + i)
+    assert int(rdb.get("cooldown_secs:main")) == budget.COOLDOWN_LADDER[-1]  # capped
+
+
+def test_spread_out_cooldowns_stay_at_base(rdb, day):
+    now = time.time()
+    budget.start_cooldown("main", "reddit", now=now - 5 * 3600)   # 5h ago, outside window
+    rdb.delete("cooldown:main")
+    budget.start_cooldown("main", "reddit", now=now)
+    assert int(rdb.get("cooldown_secs:main")) == budget.COOLDOWN_LADDER[0]   # no clustering
+
+
+def test_recent_cooldown_count_window(rdb, day):
+    now = time.time()
+    rdb.rpush(f"cooldown_events:{time.strftime('%Y-%m-%d', time.localtime(now))}",
+              f"{now - 3600:.0f} reddit",           # 1h ago -> inside window
+              f"{now - 5 * 3600:.0f} reddit")       # 5h ago -> outside window
+    assert budget.recent_cooldown_count(now) == 1
+
+
+def test_escalated_cooldown_counts_down_full_duration(rdb, day):
+    # A 2h escalated cooldown that started 30m ago still has ~90m left (not ~30m).
+    rdb.set("cooldown:main", time.time() - 1800)
+    rdb.set("cooldown_secs:main", 7200)
+    rem = budget.get_cooldown_remaining("reddit")
+    assert 5395 <= rem <= 5400
+
+
 def test_heartbeat_full_drain_logs_cooldown_event(client, rdb, day, session):
     session("youtube", last_gap=15)
     rdb.set("spent:main", 890)
@@ -179,6 +226,23 @@ def test_heartbeat_night_charges_night_counter_not_day(client, rdb, night, sessi
     assert rdb.get("spent:main") == "500"          # day counter left alone
 
 
+def test_study_heartbeat_logs_study_time(client, rdb, day, session):
+    session("youtube", mode="study")
+    rdb.set("last_study_beat", time.time() - 12)
+    hb(client, "youtube")
+    logged = float(rdb.get(f"study_usage:{time.strftime('%Y-%m-%d')}"))
+    assert 11 <= logged <= 13
+    assert rdb.get("spent:main") is None            # measured, never charged
+    assert rdb.ttl(f"study_usage:{time.strftime('%Y-%m-%d')}") > 0  # self-pruning
+
+
+def test_study_heartbeat_ignores_large_gap(client, rdb, day, session):
+    session("youtube", mode="study")
+    rdb.set("last_study_beat", time.time() - 300)   # away longer than HEARTBEAT_MAX_GAP
+    hb(client, "youtube")
+    assert rdb.get(f"study_usage:{time.strftime('%Y-%m-%d')}") is None
+
+
 def test_study_session_is_never_charged(client, rdb, day, session):
     session("youtube", mode="study", last_gap=15)
     resp = hb(client, "youtube")
@@ -202,10 +266,11 @@ def test_daily_reset_clears_state_but_keeps_history(rdb, day, session):
     rdb.set("spent:main", 500)
     rdb.set("night_spent:main", 120)
     rdb.set("cooldown:main", time.time())
+    rdb.set("cooldown_secs:main", 7200)
     rdb.set("refilled_through:main", time.time())
     rdb.set("usage:2026-07-01:reddit", 480)
     budget.daily_reset()
-    for key in ("spent:main", "night_spent:main", "cooldown:main", "last_heartbeat:main",
-                "refilled_through:main", "active_token:reddit"):
+    for key in ("spent:main", "night_spent:main", "cooldown:main", "cooldown_secs:main",
+                "last_heartbeat:main", "refilled_through:main", "active_token:reddit"):
         assert rdb.get(key) is None, key
     assert rdb.get("usage:2026-07-01:reddit") == "480"   # history survives

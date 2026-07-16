@@ -32,7 +32,10 @@ def test_day_full_drain_starts_cooldown_with_live_timer(client, rdb, day):
     rdb.set("spent:main", 900)
     html = gate(client, "youtube")
     assert rdb.get("cooldown:main") is not None
-    assert 'data-secs="3600"' in html            # live countdown to reopen
+    # Live countdown to reopen — the full ~1h base cooldown (a hair under 3600 since a
+    # sliver has already elapsed against the just-set start).
+    assert 'data-secs="359' in html
+    assert rdb.get("cooldown_secs:main") == "3600"   # base duration (no prior clustering)
 
 
 def test_cooldown_page_counts_down(client, rdb, day):
@@ -158,6 +161,28 @@ def test_study_is_youtube_only(client, rdb, day):
     assert "/budget" in resp.headers["Location"]
 
 
+def test_cooldown_screen_promotes_study(client, rdb, day):
+    rdb.set("cooldown:main", time.time() - 100)      # YouTube in cooldown
+    html = gate(client, "youtube")
+    assert "Study while you wait" in html            # promoted CTA copy
+    assert "study-cta" in html                       # primary styling
+    assert "one tap away" in html                    # nudge in the message
+
+
+def test_cooldown_screen_shows_escalation_note(client, rdb, day):
+    rdb.set("cooldown:main", time.time() - 100)
+    rdb.set("cooldown_secs:main", 7200)              # an escalated (2h) wall
+    html = gate(client, "reddit")
+    assert "Back-to-back sessions get a longer break" in html
+
+
+def test_reddit_cooldown_has_no_study_button(client, rdb, day):
+    rdb.set("cooldown:main", time.time() - 100)      # Reddit has no study mode
+    html = gate(client, "reddit")
+    assert "Study while you wait" not in html
+    assert "/budget/study" not in html               # no study form at all for reddit
+
+
 # ---------- stats ----------
 
 def test_stats_renders_history(client, rdb):
@@ -183,6 +208,21 @@ def test_stats_shows_cooldown_clustering(client, rdb):
     assert "binge clustering" in html
     assert 'class="cd-n">2<' in html                 # two cooldowns today
     assert "1 rapid repeat" in html                  # within the 3h window
+
+
+def test_stats_shows_study_minutes(client, rdb):
+    today = time.strftime("%Y-%m-%d")
+    rdb.set(f"study_usage:{today}", 1800)            # 30 min of study today
+    rdb.set("last_charge", time.time())
+    html = client.get("/stats").data.decode()
+    assert "Study mode — the point of all this" in html
+    assert "30m" in html                             # today's study readout
+
+
+def test_stats_study_zero_nudges(client, rdb):
+    rdb.set("last_charge", time.time())
+    html = client.get("/stats").data.decode()
+    assert "No study-mode time logged this week" in html
 
 
 def test_stats_no_cooldowns_yet(client, rdb):

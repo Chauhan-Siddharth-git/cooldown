@@ -56,11 +56,15 @@ SITES = {
 }
 DEFAULT_SITE = "reddit"
 
-COOLDOWN_SECONDS = 60 * 60    # 1 hour hard lock once the WHOLE bucket is drained
 RAPID_REPEAT_WINDOW = 3 * 60 * 60  # "a few hours" — a cooldown starting within this of
                                    # the previous one is a "rapid repeat" (binge clustering).
-                                   # Just a /stats readout for now; would gate any future
-                                   # escalating-cooldown rule.
+                                   # Also the window escalating cooldowns look back over.
+# Escalating cooldowns: a lone cooldown is 1 hour, but back-to-back re-binges (each new
+# cooldown starting within RAPID_REPEAT_WINDOW of the previous) get a progressively longer
+# wall. The index is how many prior cooldowns already sit in that trailing window, so a
+# spread-out day always stays at the 1-hour base; only clustering escalates.
+COOLDOWN_LADDER = [60 * 60, 90 * 60, 120 * 60, 180 * 60]  # 1h · 1.5h · 2h · 3h (capped)
+COOLDOWN_SECONDS = COOLDOWN_LADDER[0]   # base / back-compat default
 SESSION_IDLE_TTL = 120         # 2 min without a foreground ping = session expires
 HEARTBEAT_MAX_GAP = 30         # gaps between pings larger than this aren't charged (idle/away)
 # Passive refill: while nothing in the pool is being actively used, spent ticks back
@@ -147,6 +151,8 @@ BUDGET_PAGE = """
         .enter{background:var(--go);color:#06120b}
         .study{background:transparent;color:var(--muted);border:1px solid var(--line)}
         .study:active{opacity:.7}
+        /* Promoted to primary on the cooldown screens — the productive door out. */
+        .study-cta{background:var(--sleep);color:#0a1020;border:none;font-weight:600}
         .blocked{background:#1c2028;color:var(--muted);cursor:default}
         .hint{font-size:12px;color:#5f6773;margin-top:2px}
         .foot{display:block;margin-top:18px;font-size:12px;color:#5f6773;text-decoration:none}
@@ -169,9 +175,9 @@ BUDGET_PAGE = """
             {% endif %}
             {% if show_study %}
             <form action="/budget/study?site={{ site }}" method="post">
-                <button class="study" type="submit">Study mode</button>
+                <button class="study{% if study_primary %} study-cta{% endif %}" type="submit">{% if study_primary %}Study while you wait{% else %}Study mode{% endif %}</button>
             </form>
-            <div class="hint">Locked to the course playlist — no scrolling.</div>
+            <div class="hint">{% if study_primary %}Turn the break into Security+ progress — locked to the course, no scrolling.{% else %}Locked to the course playlist — no scrolling.{% endif %}</div>
             {% endif %}
         </div>
         <a class="foot" href="/budget/stats">Usage stats</a>
@@ -274,6 +280,10 @@ STATS_PAGE = """
         .cd-row{color:var(--muted);font-size:13px}
         .cd-sub{color:var(--faint);font-size:12.5px;margin-top:6px}
         .cd-warn{color:var(--warn)}
+        .study-card{border-color:var(--sleep)}
+        .study-row{display:flex;gap:28px;align-items:baseline}
+        .study-n{font-size:26px;font-weight:700;color:var(--sleep);font-variant-numeric:tabular-nums}
+        .study-k{font-size:12px;color:var(--faint);margin-left:7px;text-transform:uppercase;letter-spacing:.04em}
     </style>
 </head>
 <body>
@@ -286,6 +296,17 @@ STATS_PAGE = """
         <div class="tile">
             <div class="v {{ trend_cls }}">{{ trend }}</div><div class="k">vs prior week</div>
         </div>
+    </div>
+
+    <div class="card study-card">
+        <h2>Study mode — the point of all this</h2>
+        <div class="study-row">
+            <div><span class="study-n">{{ study_today_min }}m</span><span class="study-k">today</span></div>
+            <div><span class="study-n">{{ study_week_min }}m</span><span class="study-k">last 7 days</span></div>
+        </div>
+        {% if study_week_min == 0 %}
+        <div class="cd-sub">No study-mode time logged this week. The course playlist is one tap from any gate — and free.</div>
+        {% endif %}
     </div>
 
     <div class="card">
@@ -335,7 +356,7 @@ STATS_PAGE = """
         <div class="cd-sub">
             {% if cd.today_rapid %}<b class="cd-warn">{{ cd.today_rapid }} rapid repeat{{ 's' if cd.today_rapid != 1 else '' }}</b> today — a new cooldown within {{ cd.hours }}h of the last{% else %}No rapid repeats today (within {{ cd.hours }}h){% endif %}
         </div>
-        <div class="cd-sub">7 days: {{ cd.week_n }} cooldown{{ 's' if cd.week_n != 1 else '' }}, {{ cd.week_rapid }} rapid repeat{{ 's' if cd.week_rapid != 1 else '' }}. Clustering — not the daily total — is what would justify escalating cooldowns.</div>
+        <div class="cd-sub">7 days: {{ cd.week_n }} cooldown{{ 's' if cd.week_n != 1 else '' }}, {{ cd.week_rapid }} rapid repeat{{ 's' if cd.week_rapid != 1 else '' }}. Each rapid repeat draws a longer wall — clustering, not the daily total, is what escalates the cooldown.</div>
         {% else %}
         <div class="cd-sub">No cooldowns logged yet. Once you hit the full-bucket wall a few times, the clustering pattern shows up here.</div>
         {% endif %}
@@ -469,8 +490,9 @@ def get_cooldown_remaining(site):
     cooldown_start = r.get(f"cooldown:{p}")
     if not cooldown_start:
         return 0
+    duration = float(r.get(f"cooldown_secs:{p}") or COOLDOWN_SECONDS)  # escalated per-cooldown
     elapsed = time.time() - float(cooldown_start)
-    remaining = COOLDOWN_SECONDS - elapsed
+    remaining = duration - elapsed
     if remaining <= 0:
         # Don't restore budget outside daytime: a daytime cooldown expiring during
         # wind-down or night must NOT hand out a fresh buffer. Leave spent/cooldown
@@ -481,24 +503,48 @@ def get_cooldown_remaining(site):
         # next visit can enter again. Without resetting spent:{pool} the
         # /budget page would immediately re-trigger a fresh cooldown.
         r.delete(f"cooldown:{p}")
+        r.delete(f"cooldown_secs:{p}")
         r.delete(f"spent:{p}")
         r.delete(f"refilled_through:{p}")
         return 0
     return remaining
 
+def recent_cooldown_count(now):
+    """How many pool cooldowns already started within the trailing RAPID_REPEAT_WINDOW
+    (before `now`). This is the escalation index: 0 = a lone/spread-out cooldown (base
+    duration), higher = a cluster of rapid re-binges (progressively longer wall). Scans
+    today and yesterday since the window can straddle midnight.
+    """
+    cutoff = now - RAPID_REPEAT_WINDOW
+    count = 0
+    for i in (1, 0):
+        key_day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+        for raw in r.lrange(f"cooldown_events:{key_day}", 0, -1):
+            try:
+                ts = float(raw.split()[0])
+            except (ValueError, IndexError):
+                continue
+            if cutoff <= ts < now:
+                count += 1
+    return count
+
 def start_cooldown(p, site, now=None):
     """Begin the pool's hard cooldown and log a timestamped event — once.
 
     Idempotent: if a cooldown is already running, do nothing (don't reset the
-    timer, don't double-log). The event log answers the question the escalating-
-    cooldown idea hinges on: do fresh cooldowns *cluster* (a second binge soon
-    after one ends), or are they spread across the day? Each entry is
-    "<epoch> <site>"; keys are per-day and self-prune after ~100 days.
+    timer, don't double-log). Duration escalates when cooldowns *cluster*: the
+    event log (each entry "<epoch> <site>", per-day, self-pruning after ~100 days)
+    is scanned so a rapid re-binge draws a longer wall from COOLDOWN_LADDER, while a
+    spread-out day stays at the 1-hour base. The chosen duration is stored alongside
+    the start so get_cooldown_remaining counts down the right amount.
     """
     if r.get(f"cooldown:{p}"):
         return
     now = now if now is not None else time.time()
+    idx = min(recent_cooldown_count(now), len(COOLDOWN_LADDER) - 1)
+    duration = COOLDOWN_LADDER[idx]
     r.set(f"cooldown:{p}", now)
+    r.set(f"cooldown_secs:{p}", duration)
     day = time.strftime("%Y-%m-%d", time.localtime(now))
     r.rpush(f"cooldown_events:{day}", f"{now:.0f} {site}")
     r.expire(f"cooldown_events:{day}", 100 * 86400)
@@ -536,15 +582,18 @@ def _safe_next(site, nxt):
 
 def render_gate(site, label, *, overline, message, title="", mood="wait",
                 can_enter=False, button_text="", headline="",
-                countdown=0, show_study=False, refresh=0, next_url=""):
+                countdown=0, show_study=False, study_primary=False, refresh=0, next_url=""):
     # One template, many states. `overline` is the uppercase kicker; `countdown` (secs)
     # renders a live ticking timer that reloads at zero; `headline` renders a big static
     # time; `mood` picks the accent colour (go/wait/sleep). `next_url`, when set, makes
     # the Enter button return to the original link instead of the site home.
+    # `study_primary` promotes the Study button to the main CTA — used on the cooldown
+    # screens, turning the enforced break into a one-tap redirect to the course.
     return render_template_string(BUDGET_PAGE,
         site=site, label=label, overline=overline, title=title, message=message, mood=mood,
         can_enter=can_enter, button_text=button_text, headline=headline,
-        countdown=int(countdown), show_study=show_study, refresh=refresh, next_url=next_url)
+        countdown=int(countdown), show_study=show_study, study_primary=study_primary,
+        refresh=refresh, next_url=next_url)
 
 @app.route('/budget')
 def budget_page():
@@ -585,10 +634,15 @@ def budget_page():
     # Daytime.
     cooldown_remaining = get_cooldown_remaining(site)
     if cooldown_remaining > 0:
+        escalated = float(r.get(f"cooldown_secs:{p}") or COOLDOWN_SECONDS) > COOLDOWN_SECONDS
+        msg = ("Back-to-back sessions get a longer break — it reopens when the timer hits zero."
+               if escalated else
+               "That was your session. It reopens when the timer hits zero.")
+        if study_ok:
+            msg += " Put the break to work — the course is one tap away."
         return render_gate(site, label, overline=f"{label} · Cooldown", mood="wait",
-            countdown=cooldown_remaining, show_study=study_ok,
-            title="Take a break",
-            message="That was your session. It reopens when the timer hits zero.")
+            countdown=cooldown_remaining, show_study=study_ok, study_primary=study_ok,
+            title="Take a break", message=msg)
 
     spent = get_spent(site)
     remaining = max(0, SITES[site]["budget_seconds"] - spent)
@@ -596,10 +650,12 @@ def budget_page():
     # Whole bucket drained -> start the hard cooldown.
     if spent >= pool_max_budget(p):
         start_cooldown(p, site)
+        msg = "Cooling down — back when the timer hits zero."
+        if study_ok:
+            msg += " Or turn the break into progress: the course is one tap away."
         return render_gate(site, label, overline=f"{label} · Time's up", mood="wait",
-            countdown=COOLDOWN_SECONDS, show_study=study_ok,
-            title="Whole bucket spent",
-            message="Cooling down — back when the timer hits zero.")
+            countdown=get_cooldown_remaining(site), show_study=study_ok, study_primary=study_ok,
+            title="Whole bucket spent", message=msg)
 
     # This site's slice used up, but the bucket still has time for a bigger-cap site.
     if remaining <= 0:
@@ -647,6 +703,7 @@ def study():
     token = str(uuid.uuid4())
     r.setex(f"session:{token}", SESSION_IDLE_TTL, "study")
     r.set(f"active_token:{site}", token)
+    r.set("last_study_beat", time.time())   # baseline so the first heartbeat gap counts
 
     return redirect(f"https://www.youtube.com/playlist?list={STUDY_PLAYLISTS[0]}")
 
@@ -677,7 +734,20 @@ def heartbeat():
     r.setex(f"session:{token}", SESSION_IDLE_TTL, mode)
 
     # Study mode is free and always available: keep the session alive, never charge/cool.
+    # We still LOG the foreground seconds (separately from budgeted usage) so "am I
+    # actually studying?" is measurable — same visibility-gated, gap-capped accounting
+    # as usage, but it never touches spent/cooldown.
     if mode == "study":
+        now = time.time()
+        last = r.get("last_study_beat")
+        if last:
+            gap = now - float(last)
+            if gap <= HEARTBEAT_MAX_GAP:
+                day = time.strftime("%Y-%m-%d")
+                r.incrbyfloat(f"study_usage:{day}", gap)
+                r.expire(f"study_usage:{day}", 100 * 86400)
+                r.set("last_study_charge", now)
+        r.set("last_study_beat", now)
         return jsonify({"status": "study"})
 
     p = pool(site)
@@ -802,7 +872,15 @@ def stats():
     week_rapid = sum(1 for a, b in zip(cd_events, cd_events[1:])
                      if b - a <= RAPID_REPEAT_WINDOW)
 
+    # Study mode (free, unbudgeted) is logged separately — this is the one metric the
+    # whole thing is FOR, so surface it. Today + this-week's foreground study minutes.
     today_key = time.strftime("%Y-%m-%d", time.localtime(now))
+    study_today_min = int(float(r.get(f"study_usage:{today_key}") or 0) // 60)
+    study_week_min = 0
+    for i in range(7):
+        dk = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+        study_week_min += int(float(r.get(f"study_usage:{dk}") or 0) // 60)
+
     today_ts = sorted(t for t in cd_events
                       if time.strftime("%Y-%m-%d", time.localtime(t)) == today_key)
     cd_today_times = [time.strftime("%-I:%M%p", time.localtime(t)).lower() for t in today_ts]
@@ -834,7 +912,8 @@ def stats():
 
     return render_template_string(STATS_PAGE,
         days=days, today_min=today_min, week_avg=week_avg,
-        trend=trend, trend_cls=trend_cls, live_line=live_line, stale=stale, cd=cd)
+        trend=trend, trend_cls=trend_cls, live_line=live_line, stale=stale, cd=cd,
+        study_today_min=study_today_min, study_week_min=study_week_min)
 
 def daily_reset():
     pools = set()
@@ -848,6 +927,7 @@ def daily_reset():
         r.delete(f"spent:{p}")
         r.delete(f"night_spent:{p}")
         r.delete(f"cooldown:{p}")
+        r.delete(f"cooldown_secs:{p}")
         r.delete(f"last_heartbeat:{p}")
         r.delete(f"refilled_through:{p}")
     print("[RESET] Daily budget reset complete")

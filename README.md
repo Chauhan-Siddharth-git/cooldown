@@ -81,15 +81,22 @@ architecture notes for the full picture.
 
 ## Quick start
 
-**Just want to try it on one machine?** Use Docker — point your browser at the proxy,
-install the CA, done. No Pi, no root, no Tailscale. See **[DOCKER.md](DOCKER.md)**:
+### Option A — try it on one computer (Docker)
+
+Gates the tempting sites in **a browser on the computer running Docker**. No Pi, no
+root, no Tailscale. Full step-by-step (with a troubleshooting table) in
+**[DOCKER.md](DOCKER.md)**:
 
 ```bash
-TZ=America/New_York docker compose up -d --build   # then set browser proxy to 127.0.0.1:8080
+TZ=America/New_York docker compose up -d --build   # then set browser proxy to 127.0.0.1:8080, install the CA from http://mitm.it
 ```
 
-**Gating your phone / a whole network** is the fuller setup — walkthrough in
-**[SETUP.md](SETUP.md)**. The shape of it:
+> ⚠️ **This does *not* gate your phone.** The proxy is locked to the local machine.
+> Phone gating (and cellular) is Option B.
+
+### Option B — gate your phone / whole network (Raspberry Pi)
+
+The real daily-driver setup — full walkthrough in **[SETUP.md](SETUP.md)**. The shape of it:
 
 1. Flash a Raspberry Pi, install Redis + Python.
 2. `python -m venv venv && venv/bin/pip install -r requirements.txt`
