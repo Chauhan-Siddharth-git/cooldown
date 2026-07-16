@@ -65,28 +65,49 @@ setting └───────────────────────
 - Two named volumes: `cooldown-ca` (the CA — so you re-trust only once) and
   `cooldown-redis` (your usage data).
 
+**The Docker-specific files** (all at the repo root, where `docker compose` expects
+them): `Dockerfile`, `docker-compose.yml`, `docker-entrypoint.sh`, `.dockerignore`.
+The image also bakes in the app itself — `app.py`, `addon.py`, `requirements.txt` —
+so those need to be present too (they are, in a clone). You don't edit any of these
+to run it; just the commands below.
+
 ---
 
 ## Quick start
 
-**1. Bring it up** (set `TZ` so the nightly reset and bedtime land at your local time):
+**1. Get the code and enter the folder.** `docker compose` builds the image from the
+files in this repo, so you need them locally first:
+
+```bash
+git clone https://github.com/Chauhan-Siddharth-git/cooldown.git
+cd cooldown
+```
+
+(No `git`? Use GitHub's green **Code → Download ZIP** button, unzip it, and `cd` into
+the unzipped folder in your terminal.)
+
+**2. Bring it up** (set `TZ` so the nightly reset and bedtime land at your local time).
+Run this from inside the `cooldown` folder — that's where `docker-compose.yml` lives:
 
 ```bash
 TZ=America/New_York docker compose up -d --build
 ```
 
-**2. Point your browser at the proxy.** Set the HTTP **and** HTTPS proxy to
+The `--build` step compiles the image the first time (a minute or two); after that it
+starts in seconds.
+
+**3. Point your browser at the proxy.** Set the HTTP **and** HTTPS proxy to
 `127.0.0.1` port `8080`. In Firefox: *Settings → Network Settings → Manual proxy
 configuration*, tick "Also use this proxy for HTTPS". (A browser-level proxy keeps
 the interception scoped to that browser — cleaner than a system-wide proxy for a
 first try.)
 
-**3. Install the CA (once).** With the proxy on, visit **http://mitm.it**, download
+**4. Install the CA (once).** With the proxy on, visit **http://mitm.it**, download
 the certificate for your OS, and install it as **trusted**. This is what lets
 mitmproxy decrypt the gated sites. (`mitm.it` only resolves *through* the proxy —
 that's why it's in the allowlist.)
 
-**4. Try it.** Visit `reddit.com`. You should get the **Countdown** gate instead of
+**5. Try it.** Visit `reddit.com`. You should get the **Countdown** gate instead of
 the feed. Everything except the gated sites (Reddit, YouTube, Spotify web, Puzzmo)
 tunnels straight through untouched.
 
