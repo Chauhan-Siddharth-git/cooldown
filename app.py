@@ -1,5 +1,6 @@
 from flask import Flask, jsonify, redirect, render_template_string, request
 from urllib.parse import urlparse
+import os
 import redis
 import time
 import uuid
@@ -10,7 +11,10 @@ from apscheduler.schedulers.background import BackgroundScheduler
 # the attack surface. CSRF on the mutating POSTs is enforced at the proxy boundary
 # (addon.py rejects cross-site requests to /budget/*).
 app = Flask(__name__)
-r = redis.Redis(host='localhost', port=6379, decode_responses=True)
+# Redis lives on localhost for the native/Pi deploy; in Docker it's a separate
+# service, so honor REDIS_HOST/REDIS_PORT (defaults preserve native behaviour).
+r = redis.Redis(host=os.environ.get("REDIS_HOST", "localhost"),
+                port=int(os.environ.get("REDIS_PORT", "6379")), decode_responses=True)
 
 # Per-site config. Add a site here and the proxy + budget logic pick it up.
 #

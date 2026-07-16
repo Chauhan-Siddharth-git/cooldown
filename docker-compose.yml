@@ -1,0 +1,67 @@
+# Cooldown — portable "run it on your own machine" stack.
+#
+#   one image (Flask brain + mitmproxy interceptor)  +  a Redis service
+#
+# This runs mitmproxy in EXPLICIT-proxy mode: you point a device's HTTP-proxy
+# setting at localhost:8080, install the CA once (http://mitm.it through the
+# proxy), and the gated sites start counting down. No iptables, no Tailscale —
+# see DOCKER.md. The transparent whole-network mode is the host-level Pi setup
+# under deploy/, which Docker deliberately does not try to replace.
+#
+#   docker compose up -d --build     # start
+#   docker compose logs -f cooldown  # watch
+#   docker compose down              # stop (data + CA persist in named volumes)
+#
+# Set your timezone so the nightly reset and bedtime curfew land at local time:
+#   TZ=America/New_York docker compose up -d   (or put TZ=... in a .env file)
+
+name: cooldown
+
+services:
+  redis:
+    image: redis:7-alpine
+    # AOF (≤1s loss) + periodic RDB snapshots. protected-mode is off because the
+    # port is NOT published to the host — only the cooldown service reaches it over
+    # the private compose network.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --save
+      - "3600 1 300 100 60 10000"
+      - --dir
+      - /data
+      - --protected-mode
+      - "no"
+    volumes:
+      - cooldown-redis:/data      # spent time, cooldowns, history survive restarts
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  cooldown:
+    build: .
+    image: cooldown:latest
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - REDIS_HOST=redis          # reach Redis by its compose service name
+      - TZ=${TZ:-UTC}             # local time for the nightly reset / curfew
+    ports:
+      # Explicit proxy, bound to host loopback ONLY. Publishing on 0.0.0.0 would
+      # expose an intercepting proxy to your LAN — don't. If you need other devices
+      # to use it, that's the transparent/host setup, not this port map.
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - cooldown-ca:/home/app/.mitmproxy   # persist the CA so you re-trust only once
+    restart: unless-stopped
+
+volumes:
+  cooldown-redis:
+  cooldown-ca:

@@ -1,0 +1,15 @@
+# Keep the build context small and secrets out of image layers.
+.git
+.gitignore
+tests/
+deploy/
+*.md
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv-dev/
+# Never bake CA / key material into an image (it belongs in a runtime volume).
+certs/
+.mitmproxy/
+*.pem
+*.key

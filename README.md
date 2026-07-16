@@ -81,7 +81,15 @@ architecture notes for the full picture.
 
 ## Quick start
 
-Full walkthrough in **[SETUP.md](SETUP.md)**. The shape of it:
+**Just want to try it on one machine?** Use Docker — point your browser at the proxy,
+install the CA, done. No Pi, no root, no Tailscale. See **[DOCKER.md](DOCKER.md)**:
+
+```bash
+TZ=America/New_York docker compose up -d --build   # then set browser proxy to 127.0.0.1:8080
+```
+
+**Gating your phone / a whole network** is the fuller setup — walkthrough in
+**[SETUP.md](SETUP.md)**. The shape of it:
 
 1. Flash a Raspberry Pi, install Redis + Python.
 2. `python -m venv venv && venv/bin/pip install -r requirements.txt`

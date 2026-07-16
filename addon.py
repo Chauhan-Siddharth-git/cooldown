@@ -1,6 +1,7 @@
 from mitmproxy import http
 from urllib.parse import urlsplit, parse_qs, quote
 import json
+import os
 import redis
 import requests as req
 
@@ -33,7 +34,8 @@ IGNORED_HOSTS = [
 # Shorts, other channels) bounces back to the course.
 STUDY_PLAYLISTS = ["REPLACE_WITH_YOUR_PLAYLIST_ID"]  # allow-listed YouTube playlist IDs for Study mode; [] disables it
 
-r = redis.Redis(host='localhost', port=6379, decode_responses=True)
+r = redis.Redis(host=os.environ.get("REDIS_HOST", "localhost"),
+                port=int(os.environ.get("REDIS_PORT", "6379")), decode_responses=True)
 
 # Injected into real pages of a gated site. Pings the budget server only while the
 # tab is actually visible, so only foreground viewing time is charged. The site is
