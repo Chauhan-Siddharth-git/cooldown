@@ -56,6 +56,21 @@ that's why it's in the allowlist.)
 the feed. Everything except the gated sites (Reddit, YouTube, Spotify web, Puzzmo)
 tunnels straight through untouched.
 
+### Verifying from the command line
+
+The gate only fires on a **browser navigation** — the addon keys off the
+`Sec-Fetch-Mode: navigate` header a browser sends on a top-level page load, so
+sub-requests (images, APIs) don't get served the gate HTML. A bare `curl` sends no
+such header, so it looks like a sub-request and passes through to the real site
+(which may then reject it) — that is *not* a failure. To test like a browser:
+
+```bash
+# Should print a 200 whose body contains "Countdown" (or a bedtime message at night):
+curl -sk -x http://127.0.0.1:8080 -H "Sec-Fetch-Mode: navigate" https://www.reddit.com/ | grep -o Countdown
+```
+
+`curl ... http://mitm.it` returning 200 also confirms the proxy itself is up.
+
 **Stop / start / logs:**
 
 ```bash
