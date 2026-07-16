@@ -23,7 +23,7 @@ Docker. Great for trying Cooldown, or for gating your own laptop/desktop browsin
 
 | Question | Answer |
 |---|---|
-| **Will this gate my phone?** | **No.** The proxy is locked to this computer only (`127.0.0.1`). A phone can't reach it. Gating a phone — especially on cellular — needs the Raspberry Pi + Tailscale setup ([SETUP.md](SETUP.md)); that's what it's for. |
+| **Will this gate my phone?** | **Not this setup** — the proxy is locked to this computer (`127.0.0.1`). But there's an **advanced Docker variant that does gate a phone** (over Tailscale, even on cellular): see **[DOCKER-PHONE.md](DOCKER-PHONE.md)**. For a reliable, always-on gate, a Raspberry Pi ([SETUP.md](SETUP.md)) is still the better home. |
 | Will it gate other apps, or my whole computer? | Only what you point at the proxy. The steps below set it up for one browser. |
 | Will it work when I close the terminal? | Yes — the containers keep running in the background until you `docker compose down`. |
 
@@ -186,12 +186,18 @@ CA from your browser/OS certificate store.
 
 ---
 
-## Transparent mode (the Pi setup)
+## Gating a phone
 
-Gating a **phone**, or a whole machine without per-app proxy settings, needs traffic
-*transparently* redirected into mitmproxy — which requires host-level iptables and a
-way to route the device through the box (Tailscale as an exit node). That is
-host networking, not something a container can own, so it lives outside Docker in
-`deploy/` (`cooldown-redirect.sh`, the systemd units) and is documented in
-[SETUP.md](SETUP.md). Use Docker for a single machine; use the `deploy/` path to
-gate other devices.
+Gating a **phone** needs traffic *transparently* redirected into mitmproxy plus a way
+to route the phone through the box. Two homes for that:
+
+- **[DOCKER-PHONE.md](DOCKER-PHONE.md)** — an **advanced Docker variant** that runs
+  Tailscale *inside* a (privileged) container, so a phone routes through it as an exit
+  node and gets gated even on cellular, alongside this computer's browser. Good for
+  "I don't have a Pi yet," but it only gates while your computer is awake.
+- **[SETUP.md](SETUP.md)** — the **Raspberry Pi** setup (`deploy/` systemd units +
+  `cooldown-redirect.sh`). Always-on and dedicated — the reliable home for phone
+  gating. This is host networking, not something the *default* container owns.
+
+Use the plain Docker onramp for a single computer's browser; use one of these to gate
+a phone.

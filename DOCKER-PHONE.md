@@ -86,6 +86,48 @@ browser can use it too by setting its proxy to `127.0.0.1:8081`.
 
 ---
 
+## Verify it's working, one layer at a time
+
+This variant is a stack of layers; test them in order so you know exactly where a
+failure is instead of guessing. `C=docker compose -f docker-compose.tailscale.yml`.
+
+**Layer 1 — the container is up and both processes run.**
+```bash
+$C ps                         # cooldown + redis both "Up" (redis healthy)
+$C logs cooldown | grep -E "proxy listening|Tailscale up"
+```
+Expect mitmproxy's `HTTP(S) proxy listening` and the `[tailscale] up ...` line.
+
+**Layer 2 — Tailscale joined the tailnet.**
+```bash
+$C exec cooldown tailscale status   # shows this node + your other devices
+```
+Also check the Tailscale **admin console** — `cooldown-docker` should appear. Then
+**approve it as an exit node** (setup step 3). Not approved = nothing routes.
+
+**Layer 3 — the router plumbing is in place** (inside the container's namespace):
+```bash
+$C exec cooldown iptables -t nat -S PREROUTING   # REDIRECT tailscale0 :80/:443 -> 8080
+$C exec cooldown iptables -S FORWARD | grep 443  # the QUIC REJECT
+```
+
+**Layer 4 — the phone routes through it.** Select the exit node on the phone, then on
+the phone load any *non-gated* site (e.g. `example.com`). It should load normally —
+that proves forwarding + NAT work. If the phone has **no** internet here, it's almost
+always the exit node not being approved (Layer 2).
+
+**Layer 5 — the CA is trusted.** On the phone, `http://mitm.it` should show the
+cert-install page (not an error). Install + trust it (setup step 5).
+
+**Layer 6 — the gate fires.** On the phone, open `reddit.com` → the **Countdown**
+gate. Then open a YouTube video and let it run — if it gets gated (rather than
+sailing through), QUIC blocking is working too.
+
+**Layer 7 — the laptop browser still works** in parallel: set its proxy to
+`127.0.0.1:8081`, visit `reddit.com`, expect the gate.
+
+If a layer fails, the one below it is fine — so you only ever debug one thing.
+
 ## Troubleshooting
 
 | Symptom | Cause & fix |
