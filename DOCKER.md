@@ -96,16 +96,46 @@ TZ=America/New_York docker compose up -d --build
 The `--build` step compiles the image the first time (a minute or two); after that it
 starts in seconds.
 
-**3. Point your browser at the proxy.** Set the HTTP **and** HTTPS proxy to
-`127.0.0.1` port `8080`. In Firefox: *Settings → Network Settings → Manual proxy
-configuration*, tick "Also use this proxy for HTTPS". (A browser-level proxy keeps
-the interception scoped to that browser — cleaner than a system-wide proxy for a
-first try.)
+**3. Point your browser at the proxy** (`127.0.0.1`, port `8080`, for HTTP **and**
+HTTPS). Two things differ by browser: **where the proxy setting lives**, and **whose
+certificate store** you'll install the CA into (step 4). They're linked:
 
-**4. Install the CA (once).** With the proxy on, visit **http://mitm.it**, download
-the certificate for your OS, and install it as **trusted**. This is what lets
-mitmproxy decrypt the gated sites. (`mitm.it` only resolves *through* the proxy —
-that's why it's in the allowlist.)
+- **Firefox — recommended, and the same on every OS.** Firefox has its *own* proxy
+  setting *and* its *own* certificate store, so nothing you do touches the rest of your
+  system. *Settings → search "proxy" → Network Settings → Settings → Manual proxy
+  configuration →* HTTP Proxy `127.0.0.1`, Port `8080`, tick **"Also use this proxy for
+  HTTPS."** (Its CA store is where step 4 goes too.)
+- **Chrome** has no proxy setting of its own — it uses the **operating system's** proxy
+  *and* the OS certificate store. Clicking Chrome's proxy option just opens the OS
+  settings below.
+- **Safari** (macOS) likewise uses the **macOS system** proxy and Keychain.
+
+Set the **system** proxy (for Chrome/Safari):
+- **macOS:** *System Settings → Network → (your connection) → Details → Proxies →* turn
+  on **Web Proxy (HTTP)** *and* **Secure Web Proxy (HTTPS)**, both `127.0.0.1 : 8080`.
+- **Windows:** *Settings → Network & Internet → Proxy → Manual proxy setup →* Address
+  `127.0.0.1`, Port `8080`.
+
+> **Tip:** for a first try, just use **Firefox** — it keeps everything self-contained
+> and doesn't reroute your whole system's traffic.
+
+**4. Install the CA (once)** — into the store your chosen browser uses. With the proxy
+on, visit **http://mitm.it** and grab the cert (`mitm.it` only exists *through* the
+proxy, which is why it's in the allowlist). Then trust it:
+
+- **Firefox:** on `mitm.it` click the **Firefox** link, *or* import
+  `~/.mitmproxy/mitmproxy-ca-cert.pem` via *Settings → Certificates → View Certificates
+  → Authorities → Import →* tick **"Trust this CA to identify websites."**
+- **macOS (Safari/Chrome):** download the cert, open **Keychain Access**, drag it into
+  **System** (or login), then double-click it → **Trust** → **When using this
+  certificate: Always Trust**. *(That "Always Trust" step is the one everyone forgets.)*
+- **Windows (Chrome/Edge):** download the `.p12`/`.pem`, open it, and install into
+  **Trusted Root Certification Authorities**.
+- **Linux (Chrome):** Chrome uses the NSS store — `certutil -d sql:$HOME/.pki/nssdb -A
+  -t "C,," -n mitmproxy -i mitmproxy-ca-cert.pem` (from `libnss3-tools`).
+
+Without a trusted CA the gated HTTPS sites show a certificate error instead of the
+gate — that's the tell that step 4 isn't done.
 
 **5. Try it.** Visit `reddit.com`. You should get the **Countdown** gate instead of
 the feed. Everything except the gated sites (Reddit, YouTube, Spotify web, Puzzmo)

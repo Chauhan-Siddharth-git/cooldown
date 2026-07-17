@@ -141,6 +141,39 @@ and memory listen on localhost only — nothing off the box can reach them.
 
 ---
 
+## Where it can run — three shapes
+
+Everything above describes the reference box, a Raspberry Pi. But the **same code**
+runs in three shapes. The only thing that changes is *how your traffic reaches the
+interceptor* — and that one choice decides what can be gated.
+
+```
+  Explicit     Browser ──▶ Interceptor    you set the browser's proxy; it volunteers
+  Transparent    Phone ──▶ Interceptor    routing + iptables divert it silently
+```
+
+- **1 · The Raspberry Pi** — the always-on reference. The phone routes through it over
+  Tailscale and its traffic is transparently redirected into mitmproxy. Gates phone +
+  laptop, anywhere (even cellular).
+  *How:* transparent redirect + Tailscale exit node. *Needs:* a dedicated, always-on
+  Pi. → [SETUP.md](SETUP.md)
+- **2 · Docker on your computer** — the try-it onramp. `docker compose up`, point a
+  browser at the proxy (`:8080`), install the CA. Gates that computer's browser only —
+  a container is great at "listen on a port" but can't reach a phone.
+  *How:* explicit proxy. *Needs:* just Docker. → [DOCKER.md](DOCKER.md)
+- **3 · Docker + Tailscale** — gate a *phone* from a computer, no Pi. The container
+  runs Tailscale itself as your phone's exit node, so the phone's traffic arrives
+  **inside the container's own network namespace** — right where the iptables redirect
+  and transparent mode live. Because Tailscale is an *overlay* (it rides the container's
+  normal outbound internet), it sidesteps the "a container can't see the host network"
+  wall — including the hidden Linux VM on Mac/Windows — because it never touches the
+  host network. The catch: a privileged container, and the gate only holds while your
+  computer is awake, which is why a Pi is the better home.
+  *How:* exit node → transparent, all inside the container. *Needs:* Docker + a
+  Tailscale key. → [DOCKER-PHONE.md](DOCKER-PHONE.md)
+
+---
+
 ## The clever bits
 
 ### 1 · Charging only the time you're actually looking
