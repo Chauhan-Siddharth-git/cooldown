@@ -78,8 +78,13 @@ container.
 - **Android:** install under *Security → Encryption & credentials → Install a
   certificate → CA certificate*.
 
-**6. Try it.** On the phone, open `reddit.com` → the **Countdown** gate. Your laptop
-browser can use it too by setting its proxy to `127.0.0.1:8081`.
+**6. Try it.** On the phone, open `reddit.com` → the **Countdown** gate.
+
+**7. (Optional) Gate this computer's browser too.** This variant serves an explicit
+proxy for the laptop as well — set the browser's proxy to **`127.0.0.1:8081`** and
+install the CA from `http://mitm.it` (same as [DOCKER.md](DOCKER.md) steps 3–4).
+⚠️ Note the port: it's **8081** here, not `8080` — in this variant `8080` is reserved
+for the phone's transparent interception, so the laptop uses `8081`.
 
 **Stop:** `docker compose -f docker-compose.tailscale.yml down`
 (add `-v` to also wipe data, the CA, and the Tailscale identity).
