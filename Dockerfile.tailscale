@@ -25,7 +25,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py addon.py docker-entrypoint-tailscale.sh ./
+COPY app.py addon.py news_domains.py docker-entrypoint-tailscale.sh ./
+COPY deploy/gen_allow_hosts.py deploy/gen_allow_hosts.py
 COPY --from=ts /usr/local/bin/tailscale /usr/local/bin/tailscaled /usr/local/bin/
 RUN chmod +x docker-entrypoint-tailscale.sh && mkdir -p "$MITM_CONFDIR"
 

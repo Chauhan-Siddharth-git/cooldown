@@ -20,8 +20,9 @@ python3 app.py &
 # Pi setup documented in DOCKER.md, deliberately not used here.
 #
 # --allow-hosts is the TLS-decrypt allowlist: only these hosts are intercepted, so all
-# other HTTPS tunnels straight through untouched. Keep it in sync with SITES in app.py
-# and addon.py (mitm.it is included so you can fetch the CA through the proxy).
+# other HTTPS tunnels straight through untouched. Built from the same source of truth
+# as the app (core sites + news_domains.py + mitm.it), so it never drifts out of sync.
+ALLOW_HOSTS="$(python3 deploy/gen_allow_hosts.py --plain)"
 mitmdump \
   --mode regular@8080 \
   --showhost \
@@ -29,7 +30,7 @@ mitmdump \
   --set http2=false \
   --set block_global=false \
   --set confdir="$MITM_CONFDIR" \
-  --allow-hosts '^(.+[.])?reddit[.]com([:][0-9]+)?$|^(.+[.])?youtube[.]com([:][0-9]+)?$|^(.+[.])?open[.]spotify[.]com([:][0-9]+)?$|^(.+[.])?puzzmo[.]com([:][0-9]+)?$|^(.+[.])?mitm[.]it([:][0-9]+)?$' &
+  --allow-hosts "$ALLOW_HOSTS" &
 
 wait -n
 exit $?

@@ -69,7 +69,7 @@ mitmdump \
   --set http2=false \
   --set block_global=false \
   --set confdir="$MITM_CONFDIR" \
-  --allow-hosts '^(.+[.])?reddit[.]com([:][0-9]+)?$|^(.+[.])?youtube[.]com([:][0-9]+)?$|^(.+[.])?open[.]spotify[.]com([:][0-9]+)?$|^(.+[.])?puzzmo[.]com([:][0-9]+)?$|^(.+[.])?mitm[.]it([:][0-9]+)?$' &
+  --allow-hosts "$(python3 deploy/gen_allow_hosts.py --plain)" &
 
 wait -n
 exit $?

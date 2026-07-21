@@ -16,7 +16,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py addon.py docker-entrypoint.sh ./
+COPY app.py addon.py news_domains.py docker-entrypoint.sh ./
+COPY deploy/gen_allow_hosts.py deploy/gen_allow_hosts.py
 RUN chmod +x docker-entrypoint.sh \
     && mkdir -p "$MITM_CONFDIR" \
     && chown -R app:app /app "$MITM_CONFDIR"

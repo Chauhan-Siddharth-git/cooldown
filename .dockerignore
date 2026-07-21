@@ -2,7 +2,9 @@
 .git
 .gitignore
 tests/
-deploy/
+# Exclude deploy/ EXCEPT the allow-hosts generator, which the image runs at startup.
+deploy/*
+!deploy/gen_allow_hosts.py
 *.md
 __pycache__/
 *.pyc
