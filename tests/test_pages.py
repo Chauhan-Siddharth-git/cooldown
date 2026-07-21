@@ -161,6 +161,19 @@ def test_study_is_youtube_only(client, rdb, day):
     assert "/budget" in resp.headers["Location"]
 
 
+def test_news_gate_renders(client, rdb, day):
+    html = gate(client, "news")
+    assert "Enter News" in html
+    assert "10:00" in html                       # 10-min cap headline
+    assert "/budget/study" not in html           # news has no study mode
+
+
+def test_news_enter_returns_to_the_article(client, rdb, day):
+    nxt = quote("https://www.cnn.com/2026/07/20/politics/story/index.html", safe="")
+    resp = client.post(f"/enter?site=news&next={nxt}")
+    assert "cnn.com/2026/07/20/politics" in resp.headers["Location"]   # not the home fallback
+
+
 def test_cooldown_screen_promotes_study(client, rdb, day):
     rdb.set("cooldown:main", time.time() - 100)      # YouTube in cooldown
     html = gate(client, "youtube")

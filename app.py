@@ -5,6 +5,7 @@ import redis
 import time
 import uuid
 from apscheduler.schedulers.background import BackgroundScheduler
+from news_domains import NEWS_DOMAINS
 
 # No CORS: every endpoint is same-origin (the gate pages and the injected heartbeat
 # both live on the gated host). A wildcard Access-Control-Allow-Origin only widened
@@ -51,6 +52,18 @@ SITES = {
         "budget_seconds": 10 * 60,
         "label": "Puzzmo",
         "emoji": "🧩",
+        "group": "main",
+    },
+    # News is a CATEGORY, not one site: it matches the whole NEWS_DOMAINS list and
+    # shares the "main" bucket, so switching between news sites (or from Reddit to a
+    # news site) never buys fresh time — one distraction allowance for all of it.
+    # "home" is only a rare fallback (Enter almost always returns you to the article
+    # you were opening); a neutral non-news page keeps it from being an escape hatch.
+    "news": {
+        "home": "https://www.google.com",
+        "budget_seconds": 10 * 60,
+        "label": "News",
+        "emoji": "📰",
         "group": "main",
     },
 }
@@ -576,9 +589,15 @@ def _safe_next(site, nxt):
     host = u.hostname
     if not host:
         return ""
-    home_host = urlparse(SITES[site]["home"]).hostname or ""
-    base = ".".join(home_host.split(".")[-2:])          # www.reddit.com -> reddit.com
-    return nxt if (host == base or host.endswith("." + base)) else ""
+    # Which domains count as "same site" for the return URL. News is a category, so
+    # any host in NEWS_DOMAINS (or a subdomain) is valid — that's how Enter returns you
+    # to the specific article you opened. Other sites match their home's domain.
+    if site == "news":
+        domains = NEWS_DOMAINS
+    else:
+        home_host = urlparse(SITES[site]["home"]).hostname or ""
+        domains = [".".join(home_host.split(".")[-2:])] if home_host else []   # www.reddit.com -> reddit.com
+    return nxt if any(host == d or host.endswith("." + d) for d in domains) else ""
 
 def render_gate(site, label, *, overline, message, title="", mood="wait",
                 can_enter=False, button_text="", headline="",

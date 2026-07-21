@@ -2,8 +2,14 @@ from mitmproxy import http
 from urllib.parse import urlsplit, parse_qs, quote
 import json
 import os
+import sys
 import redis
 import requests as req
+
+# mitmdump loads this file by path; make sure its own directory is importable so the
+# shared news_domains list resolves regardless of the working directory.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from news_domains import NEWS_DOMAINS
 
 # Each gated site: substrings that identify its hosts, and the canonical host the
 # proxy should rewrite Flask redirects back to. Keep this aligned with SITES in
@@ -16,6 +22,9 @@ SITES = {
     # playback + login keep working; the gate lands on the open.spotify.com page.
     "spotify": {"match": ["open.spotify.com"]},
     "puzzmo":  {"match": ["puzzmo.com"]},
+    # News category — the whole NEWS_DOMAINS list gates to one shared-bucket "news"
+    # site. Gets the plain heartbeat (charges time); no YouTube declutter / SW-kill.
+    "news":    {"match": NEWS_DOMAINS},
 }
 
 # Hosts that belong to a gated site but only serve static assets / media. We let

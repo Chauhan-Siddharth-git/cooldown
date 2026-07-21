@@ -20,6 +20,14 @@ def test_pool_max_budget_is_largest_cap():
     assert budget.pool_max_budget("main") == 900
 
 
+def test_news_shares_main_bucket(rdb, day):
+    assert budget.pool("news") == "main"
+    assert "news" in budget.pool_sites("main")       # switching to news is NOT an escape hatch
+    rdb.set("spent:main", 600)                        # shared spend
+    assert budget.get_remaining_budget("news") == 0   # news 10-min slice gone with the rest
+    assert round(budget.get_remaining_budget("youtube")) == 300  # bigger cap still has room
+
+
 def test_puzzmo_shares_bucket_with_10min_cap(rdb, day):
     assert budget.SITES["puzzmo"]["budget_seconds"] == 600
     assert budget.pool("puzzmo") == "main"           # same shared bucket
