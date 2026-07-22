@@ -121,6 +121,16 @@ touches **three** places: `SITES` in `app.py`, `SITES` in `addon.py`, and the
 `--allow-hosts` regex in `deploy/cooldown-proxy.service` (the TLS-decrypt allowlist —
 miss it and the site is tunneled un-gated).
 
+### Facebook & other MITM-hostile sites
+
+Some sites (Facebook especially) fight interception — a huge parallel request fan-out
+plus WebSocket/realtime traffic that stalls when routed through the proxy. Trying to
+decrypt Facebook to inject a declutter just hangs the page. For those, do the
+decluttering **client-side** instead: **[`extras/facebook-declutter.user.js`](extras/facebook-declutter.user.js)**
+is a userscript (install via Tampermonkey / Violentmonkey) that hides the Facebook
+home feed and Reels while leaving Marketplace, Groups, posting and Messenger fully
+usable — no proxy, no time limit, can't break the page.
+
 ## Tests
 
 ```
