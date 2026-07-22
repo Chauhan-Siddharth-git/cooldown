@@ -41,7 +41,7 @@ IGNORED_HOSTS = [
 # session is free but LOCKED to these playlists: only /watch and /playlist URLs
 # carrying an allowlisted list= are permitted; everything else (search, home feed,
 # Shorts, other channels) bounces back to the course.
-STUDY_PLAYLISTS = ["REPLACE_WITH_YOUR_PLAYLIST_ID"]  # allow-listed YouTube playlist IDs for Study mode; [] disables it
+STUDY_PLAYLISTS = ["PLG49S3nxzAnl4QDVqK-hOnoqcSKEIDDuv"]  # Professor Messer SY0-701
 
 r = redis.Redis(host=os.environ.get("REDIS_HOST", "localhost"),
                 port=int(os.environ.get("REDIS_PORT", "6379")), decode_responses=True)
@@ -208,6 +208,69 @@ ytm-searchbox, .searchbox { display: none !important; }
 </script>
 """
 
+# Declutter-only sites: NO budget and NO gate — just surgically strip the doomscroll
+# surfaces via injected CSS/JS, leaving the useful parts fully usable. Facebook: hide
+# the HOME feed and kill Reels, but keep Marketplace / Groups / posting / Messenger,
+# because it's needed (e.g. finding roommates) — a time limit would get in the way.
+FACEBOOK_DECLUTTER = """
+<style id="bp-fb-declutter">
+/* The home news feed — hidden ONLY on the home route, so group / marketplace feeds
+   (which also use role="feed") stay fully visible. */
+html.bp-fb-home div[role="feed"] { display: none !important; }
+/* Reels entry points in the nav / shortcuts (the /reel redirect below is the backbone). */
+a[href^="/reel/"], a[href^="/reels/"],
+[aria-label="Reels"], [aria-label="Reels and short videos"] { display: none !important; }
+</style>
+<script>
+(function () {
+  function isHome() {
+    var p = location.pathname;
+    return p === "/" || p === "/home.php";
+  }
+  function markHome() {
+    document.documentElement.classList.toggle("bp-fb-home", isHome());
+  }
+  // Bounce off the Reels swipe-feed: send it home, where the feed is hidden.
+  function deReel() {
+    if (/^\\/reels?\\//.test(location.pathname)) location.replace("/");
+  }
+  function apply() { markHome(); deReel(); }
+  ["pushState", "replaceState"].forEach(function (fn) {
+    var orig = history[fn];
+    history[fn] = function () { var r = orig.apply(this, arguments); apply(); return r; };
+  });
+  window.addEventListener("popstate", apply);
+  setInterval(apply, 1000);  // backstop for SPA navigations we didn't intercept
+  apply();
+
+  // Gentle nudge where the feed was, so home isn't just blank.
+  function nudge() {
+    if (!isHome() || document.getElementById("bp-fb-nudge")) return;
+    var feed = document.querySelector('div[role="feed"]');
+    if (!feed || !feed.parentNode) return;
+    var d = document.createElement("div");
+    d.id = "bp-fb-nudge";
+    d.textContent = "Home feed hidden \\u2014 Marketplace, Groups, and your posts are still up top.";
+    d.style.cssText = "padding:24px;margin:16px auto;max-width:500px;border-radius:8px;background:#fff;color:#65676b;font-family:sans-serif;text-align:center;font-size:15px;box-shadow:0 1px 2px rgba(0,0,0,.12)";
+    feed.parentNode.insertBefore(d, feed);
+  }
+  setInterval(nudge, 1000);
+})();
+</script>
+"""
+
+DECLUTTER_SITES = {
+    "facebook": {"match": ["facebook.com"], "inject": FACEBOOK_DECLUTTER},
+}
+
+def declutter_for_host(host):
+    """A declutter-only site (inject CSS/JS, no budget / no gate) for this host, else None."""
+    host = (host or "").rsplit(":", 1)[0].lower()
+    for cfg in DECLUTTER_SITES.values():
+        if any(host == m or host.endswith("." + m) for m in cfg["match"]):
+            return cfg
+    return None
+
 def site_for_host(host):
     # Suffix match on the registrable domain, NOT a substring: "reddit.com" must
     # match reddit.com and *.reddit.com, but never evil-reddit.com or
@@ -237,7 +300,7 @@ def study_url_allowed(path):
 class BudgetAddon:
     def responseheaders(self, flow: http.HTTPFlow):
         host = flow.request.pretty_host
-        if site_for_host(host):
+        if site_for_host(host) or declutter_for_host(host):
             flow.response.stream = False
             if "content-security-policy" in flow.response.headers:
                 del flow.response.headers["content-security-policy"]
@@ -362,15 +425,11 @@ class BudgetAddon:
         # that only foreground viewing time is charged against that site's budget.
         host = flow.request.pretty_host
         site = site_for_host(host)
-        if not site:
+        dc = None if site else declutter_for_host(host)
+        if not site and not dc:
             return
         if flow.request.path.startswith("/budget"):
             return  # don't inject into the budget/enter pages themselves
-
-        # Only inject during a live session (budgeted or study).
-        mode = session_mode(site)
-        if mode is None:
-            return
 
         if "text/html" not in flow.response.headers.get("content-type", ""):
             return
@@ -381,13 +440,22 @@ class BudgetAddon:
         if not body:
             return
 
-        injection = HEARTBEAT_SCRIPT.replace("__SITE__", site)
-        if site in ("youtube", "reddit"):
-            injection += SW_KILL
-        if site == "youtube":
-            injection += YOUTUBE_DECLUTTER
-            if mode == "study":
-                injection += STUDY_LOCK.replace("__PLAYLISTS__", json.dumps(STUDY_PLAYLISTS))
+        if dc:
+            # Declutter-only (e.g. Facebook): strip the doomscroll surfaces, but never
+            # charge time or gate — no session involved.
+            injection = dc["inject"]
+        else:
+            # Budgeted site: only inject during a live session (budgeted or study).
+            mode = session_mode(site)
+            if mode is None:
+                return
+            injection = HEARTBEAT_SCRIPT.replace("__SITE__", site)
+            if site in ("youtube", "reddit"):
+                injection += SW_KILL
+            if site == "youtube":
+                injection += YOUTUBE_DECLUTTER
+                if mode == "study":
+                    injection += STUDY_LOCK.replace("__PLAYLISTS__", json.dumps(STUDY_PLAYLISTS))
         # Inject before </body> when present; mobile YouTube ships NO </body>, so fall
         # back to </html> (which it does have), then to appending at the very end.
         if "</body>" in body:

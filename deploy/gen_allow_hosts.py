@@ -21,6 +21,9 @@ from news_domains import NEWS_DOMAINS
 
 # Stable core matches — keep in sync with addon.py SITES (these rarely change).
 CORE = ["reddit.com", "youtube.com", "open.spotify.com", "puzzmo.com"]
+# Declutter-only hosts (no budget/gate, just injected CSS/JS) — keep in sync with
+# addon.py DECLUTTER_SITES. Must be decrypted for the injection to land.
+DECLUTTER = ["facebook.com"]
 # mitm.it serves the CA to clients through the proxy, so it must be intercepted too.
 EXTRA = ["mitm.it"]
 
@@ -31,7 +34,7 @@ def pattern(domain):
 
 
 def main():
-    regex = "|".join(pattern(d) for d in CORE + NEWS_DOMAINS + EXTRA)
+    regex = "|".join(pattern(d) for d in CORE + NEWS_DOMAINS + DECLUTTER + EXTRA)
     # systemd needs a literal $ written as $$ in ExecStart; --plain skips that.
     print(regex if "--plain" in sys.argv else regex.replace("$", "$$"))
 
