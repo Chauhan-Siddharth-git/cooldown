@@ -127,7 +127,7 @@ Facebook fights interception — a huge parallel request fan-out plus WebSocket/
 traffic. The gotcha: with **HTTP/1.1** the bootstrap strangles and the page hangs (this
 cost us two failed attempts). The fix is **`--set http2=true`** on the proxy — then
 Facebook loads fine and can be injected like any other site. `facebook.com` is decrypted
-for **injection only** (no budget, no gate), gets the frosted feed overlay + a
+for **injection only** (no budget, no gate), gets a solid feed block (home page only) + a
 service-worker kill, and only its HTML doc is buffered/CSP-stripped (realtime traffic
 streams). This covers **every device behind the proxy — including a phone — with no
 per-device extension.**
@@ -140,7 +140,7 @@ Two things to know:
 
 Prefer to keep Facebook off the proxy entirely? The same overlay ships as a client-side
 userscript — **[`extras/facebook-feed-overlay.user.js`](extras/facebook-feed-overlay.user.js)**
-(frosted "tap to reveal") or **[`extras/facebook-declutter.user.js`](extras/facebook-declutter.user.js)**
+(solid block — no scroll) or **[`extras/facebook-declutter.user.js`](extras/facebook-declutter.user.js)**
 (removes the feed + Reels) — for Violentmonkey / Tampermonkey. Use *one* feed approach at
 a time.
 
