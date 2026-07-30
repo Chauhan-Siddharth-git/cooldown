@@ -126,10 +126,19 @@ miss it and the site is tunneled un-gated).
 Some sites (Facebook especially) fight interception — a huge parallel request fan-out
 plus WebSocket/realtime traffic that stalls when routed through the proxy. Trying to
 decrypt Facebook to inject a declutter just hangs the page. For those, do the
-decluttering **client-side** instead: **[`extras/facebook-declutter.user.js`](extras/facebook-declutter.user.js)**
-is a userscript (install via Tampermonkey / Violentmonkey) that hides the Facebook
-home feed and Reels while leaving Marketplace, Groups, posting and Messenger fully
-usable — no proxy, no time limit, can't break the page.
+decluttering **client-side** instead, via one of two userscripts (install with
+Violentmonkey / Tampermonkey — or a maintained extension like *News Feed Eradicator*):
+
+- **[`extras/facebook-declutter.user.js`](extras/facebook-declutter.user.js)** —
+  *removes* the home feed and Reels outright.
+- **[`extras/facebook-feed-overlay.user.js`](extras/facebook-feed-overlay.user.js)** —
+  covers the home feed with a frosted **"tap to reveal"** overlay instead of deleting
+  it (friction, not a wall). Home page only; nav / Marketplace / Groups / posting stay
+  usable.
+
+Both are client-side, so no proxy, no time limit, and they can't hang the page. (Use
+*one* feed approach at a time — the overlay needs the feed present, so disable the
+remover/News Feed Eradicator if you switch to it.)
 
 ## Tests
 
