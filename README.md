@@ -121,24 +121,28 @@ touches **three** places: `SITES` in `app.py`, `SITES` in `addon.py`, and the
 `--allow-hosts` regex in `deploy/cooldown-proxy.service` (the TLS-decrypt allowlist —
 miss it and the site is tunneled un-gated).
 
-### Facebook & other MITM-hostile sites
+### Facebook (the MITM-hostile one)
 
-Some sites (Facebook especially) fight interception — a huge parallel request fan-out
-plus WebSocket/realtime traffic that stalls when routed through the proxy. Trying to
-decrypt Facebook to inject a declutter just hangs the page. For those, do the
-decluttering **client-side** instead, via one of two userscripts (install with
-Violentmonkey / Tampermonkey — or a maintained extension like *News Feed Eradicator*):
+Facebook fights interception — a huge parallel request fan-out plus WebSocket/realtime
+traffic. The gotcha: with **HTTP/1.1** the bootstrap strangles and the page hangs (this
+cost us two failed attempts). The fix is **`--set http2=true`** on the proxy — then
+Facebook loads fine and can be injected like any other site. `facebook.com` is decrypted
+for **injection only** (no budget, no gate), gets the frosted feed overlay + a
+service-worker kill, and only its HTML doc is buffered/CSP-stripped (realtime traffic
+streams). This covers **every device behind the proxy — including a phone — with no
+per-device extension.**
 
-- **[`extras/facebook-declutter.user.js`](extras/facebook-declutter.user.js)** —
-  *removes* the home feed and Reels outright.
-- **[`extras/facebook-feed-overlay.user.js`](extras/facebook-feed-overlay.user.js)** —
-  covers the home feed with a frosted **"tap to reveal"** overlay instead of deleting
-  it (friction, not a wall). Home page only; nav / Marketplace / Groups / posting stay
-  usable.
+Two things to know:
+- **`http2=true` is required** (see the `deploy/*-proxy.service` units). Facebook won't
+  load through the proxy without it.
+- **One-time site-data clear per device** the first time, so Facebook's cached service
+  worker stops serving pages past the injection.
 
-Both are client-side, so no proxy, no time limit, and they can't hang the page. (Use
-*one* feed approach at a time — the overlay needs the feed present, so disable the
-remover/News Feed Eradicator if you switch to it.)
+Prefer to keep Facebook off the proxy entirely? The same overlay ships as a client-side
+userscript — **[`extras/facebook-feed-overlay.user.js`](extras/facebook-feed-overlay.user.js)**
+(frosted "tap to reveal") or **[`extras/facebook-declutter.user.js`](extras/facebook-declutter.user.js)**
+(removes the feed + Reels) — for Violentmonkey / Tampermonkey. Use *one* feed approach at
+a time.
 
 ## Tests
 

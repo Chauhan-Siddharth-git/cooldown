@@ -66,7 +66,7 @@ mitmdump \
   --mode regular@8081 \
   --showhost \
   -s addon.py \
-  --set http2=false \
+  --set http2=true \
   --set block_global=false \
   --set confdir="$MITM_CONFDIR" \
   --allow-hosts "$(python3 deploy/gen_allow_hosts.py --plain)" &

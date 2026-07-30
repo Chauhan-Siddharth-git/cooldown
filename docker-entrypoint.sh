@@ -27,7 +27,7 @@ mitmdump \
   --mode regular@8080 \
   --showhost \
   -s addon.py \
-  --set http2=false \
+  --set http2=true \
   --set block_global=false \
   --set confdir="$MITM_CONFDIR" \
   --allow-hosts "$ALLOW_HOSTS" &

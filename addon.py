@@ -257,6 +257,107 @@ ytm-searchbox, .searchbox { display: none !important; }
 </script>
 """
 
+FACEBOOK_OVERLAY = """
+<script>
+(function () {
+  "use strict";
+  if (window.__cdFbOverlay) return; window.__cdFbOverlay = true;
+
+  // Reveal lasts until you leave the home route (or reload), so every fresh visit to
+  // Home re-covers the feed. That's the friction: you have to *choose* to scroll.
+  var revealed = false;
+
+  function isHome() {
+    var p = location.pathname;
+    return p === "/" || p === "/home.php";
+  }
+
+  function injectStyle() {
+    if (document.getElementById("cd-fb-style")) return;
+    var s = document.createElement("style");
+    s.id = "cd-fb-style";
+    s.textContent = [
+      // Cap the main column to one screen and clip it, so there's nothing to scroll,
+      // and blur everything under it (the cover itself is excluded).
+      ".cd-fb-locked{position:relative!important;max-height:calc(100vh - 62px)!important;overflow:hidden!important;}",
+      ".cd-fb-locked > *:not(#cd-fb-cover){filter:blur(8px)!important;pointer-events:none!important;user-select:none!important;}",
+      "#cd-fb-cover{position:absolute;inset:0;z-index:40;display:flex;flex-direction:column;align-items:center;",
+      "justify-content:center;gap:14px;padding:24px;text-align:center;background:rgba(255,255,255,.30);",
+      "-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px);}",
+      "#cd-fb-cover .cd-t{margin:0;font:700 22px/1.25 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1c1e21;}",
+      "#cd-fb-cover .cd-p{margin:0;font:400 14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#3a3b3c;max-width:300px;}",
+      "#cd-fb-reveal{border:none;background:#1877f2;color:#fff;font:600 15px -apple-system,'Segoe UI',sans-serif;padding:10px 22px;border-radius:8px;cursor:pointer;}",
+      "#cd-fb-reveal:hover{background:#166fe0;}"
+    ].join("");
+    (document.head || document.documentElement).appendChild(s);
+  }
+
+  function lock() {
+    var main = document.querySelector('[role="main"]');
+    if (!main || main.querySelector("#cd-fb-cover")) return;
+    injectStyle();
+    main.classList.add("cd-fb-locked");
+    var cover = document.createElement("div");
+    cover.id = "cd-fb-cover";
+    var t = document.createElement("div");
+    t.className = "cd-t";
+    t.textContent = "Feed hidden";
+    var p = document.createElement("div");
+    p.className = "cd-p";
+    p.textContent = "You opened Facebook to do a thing — not to scroll. Reveal only if you really mean to.";
+    var b = document.createElement("button");
+    b.id = "cd-fb-reveal";
+    b.textContent = "Reveal feed";
+    b.addEventListener("click", function () { revealed = true; unlock(); });
+    cover.appendChild(t);
+    cover.appendChild(p);
+    cover.appendChild(b);
+    main.appendChild(cover);
+  }
+
+  function unlock() {
+    var main = document.querySelector('[role="main"]');
+    if (!main) return;
+    main.classList.remove("cd-fb-locked");
+    var cover = main.querySelector("#cd-fb-cover");
+    if (cover) cover.remove();
+  }
+
+  function tick() {
+    if (isHome() && !revealed) lock();
+    else unlock();
+  }
+
+  // Facebook is a single-page app; re-check on every in-page navigation, and reset the
+  // reveal so returning to Home re-covers it. A slow interval catches React re-renders.
+  ["pushState", "replaceState"].forEach(function (fn) {
+    var orig = history[fn];
+    history[fn] = function () { var r = orig.apply(this, arguments); revealed = false; setTimeout(tick, 60); return r; };
+  });
+  window.addEventListener("popstate", function () { revealed = false; tick(); });
+  document.addEventListener("DOMContentLoaded", tick);
+  setInterval(tick, 700);
+  tick();
+})();
+</script>
+"""
+
+# Overlay-inject sites: decrypted for INJECTION ONLY (no budget, no gate) — cover the
+# Facebook home feed with a frosted "tap to reveal" panel. Facebook only survives the
+# proxy with HTTP/2 enabled (--set http2=true in the unit); over HTTP/1.1 its bootstrap
+# hangs. Only the HTML doc is buffered/CSP-stripped; the rest streams (realtime traffic).
+OVERLAY_SITES = {
+    "facebook": {"match": ["facebook.com"], "inject": FACEBOOK_OVERLAY},
+}
+
+def overlay_for_host(host):
+    """An overlay-inject site (Facebook) for this host, else None."""
+    host = (host or "").rsplit(":", 1)[0].lower()
+    for cfg in OVERLAY_SITES.values():
+        if any(host == m or host.endswith("." + m) for m in cfg["match"]):
+            return cfg
+    return None
+
 def site_for_host(host):
     # Suffix match on the registrable domain, NOT a substring: "reddit.com" must
     # match reddit.com and *.reddit.com, but never evil-reddit.com or
@@ -292,6 +393,18 @@ class BudgetAddon:
                 del flow.response.headers["content-security-policy"]
             if "content-security-policy-report-only" in flow.response.headers:
                 del flow.response.headers["content-security-policy-report-only"]
+        elif overlay_for_host(host):
+            # Facebook: buffer + CSP-strip ONLY the HTML document we inject into; STREAM
+            # everything else (its realtime / long-poll / WebSocket traffic) so buffering
+            # a never-ending response can't hang the page.
+            if "text/html" in flow.response.headers.get("content-type", ""):
+                flow.response.stream = False
+                if "content-security-policy" in flow.response.headers:
+                    del flow.response.headers["content-security-policy"]
+                if "content-security-policy-report-only" in flow.response.headers:
+                    del flow.response.headers["content-security-policy-report-only"]
+            else:
+                flow.response.stream = True
 
     def request(self, flow: http.HTTPFlow):
         host = flow.request.pretty_host
@@ -407,19 +520,16 @@ class BudgetAddon:
         return
 
     def response(self, flow: http.HTTPFlow):
-        # Inject the visibility-aware heartbeat into real pages of a gated site so
-        # that only foreground viewing time is charged against that site's budget.
+        # Inject the visibility-aware heartbeat into pages of a budgeted site (so only
+        # foreground time is charged), OR the frosted "tap to reveal" overlay into
+        # Facebook (no budget — decrypted for injection only).
         host = flow.request.pretty_host
         site = site_for_host(host)
-        if not site:
+        ov = None if site else overlay_for_host(host)
+        if not site and not ov:
             return
         if flow.request.path.startswith("/budget"):
             return  # don't inject into the budget/enter pages themselves
-
-        # Only inject during a live session (budgeted or study).
-        mode = session_mode(site)
-        if mode is None:
-            return
 
         if "text/html" not in flow.response.headers.get("content-type", ""):
             return
@@ -430,13 +540,24 @@ class BudgetAddon:
         if not body:
             return
 
-        injection = HEARTBEAT_SCRIPT.replace("__SITE__", site)
-        if site in ("youtube", "reddit"):
-            injection += SW_KILL
-        if site == "youtube":
-            injection += YOUTUBE_DECLUTTER
-            if mode == "study":
-                injection += STUDY_LOCK.replace("__PLAYLISTS__", json.dumps(STUDY_PLAYLISTS))
+        if ov:
+            # Facebook overlay: no session, no heartbeat — just cover the home feed.
+            # SW_KILL first: Facebook runs a service worker that serves cached pages past
+            # our injection, so unregister it (needs a one-time site-data clear to break
+            # the initial cached load — see notes).
+            injection = SW_KILL + ov["inject"]
+        else:
+            # Only inject during a live session (budgeted or study).
+            mode = session_mode(site)
+            if mode is None:
+                return
+            injection = HEARTBEAT_SCRIPT.replace("__SITE__", site)
+            if site in ("youtube", "reddit"):
+                injection += SW_KILL
+            if site == "youtube":
+                injection += YOUTUBE_DECLUTTER
+                if mode == "study":
+                    injection += STUDY_LOCK.replace("__PLAYLISTS__", json.dumps(STUDY_PLAYLISTS))
         # Inject before </body> when present; mobile YouTube ships NO </body>, so fall
         # back to </html> (which it does have), then to appending at the very end.
         if "</body>" in body:
