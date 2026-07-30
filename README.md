@@ -126,17 +126,21 @@ miss it and the site is tunneled un-gated).
 Facebook fights interception — a huge parallel request fan-out plus WebSocket/realtime
 traffic. The gotcha: with **HTTP/1.1** the bootstrap strangles and the page hangs (this
 cost us two failed attempts). The fix is **`--set http2=true`** on the proxy — then
-Facebook loads fine and can be injected like any other site. `facebook.com` is decrypted
-for **injection only** (no budget, no gate), gets a solid feed block (home page only) + a
-service-worker kill, and only its HTML doc is buffered/CSP-stripped (realtime traffic
-streams). This covers **every device behind the proxy — including a phone — with no
-per-device extension.**
+Facebook loads fine and can be injected like any other site. Only the **web-page hosts**
+(`www`/`web`/`m`/`mbasic.facebook.com`) are decrypted, for **injection only** (no budget,
+no gate) — a solid feed block (home page only) + a service-worker kill, with only the HTML
+doc buffered/CSP-stripped (realtime traffic streams). This covers **every device behind the
+proxy — including a phone — with no per-device extension.**
 
-Two things to know:
+Three things to know:
 - **`http2=true` is required** (see the `deploy/*-proxy.service` units). Facebook won't
   load through the proxy without it.
 - **One-time site-data clear per device** the first time, so Facebook's cached service
   worker stops serving pages past the injection.
+- **Don't decrypt bare `facebook.com`.** Messenger's realtime hosts
+  (`edge-chat`/`graph`/`gateway.facebook.com`) pin their certificate — decrypt them and the
+  **Messenger app breaks**. The allowlist is scoped to the web-page subdomains for exactly
+  this reason; everything Messenger needs tunnels through untouched.
 
 Prefer to keep Facebook off the proxy entirely? The same overlay ships as a client-side
 userscript — **[`extras/facebook-feed-overlay.user.js`](extras/facebook-feed-overlay.user.js)**

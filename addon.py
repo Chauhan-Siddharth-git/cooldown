@@ -357,8 +357,14 @@ FACEBOOK_OVERLAY = """
 # Facebook home feed with a frosted "tap to reveal" panel. Facebook only survives the
 # proxy with HTTP/2 enabled (--set http2=true in the unit); over HTTP/1.1 its bootstrap
 # hangs. Only the HTML doc is buffered/CSP-stripped; the rest streams (realtime traffic).
+# Match ONLY Facebook's web-page hosts, never bare facebook.com. Messenger's realtime
+# hosts (edge-chat/graph/gateway.facebook.com) pin their cert; decrypting them breaks the
+# Messenger app. They stay tunneled (out of --allow-hosts) — we only inject the HTML doc.
 OVERLAY_SITES = {
-    "facebook": {"match": ["facebook.com"], "inject": FACEBOOK_OVERLAY},
+    "facebook": {
+        "match": ["www.facebook.com", "web.facebook.com", "m.facebook.com", "mbasic.facebook.com"],
+        "inject": FACEBOOK_OVERLAY,
+    },
 }
 
 def overlay_for_host(host):

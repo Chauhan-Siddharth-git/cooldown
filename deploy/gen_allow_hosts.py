@@ -21,8 +21,11 @@ from news_domains import NEWS_DOMAINS
 
 # Stable core matches — keep in sync with addon.py SITES (these rarely change).
 CORE = ["reddit.com", "youtube.com", "open.spotify.com", "puzzmo.com"]
+# Overlay-inject hosts, web-page hosts ONLY (not bare facebook.com): Messenger's realtime
+# hosts (edge-chat/graph/gateway.facebook.com) pin their cert, so decrypting them breaks
+# the Messenger app. Those stay tunneled — we only need the HTML doc to inject the overlay.
+DECLUTTER = ["www.facebook.com", "web.facebook.com", "m.facebook.com", "mbasic.facebook.com"]
 # mitm.it serves the CA to clients through the proxy, so it must be intercepted too.
-DECLUTTER = ["facebook.com"]
 EXTRA = ["mitm.it"]
 
 
