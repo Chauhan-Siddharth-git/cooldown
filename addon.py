@@ -41,7 +41,7 @@ IGNORED_HOSTS = [
 # session is free but LOCKED to these playlists: only /watch and /playlist URLs
 # carrying an allowlisted list= are permitted; everything else (search, home feed,
 # Shorts, other channels) bounces back to the course.
-STUDY_PLAYLISTS = ["REPLACE_WITH_YOUR_PLAYLIST_ID"]  # allow-listed YouTube playlist IDs for Study mode; [] disables it
+STUDY_PLAYLISTS = ["PLG49S3nxzAnl4QDVqK-hOnoqcSKEIDDuv"]  # Professor Messer SY0-701
 
 r = redis.Redis(host=os.environ.get("REDIS_HOST", "localhost"),
                 port=int(os.environ.get("REDIS_PORT", "6379")), decode_responses=True)
@@ -50,20 +50,69 @@ r = redis.Redis(host=os.environ.get("REDIS_HOST", "localhost"),
 # tab is actually visible, so only foreground viewing time is charged. The site is
 # baked in at injection time (__SITE__) so the server charges the right budget. A
 # 403 means the budget is spent / cooldown started -> reload to land on the gate.
+# The heartbeat response carries `remaining` seconds; when it drops to WARN_AT or
+# fewer, a flashing bar counts down the last minute so the cutoff isn't a surprise.
 HEARTBEAT_SCRIPT = """
 <script>
 (function () {
-  var INTERVAL = 10000;  // ms between pings while the tab is visible
+  var INTERVAL = 10000;   // ms between pings while the tab is visible
+  var WARN_AT  = 60;      // flash the warning when this many seconds (or fewer) remain
+  var SITE = "__SITE__";
+  var LABEL = SITE.charAt(0).toUpperCase() + SITE.slice(1);
+  var deadline = null;    // ms timestamp when time runs out (re-anchored each ping)
+
+  var bar = null;
+  function ensureBar() {
+    if (bar) return bar;
+    var css = document.createElement("style");
+    css.textContent =
+      '#bp-timewarn{position:fixed;top:0;left:0;right:0;z-index:2147483647;pointer-events:none;' +
+      'font:600 15px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;' +
+      'color:#fff;text-align:center;padding:10px 16px;padding-top:max(10px,env(safe-area-inset-top));' +
+      'background:#c0392b;box-shadow:0 2px 12px rgba(0,0,0,.45);letter-spacing:.2px;' +
+      'animation:bp-flash 1s steps(1) infinite;}' +
+      '@keyframes bp-flash{50%{background:#e74c3c}}' +
+      '@media (prefers-reduced-motion:reduce){#bp-timewarn{animation:none;background:#c0392b}}';
+    (document.head || document.documentElement).appendChild(css);
+    bar = document.createElement("div");
+    bar.id = "bp-timewarn";
+    bar.setAttribute("role", "status");
+    document.documentElement.appendChild(bar);
+    return bar;
+  }
+  function showWarn(secs) {
+    var el = ensureBar();
+    el.style.display = "block";
+    el.textContent = "\\u23F1\\uFE0F " + secs + "s left on " + LABEL + " \\u2014 wrap it up";
+  }
+  function hideWarn() { if (bar) bar.style.display = "none"; }
+
+  // Local 1s ticker so the last minute counts down smoothly between 10s heartbeats.
+  setInterval(function () {
+    if (deadline === null) return;
+    var secs = Math.round((deadline - Date.now()) / 1000);
+    if (secs > WARN_AT || secs <= 0) hideWarn(); else showWarn(secs);
+  }, 1000);
+
   function ping() {
     if (document.visibilityState !== "visible") return;
-    fetch("/budget/heartbeat?site=__SITE__&_=" + Date.now(), { method: "POST", cache: "no-store", keepalive: true })
-      .then(function (res) { if (res.status === 403) window.location.reload(); })
+    fetch("/budget/heartbeat?site=" + SITE + "&_=" + Date.now(), { method: "POST", cache: "no-store", keepalive: true })
+      .then(function (res) {
+        if (res.status === 403) { window.location.reload(); return null; }
+        return res.json();
+      })
+      .then(function (data) {
+        if (data && typeof data.remaining === "number") {
+          deadline = Date.now() + data.remaining * 1000;   // re-anchor to the server's truth
+        }
+      })
       .catch(function () {});
   }
   setInterval(ping, INTERVAL);
   document.addEventListener("visibilitychange", function () {
     if (document.visibilityState === "visible") ping();
   });
+  ping();   // fire once on load so the warning shows promptly if you re-enter near the cap
 })();
 </script>
 """
