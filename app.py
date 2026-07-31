@@ -169,6 +169,20 @@ BUDGET_PAGE = """
         .blocked{background:#1c2028;color:var(--muted);cursor:default}
         .hint{font-size:12px;color:#5f6773;margin-top:2px}
         .foot{display:block;margin-top:18px;font-size:12px;color:#5f6773;text-decoration:none}
+        /* Pre-entry reflection: a why-am-I-here pause with concrete alternatives. */
+        .r-q{font-size:15px;color:var(--fg);font-weight:600;margin:2px 0 14px;line-height:1.45}
+        .chips{display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
+        .chip{width:auto;padding:9px 13px;font-size:13.5px;font-weight:600;border-radius:999px;
+              background:#1c2028;color:var(--fg);border:1px solid var(--line)}
+        .chip.sel{background:var(--accent);color:#0a1020;border-color:transparent}
+        .r-list{margin-top:16px;text-align:left}
+        .r-lead{font-size:13px;color:var(--muted);margin:0 0 10px}
+        .r-list ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:9px}
+        .r-list li{display:flex;gap:9px;align-items:flex-start;font-size:14px;color:var(--fg);line-height:1.4}
+        .r-list li::before{content:"\\25CB";color:var(--accent)}
+        .pass{background:var(--go);color:#06120b}
+        .cont{background:transparent;color:var(--muted);border:1px solid var(--line)}
+        .cont:active{opacity:.7}
     </style>
 </head>
 <body>
@@ -180,9 +194,21 @@ BUDGET_PAGE = """
         <p>{{ message }}</p>
         <div class="actions">
             {% if can_enter %}
-            <form action="/budget/enter?site={{ site }}{% if next_url %}&next={{ next_url|urlencode }}{% endif %}" method="post">
-                <button class="enter" type="submit">Enter {{ label }}</button>
-            </form>
+            <button class="enter" type="button" id="beginBtn">Enter {{ label }}</button>
+            <div id="reflect" hidden>
+                <p class="r-q">Part of you doesn't want to scroll. What's pulling you in right now?</p>
+                <div class="chips" id="chips"></div>
+                <div class="r-list" id="rlist" hidden>
+                    <p class="r-lead" id="rlead"></p>
+                    <ul id="ritems"></ul>
+                </div>
+                <div class="actions" id="ractions" hidden>
+                    <button class="pass" type="button" id="passBtn">I'll pass — I'm good</button>
+                    <form action="/budget/enter?site={{ site }}{% if next_url %}&next={{ next_url|urlencode }}{% endif %}" method="post">
+                        <button class="cont" type="submit">Continue to {{ label }} anyway</button>
+                    </form>
+                </div>
+            </div>
             {% elif button_text %}
             <button class="blocked" disabled>{{ button_text }}</button>
             {% endif %}
@@ -215,6 +241,48 @@ BUDGET_PAGE = """
     })();
     </script>
     {% endif %}
+    {% if can_enter %}{% raw %}
+    <script>
+    (function(){
+        var TRIGGERS = [
+          { label:"\\uD83D\\uDE34 Tired", lead:"Rest \\u2014 scrolling won't recharge you.",
+            items:["Put the phone down, eyes closed for 10 min","Drink a glass of water","If it's late, just go to bed","Step outside for 2 min of air"] },
+          { label:"\\uD83D\\uDE10 Bored", lead:"Boredom is a nudge, not an emergency.",
+            items:["Text someone you've meant to","5 minutes on one to-do","Open that book or a saved article","Sit with it for 60s \\u2014 it passes"] },
+          { label:"\\uD83D\\uDE30 Stressed", lead:"A feed won't settle this.",
+            items:["5 slow breaths \\u2014 in 4, out 6","Write down what's on your mind","Short walk, even around the room","Do one small thing you can control"] },
+          { label:"\\uD83D\\uDE2C Avoiding something", lead:"What are you putting off?",
+            items:["Name the thing you're dodging","Do just its first 2 minutes","Shrink it to one tiny step","Set a 10-min timer and start"] },
+          { label:"\\uD83D\\uDD01 Just habit", lead:"You reached without deciding.",
+            items:["Did I actually mean to open this?","Put the phone in another room","One slow breath, then choose","Do what you picked it up to avoid"] },
+          { label:"\\u2705 I actually need it", lead:"Fair enough \\u2014 be deliberate.",
+            items:["Get in, get what you need, get out","Hold a rough time limit in mind","Then back to the real thing"] }
+        ];
+        var reflect=document.getElementById("reflect"); if(!reflect) return;
+        var begin=document.getElementById("beginBtn"), chips=document.getElementById("chips"),
+            list=document.getElementById("rlist"), lead=document.getElementById("rlead"),
+            items=document.getElementById("ritems"), actions=document.getElementById("ractions"),
+            pass=document.getElementById("passBtn");
+        begin.addEventListener("click",function(){ begin.style.display="none"; reflect.hidden=false; });
+        TRIGGERS.forEach(function(t){
+            var b=document.createElement("button"); b.type="button"; b.className="chip"; b.textContent=t.label;
+            b.addEventListener("click",function(){
+                [].forEach.call(chips.children,function(c){ c.classList.remove("sel"); });
+                b.classList.add("sel"); lead.textContent=t.lead; items.innerHTML="";
+                t.items.forEach(function(it){ var li=document.createElement("li"); li.textContent=it; items.appendChild(li); });
+                list.hidden=false; actions.hidden=false;
+            });
+            chips.appendChild(b);
+        });
+        pass.addEventListener("click",function(){
+            document.querySelector(".card").innerHTML =
+              '<div class="kicker"><span class="dot"></span>Good call</div>'+
+              '<h1>Put it down.</h1>'+
+              '<p>Part of you already knew. Close this tab and go do the thing \\u2014 future-you says thanks.</p>';
+        });
+    })();
+    </script>
+    {% endraw %}{% endif %}
 </body>
 </html>
 """
