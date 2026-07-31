@@ -103,6 +103,20 @@ def test_enter_refused_when_spent(client, rdb, day):
     assert rdb.get("active_token:reddit") is None
 
 
+def test_gate_shows_short_break_during_cluster_cooldown(client, rdb, day):
+    rdb.setex("soft_cd:reddit", 1200, "x")           # 20 min cluster brake
+    html = gate(client, "reddit")
+    assert "Short break" in html
+    assert "Enter Reddit" not in html
+
+
+def test_enter_refused_during_cluster_cooldown(client, rdb, day):
+    rdb.setex("soft_cd:reddit", 1200, "x")
+    resp = client.post("/enter?site=reddit")
+    assert "/budget" in resp.headers["Location"]
+    assert rdb.get("active_token:reddit") is None
+
+
 def test_enter_returns_to_original_link(client, rdb, day):
     deep = "https://www.reddit.com/r/python/comments/abc/some_title/"
     resp = client.post("/enter?site=reddit&next=" + quote(deep, safe=""))

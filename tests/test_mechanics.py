@@ -292,3 +292,52 @@ def test_daily_reset_clears_state_but_keeps_history(rdb, day, session):
                 "last_heartbeat:main", "refilled_through:main", "active_token:reddit"):
         assert rdb.get(key) is None, key
     assert rdb.get("usage:2026-07-01:reddit") == "480"   # history survives
+
+
+# ---------- soft pauses + cluster brake ----------
+
+def test_soft_pause_is_logged(client, rdb, day, session):
+    session("reddit", last_gap=15)
+    rdb.set("spent:main", 595)                    # +15 maxes reddit's 600, bucket has room
+    hb(client)
+    events = rdb.lrange(f"soft_pauses:{time.strftime('%Y-%m-%d')}", 0, -1)
+    assert len(events) == 1
+    assert events[0].endswith(" reddit")
+    assert rdb.get("cooldown:main") is None        # still no hard cooldown
+
+def test_full_drain_does_not_log_soft_pause(client, rdb, day, session):
+    session("youtube", last_gap=15)
+    rdb.set("spent:main", 890)                     # +15 drains the whole 900 bucket
+    hb(client, "youtube")
+    assert rdb.get(f"soft_pauses:{time.strftime('%Y-%m-%d')}") is None
+    assert rdb.get("cooldown:main") is not None
+
+def _sp(rdb, now, site, ago):
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    rdb.rpush(f"soft_pauses:{day}", f"{now - ago:.0f} {site}")
+
+def test_recent_soft_pause_count_is_per_site_and_windowed(rdb):
+    now = time.time()
+    _sp(rdb, now, "reddit", 600)     # 10 min ago  -> in
+    _sp(rdb, now, "reddit", 3600)    # 1h ago      -> in
+    _sp(rdb, now, "reddit", 9000)    # 2.5h ago    -> out of window
+    _sp(rdb, now, "news", 300)       # different site
+    assert budget.recent_soft_pause_count("reddit", now) == 2
+    assert budget.recent_soft_pause_count("news", now) == 1
+
+def test_cluster_cooldown_fires_on_third_not_second(rdb):
+    now = time.time()
+    _sp(rdb, now, "reddit", 1800)
+    _sp(rdb, now, "reddit", 600)
+    assert budget.maybe_cluster_cooldown("reddit", now) is False   # only 2 in the window
+    assert budget.get_soft_cd_remaining("reddit") == 0
+    _sp(rdb, now, "reddit", 0)                                     # the 3rd re-max
+    assert budget.maybe_cluster_cooldown("reddit", now) is True
+    assert 0 < budget.get_soft_cd_remaining("reddit") <= budget.CLUSTER_COOLDOWN_SECONDS
+
+def test_cluster_ignores_stale_cluster(rdb):
+    now = time.time()
+    for ago in (9000, 8800, 8600):   # three, but all older than the 2h window
+        _sp(rdb, now, "reddit", ago)
+    _sp(rdb, now, "reddit", 0)        # one fresh -> only 1 counts in window
+    assert budget.maybe_cluster_cooldown("reddit", now) is False

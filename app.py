@@ -80,6 +80,13 @@ RAPID_REPEAT_WINDOW = 3 * 60 * 60  # "a few hours" — a cooldown starting withi
 # spread-out day always stays at the 1-hour base; only clustering escalates.
 COOLDOWN_LADDER = [60 * 60, 90 * 60, 120 * 60, 180 * 60]  # 1h · 1.5h · 2h · 3h (capped)
 COOLDOWN_SECONDS = COOLDOWN_LADDER[0]   # base / back-compat default
+
+# Soft-pause cluster brake: if ONE site trips its own cap CLUSTER_THRESHOLD times inside a
+# rolling CLUSTER_WINDOW, a short site-specific cooldown breaks the loop. A lighter, targeted
+# cousin of the hard pool cooldown — only bites the Nth re-max in the window, not each one.
+CLUSTER_WINDOW = 2 * 60 * 60        # rolling look-back window
+CLUSTER_THRESHOLD = 3               # the Nth cap-hit inside the window trips it
+CLUSTER_COOLDOWN_SECONDS = 25 * 60  # a short breather, not the 1h hard wall
 SESSION_IDLE_TTL = 120         # 2 min without a foreground ping = session expires
 HEARTBEAT_MAX_GAP = 30         # gaps between pings larger than this aren't charged (idle/away)
 # Passive refill: while nothing in the pool is being actively used, spent ticks back
@@ -636,6 +643,49 @@ def start_cooldown(p, site, now=None):
     r.rpush(f"cooldown_events:{day}", f"{now:.0f} {site}")
     r.expire(f"cooldown_events:{day}", 100 * 86400)
 
+def log_soft_pause(site, now=None):
+    """Log a per-site SOFT pause: a site hit its own cap while the shared bucket still had
+    room, so the session ended with NO hard cooldown. Feeds the cluster brake below
+    (recent_soft_pause_count reads this log). Each entry "<epoch> <site>"; per-day key,
+    self-prunes after ~100 days."""
+    now = now if now is not None else time.time()
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    r.rpush(f"soft_pauses:{day}", f"{now:.0f} {site}")
+    r.expire(f"soft_pauses:{day}", 100 * 86400)
+
+def recent_soft_pause_count(site, now):
+    """How many soft pauses for `site` fell inside the trailing CLUSTER_WINDOW (through now).
+    Scans today + yesterday since the window can straddle midnight."""
+    cutoff = now - CLUSTER_WINDOW
+    count = 0
+    for i in (1, 0):
+        day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+        for raw in r.lrange(f"soft_pauses:{day}", 0, -1):
+            parts = raw.split()
+            try:
+                ts = float(parts[0])
+            except (ValueError, IndexError):
+                continue
+            # No upper bound: entries are stored rounded (f"{now:.0f}"), so the just-logged
+            # pause can round to now+1 — an `<= now` check would drop it ~half the time.
+            if len(parts) > 1 and parts[1] == site and ts >= cutoff:
+                count += 1
+    return count
+
+def maybe_cluster_cooldown(site, now):
+    """Called right after logging a soft pause. If it's the CLUSTER_THRESHOLD-th cap-hit for
+    this site within the rolling window, set a short, site-specific cooldown to break the
+    loop (auto-expires via TTL). Returns True if it fired."""
+    if recent_soft_pause_count(site, now) >= CLUSTER_THRESHOLD:
+        r.setex(f"soft_cd:{site}", CLUSTER_COOLDOWN_SECONDS, f"{now:.0f}")
+        return True
+    return False
+
+def get_soft_cd_remaining(site):
+    """Seconds left on a site's cluster cooldown (0 if none). TTL-backed, so it just melts away."""
+    ttl = r.ttl(f"soft_cd:{site}")
+    return ttl if ttl and ttl > 0 else 0
+
 def _safe_next(site, nxt):
     """Validate a return-URL: http(s), no embedded credentials, host on the SAME
     gated site (home's registrable domain or a subdomain). Returns the URL if safe,
@@ -737,6 +787,14 @@ def budget_page():
             countdown=cooldown_remaining, show_study=study_ok, study_primary=study_ok,
             title="Take a break", message=msg)
 
+    # One site looping (repeated cap-hits in a short window) -> a short site-specific breather.
+    soft_cd = get_soft_cd_remaining(site)
+    if soft_cd > 0:
+        return render_gate(site, label, overline=f"{label} · Short break", mood="wait",
+            countdown=soft_cd, show_study=study_ok, study_primary=study_ok,
+            title="Take a breather",
+            message=f"You've hit your {label} cap a few times in a row — a short pause to break the loop, then it reopens.")
+
     spent = get_spent(site)
     remaining = max(0, SITES[site]["budget_seconds"] - spent)
 
@@ -771,7 +829,7 @@ def enter():
     remaining = get_remaining_budget(site)
     cooldown = get_cooldown_remaining(site)
 
-    if remaining <= 0 or cooldown > 0:
+    if remaining <= 0 or cooldown > 0 or get_soft_cd_remaining(site) > 0:
         return redirect(f'/budget?site={site}')
 
     token = str(uuid.uuid4())
@@ -879,6 +937,8 @@ def heartbeat():
                     if spent >= SITES[site]["budget_seconds"]:
                         r.delete(f"active_token:{site}")
                         r.delete(f"session:{token}")
+                        log_soft_pause(site, now)
+                        maybe_cluster_cooldown(site, now)   # short brake if this site is looping
                         return jsonify({"status": "blocked", "remaining": 0}), 403
                 # Wind-down: shrinking cap on the day bucket, no cooldown.
                 elif spent >= effective_cap(site):
