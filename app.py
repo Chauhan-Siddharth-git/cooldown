@@ -1580,7 +1580,11 @@ def _device(p):
         up_bps = max(0, round((rx - prev[1]) / dt))
         down_bps = max(0, round((tx - prev[2]) / dt))
     _TS_PREV[ip] = (now, rx, tx)
-    online = bool(p.get("Online"))
+    # Online = control-plane heartbeat; Active = currently passing packets. A directly-
+    # connected peer (especially same-LAN) can read Online=false while still Active with
+    # traffic flowing over the WireGuard path — so count "actively passing data" as
+    # connected too, else it shows the nonsensical "offline, but downloading".
+    online = bool(p.get("Online") or p.get("Active"))
     return {
         "name": _dev_name(p), "os": p.get("OS", "?"), "kind": _dev_kind(p.get("OS")),
         "ip": ip, "online": online,
@@ -1747,8 +1751,8 @@ DEVICES_PAGE = """
         if(st[0]) st[0].textContent = x.online?"Online":x.last_seen;
         if(st[1]) st[1].textContent = x.direct?"Direct":(x.relay?("Relay · "+x.relay):"Relay");
         var tot=el.querySelector("[data-total]"); if(tot) tot.innerHTML="↓ "+fmtBytes(x.down_bytes)+" &nbsp; ↑ "+fmtBytes(x.up_bytes);
-        var r1=el.querySelector("[data-rate]"); if(r1) r1.innerHTML="↓ <b>"+fmtRate(x.down_bps)+"</b>";
-        var r2=el.querySelector("[data-rate2]"); if(r2) r2.innerHTML="↑ <b>"+fmtRate(x.up_bps)+"</b>";
+        var r1=el.querySelector("[data-rate]"); if(r1) r1.innerHTML="↓ <b>"+(x.online?fmtRate(x.down_bps):"—")+"</b>";
+        var r2=el.querySelector("[data-rate2]"); if(r2) r2.innerHTML="↑ <b>"+(x.online?fmtRate(x.up_bps):"—")+"</b>";
     }
     function update(d){
         var devs=d.devices||[];

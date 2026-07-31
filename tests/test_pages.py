@@ -292,3 +292,13 @@ def test_devices_json_shape(client):
     data = client.get("/devices?fmt=json").get_json()
     assert {"ok", "self", "devices"} <= set(data)
     assert isinstance(data["devices"], list)   # empty is fine on a non-tailscale host
+
+def test_active_peer_reads_as_online():
+    # A directly-connected peer can report Online=false while still Active with traffic;
+    # it must NOT show as offline (else "offline, but downloading").
+    p = {"HostName": "lap", "OS": "linux", "Online": False, "Active": True,
+         "CurAddr": "10.0.0.1:41641", "TailscaleIPs": ["100.1.1.9"], "RxBytes": 1, "TxBytes": 2}
+    dev = budget._device(p)
+    assert dev["online"] is True
+    assert dev["direct"] is True
+    assert dev["kind"] == "computer"
