@@ -1611,7 +1611,7 @@ DEVICES_PAGE = """
     <style>
         :root{
             --bg:#0b0d10; --card:#14171d; --line:#232732; --fg:#f4f6f8; --muted:#8b93a0;
-            --faint:#5f6773; --go:#3ecf7c; --wait:#f0a63a; --bad:#e5484d;
+            --faint:#5f6773; --go:#3ecf7c; --wait:#f0a63a; --bad:#e5484d; --sleep:#7aa2ff;
         }
         *{box-sizing:border-box}
         body{margin:0;background:radial-gradient(1100px 560px at 50% -10%,#161a22,var(--bg));
@@ -1636,11 +1636,14 @@ DEVICES_PAGE = """
         .hubp{fill:#123522;stroke:var(--go);stroke-width:1.4}
         .hubl{fill:var(--go);font:700 9px ui-monospace,Menlo,monospace;text-anchor:middle}
         .gwl{fill:var(--faint);font:600 9px -apple-system,Roboto,Arial,sans-serif;text-anchor:middle}
-        .link{stroke:#3a3f4a;stroke-width:2.5;fill:none;transition:stroke .4s}
-        .link.on{stroke:var(--go)}
-        .link.flow{stroke-dasharray:5 6;animation:flow 1s linear infinite}
-        @keyframes flow{to{stroke-dashoffset:-11}}
-        @media (prefers-reduced-motion:reduce){.link.flow{animation:none}}
+        .lane{stroke:#3a3f4a;stroke-width:2;fill:none;transition:stroke .4s}
+        .lane.dn.on{stroke:var(--go)}
+        .lane.up.on{stroke:var(--sleep)}
+        .lane.dn.flow{stroke-dasharray:5 7;animation:flowdn .9s linear infinite}
+        .lane.up.flow{stroke-dasharray:5 7;animation:flowup .9s linear infinite}
+        @keyframes flowdn{to{stroke-dashoffset:-12}}
+        @keyframes flowup{to{stroke-dashoffset:12}}
+        @media (prefers-reduced-motion:reduce){.lane.flow{animation:none}}
         /* cards */
         .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
         @media (max-width:460px){.grid{grid-template-columns:1fr}}
@@ -1667,34 +1670,36 @@ DEVICES_PAGE = """
     <div class="kicker"><span class="dot"></span>Your devices · via {{ d.self.name or 'Pi' }}</div>
 
     <div class="board">
-      <svg viewBox="0 0 380 210" role="img" aria-label="Devices connected to the Pi">
-        <!-- connection lines (behind the nodes) -->
-        <path id="line-phone"  class="link {{ 'on' if phone and phone.online else '' }}" d="M92 108 H150"/>
-        <path id="line-laptop" class="link {{ 'on' if laptop and laptop.online else '' }}" d="M230 108 H286"/>
-        <!-- Pi hub -->
-        <rect class="hub" x="150" y="80" width="80" height="56" rx="9"/>
-        <circle class="hubp" cx="180" cy="93" r="2.5"/><circle class="hubp" cx="190" cy="93" r="2.5"/><circle class="hubp" cx="200" cy="93" r="2.5"/>
-        <text class="hubl" x="190" y="115">{{ (d.self.name or 'pi')[:9] }}</text>
-        <text class="gwl" x="190" y="150">gateway</text>
-        <!-- phone (left) -->
+      <svg viewBox="0 0 380 250" role="img" aria-label="Devices connected to the Pi">
+        <!-- two lanes per link: green flows DOWN to a device (its downloads), blue flows UP to the Pi -->
+        <path id="ph-dn" class="lane dn {{ 'on' if phone and phone.online else '' }}" d="M176 72 L82 116"/>
+        <path id="ph-up" class="lane up {{ 'on' if phone and phone.online else '' }}" d="M183 74 L89 118"/>
+        <path id="lp-dn" class="lane dn {{ 'on' if laptop and laptop.online else '' }}" d="M204 72 L286 120"/>
+        <path id="lp-up" class="lane up {{ 'on' if laptop and laptop.online else '' }}" d="M197 74 L279 122"/>
+        <!-- Pi hub (top) -->
+        <rect class="hub" x="150" y="20" width="80" height="52" rx="9"/>
+        <circle class="hubp" cx="180" cy="34" r="2.5"/><circle class="hubp" cx="190" cy="34" r="2.5"/><circle class="hubp" cx="200" cy="34" r="2.5"/>
+        <text class="hubl" x="190" y="52">{{ (d.self.name or 'pi')[:9] }}</text>
+        <text class="gwl" x="190" y="65">gateway</text>
+        <!-- phone (bottom-left) -->
         <g class="dev {{ 'on' if phone and phone.online else '' }}" id="dev-phone">
-          <rect class="body" x="34" y="66" width="52" height="96" rx="11"/>
-          <rect class="scr" x="41" y="78" width="38" height="66" rx="3"/>
-          <rect x="52" y="72" width="16" height="3" rx="1.5" fill="#2a2f3a"/>
-          <rect x="52" y="150" width="16" height="3" rx="1.5" fill="#2a2f3a"/>
-          <text class="lbl" x="60" y="178">{% if phone %}{{ phone.name[:14] }}{% else %}no phone{% endif %}</text>
-          <text class="sub" x="60" y="190" id="sub-phone">{% if phone %}{{ phone.last_seen }}{% else %}not connected{% endif %}</text>
+          <rect class="body" x="56" y="120" width="48" height="86" rx="11"/>
+          <rect class="scr" x="62" y="132" width="36" height="58" rx="3"/>
+          <rect x="72" y="125" width="16" height="3" rx="1.5" fill="#2a2f3a"/>
+          <rect x="72" y="196" width="16" height="3" rx="1.5" fill="#2a2f3a"/>
+          <text class="lbl" x="80" y="224">{% if phone %}{{ phone.name[:15] }}{% else %}no phone{% endif %}</text>
+          <text class="sub" x="80" y="236" id="sub-phone">{% if phone %}{{ phone.last_seen }}{% else %}not connected{% endif %}</text>
         </g>
-        <!-- laptop (right) -->
+        <!-- laptop (bottom-right) -->
         <g class="dev {{ 'on' if laptop and laptop.online else '' }}" id="dev-laptop">
-          <rect class="body" x="286" y="72" width="72" height="50" rx="4"/>
-          <rect class="scr" x="292" y="78" width="60" height="38" rx="2"/>
-          <path class="body" d="M280 122 H364 L370 134 H274 Z"/>
-          <text class="lbl" x="322" y="150">{% if laptop %}{{ laptop.name[:16] }}{% else %}no laptop{% endif %}</text>
-          <text class="sub" x="322" y="162" id="sub-laptop">{% if laptop %}{{ laptop.last_seen }}{% else %}not connected{% endif %}</text>
+          <rect class="body" x="250" y="124" width="72" height="50" rx="4"/>
+          <rect class="scr" x="256" y="130" width="60" height="38" rx="2"/>
+          <path class="body" d="M244 174 H328 L334 186 H238 Z"/>
+          <text class="lbl" x="286" y="206">{% if laptop %}{{ laptop.name[:16] }}{% else %}no laptop{% endif %}</text>
+          <text class="sub" x="286" y="218" id="sub-laptop">{% if laptop %}{{ laptop.last_seen }}{% else %}not connected{% endif %}</text>
         </g>
       </svg>
-      <div class="caption">Lines glow green when a device is online, and flow when data's moving through the Pi</div>
+      <div class="caption"><span style="color:var(--go)">&#9660; green</span> = download to a device &nbsp;·&nbsp; <span style="color:var(--sleep)">&#9650; blue</span> = upload to the Pi &nbsp;·&nbsp; dashes flow when data moves</div>
     </div>
 
     <div class="grid" id="cards">
@@ -1729,10 +1734,11 @@ DEVICES_PAGE = """
         g.setAttribute("class", "dev "+(dev&&dev.online?"on":""));
         var s=document.getElementById(sub); if(s&&dev) s.textContent=dev.last_seen;
     }
-    function line(id, dev){
-        var l=document.getElementById(id); if(!l) return;
-        var on=dev&&dev.online, flow=on&&((dev.down_bps||0)+(dev.up_bps||0)>0);
-        l.setAttribute("class", "link"+(on?" on":"")+(flow?" flow":""));
+    function lanes(prefix, dev){
+        var on=dev&&dev.online;
+        var dn=document.getElementById(prefix+"-dn"), up=document.getElementById(prefix+"-up");
+        if(dn) dn.setAttribute("class","lane dn"+(on?" on":"")+(on&&dev.down_bps>0?" flow":""));
+        if(up) up.setAttribute("class","lane up"+(on?" on":"")+(on&&dev.up_bps>0?" flow":""));
     }
     function card(x){
         var el=document.querySelector('.dcard[data-ip="'+x.ip+'"]'); if(!el) return;
@@ -1748,8 +1754,8 @@ DEVICES_PAGE = """
         var devs=d.devices||[];
         var phone=devs.find(function(x){return x.kind==="phone";});
         var laptop=devs.find(function(x){return x.kind==="computer";});
-        node("dev-phone","sub-phone",phone); line("line-phone",phone);
-        node("dev-laptop","sub-laptop",laptop); line("line-laptop",laptop);
+        node("dev-phone","sub-phone",phone); lanes("ph",phone);
+        node("dev-laptop","sub-laptop",laptop); lanes("lp",laptop);
         devs.forEach(card);
     }
     function poll(){ fetch("/budget/devices?fmt=json&_="+Date.now(),{cache:"no-store"}).then(function(r){return r.json();}).then(update).catch(function(){}); }
