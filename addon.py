@@ -60,6 +60,7 @@ HEARTBEAT_SCRIPT = """
   var SITE = "__SITE__";
   var LABEL = SITE.charAt(0).toUpperCase() + SITE.slice(1);
   var deadline = null;    // ms timestamp when time runs out (re-anchored each ping)
+  var curPhase = null;    // "day" | "winddown" | "night" from the last ping
 
   var bar = null;
   function ensureBar() {
@@ -87,11 +88,38 @@ HEARTBEAT_SCRIPT = """
   }
   function hideWarn() { if (bar) bar.style.display = "none"; }
 
-  // Local 1s ticker so the last minute counts down smoothly between 10s heartbeats.
+  // A calmer, persistent ribbon while the pool is in wind-down, so the shrinking cap
+  // isn't a surprise. Yields the top slot to the red last-minute warning when that fires.
+  var wdBar = null;
+  function ensureWdBar() {
+    if (wdBar) return wdBar;
+    var css = document.createElement("style");
+    css.textContent =
+      '#bp-winddown{position:fixed;top:0;left:0;right:0;z-index:2147483646;pointer-events:none;' +
+      'font:600 14px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;' +
+      'color:#fff;text-align:center;padding:8px 16px;padding-top:max(8px,env(safe-area-inset-top));' +
+      'background:#b9770e;box-shadow:0 2px 10px rgba(0,0,0,.35);letter-spacing:.2px;}';
+    (document.head || document.documentElement).appendChild(css);
+    wdBar = document.createElement("div");
+    wdBar.id = "bp-winddown";
+    wdBar.setAttribute("role", "status");
+    wdBar.textContent = "\\u23F3 Wind-down \\u2014 your time is tapering toward bedtime";
+    document.documentElement.appendChild(wdBar);
+    return wdBar;
+  }
+  function showWd() { ensureWdBar().style.display = "block"; }
+  function hideWd() { if (wdBar) wdBar.style.display = "none"; }
+
+  // Local 1s ticker: the red last-minute warning takes the top slot; otherwise the
+  // wind-down ribbon shows whenever the last ping said we're in wind-down.
   setInterval(function () {
-    if (deadline === null) return;
-    var secs = Math.round((deadline - Date.now()) / 1000);
-    if (secs > WARN_AT || secs <= 0) hideWarn(); else showWarn(secs);
+    var warn = false;
+    if (deadline !== null) {
+      var secs = Math.round((deadline - Date.now()) / 1000);
+      if (secs > 0 && secs <= WARN_AT) { showWarn(secs); warn = true; }
+    }
+    if (!warn) hideWarn();
+    if (!warn && curPhase === "winddown") showWd(); else hideWd();
   }, 1000);
 
   function ping() {
@@ -105,6 +133,7 @@ HEARTBEAT_SCRIPT = """
         if (data && typeof data.remaining === "number") {
           deadline = Date.now() + data.remaining * 1000;   // re-anchor to the server's truth
         }
+        if (data && data.phase) curPhase = data.phase;
       })
       .catch(function () {});
   }

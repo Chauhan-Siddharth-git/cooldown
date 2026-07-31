@@ -455,9 +455,12 @@ def apply_refill(p):
     # window (REGEN_DELAY) of no use — so briefly waiting can't top you back up for
     # another sip; genuinely stepping away for a while still recovers time. Skipped
     # while the pool is actively in use (real viewing time isn't discounted), during
-    # cooldown (the hard wall must not leak away), and outside daytime (night + wind-down
-    # budgets must NOT regenerate — that would fight the ramp / refill the night buffer).
-    if pool_has_active_session(p) or r.get(f"cooldown:{p}") or phase() != "day":
+    # cooldown (the hard wall must not leak away), and at night (the night buffer is a
+    # separate, deliberately non-regenerating counter). Wind-down DOES refill: effective_cap()
+    # is ramping down, so get_remaining_budget bounds you by that shrinking ceiling — you
+    # regen back up toward the time-proportional cap (e.g. ~7.5 min at 10:30), never the full
+    # day cap. The refill rate stays the normal one; the ramp alone does the winding-down.
+    if pool_has_active_session(p) or r.get(f"cooldown:{p}") or phase() == "night":
         return
     spent = float(r.get(f"spent:{p}") or 0)
     if spent <= 0:
@@ -814,7 +817,7 @@ def heartbeat():
 
     r.set(f"last_heartbeat:{p}", now)
     remaining = get_remaining_budget(site)
-    return jsonify({"status": "ok", "remaining": int(remaining)})
+    return jsonify({"status": "ok", "remaining": int(remaining), "phase": phase()})
 
 @app.route('/remaining')
 def remaining():

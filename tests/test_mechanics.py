@@ -77,6 +77,16 @@ def test_no_refill_outside_day(rdb, night):
     assert budget.get_spent("reddit") == 300
 
 
+def test_refill_runs_during_winddown(rdb, winddown):
+    # Wind-down regenerates too (night does not): the ramping cap — not a frozen bucket —
+    # is what winds you down, so spent refills at the normal rate up toward the shrinking
+    # ceiling. 5 min past grace credits the usual amount; get_remaining_budget then bounds
+    # the result by the (time-proportional) wind-down cap.
+    rdb.set("spent:main", 600)
+    rdb.set("last_heartbeat:main", time.time() - budget.REGEN_DELAY - 300)
+    assert abs(budget.get_spent("reddit") - (600 - 300 * RATE)) < 2
+
+
 def test_refill_floors_at_zero(rdb, day):
     rdb.set("spent:main", 30)
     rdb.set("last_heartbeat:main", time.time() - budget.REGEN_DELAY - 7200)
