@@ -1,6 +1,7 @@
 from flask import Flask, jsonify, redirect, render_template_string, request
 from urllib.parse import urlparse
 import os
+import subprocess
 import redis
 import time
 import uuid
@@ -444,6 +445,7 @@ STATS_PAGE = """
     </div>
 
     <div class="live {{ 'stale' if stale else '' }}">{{ live_line }}</div>
+    <a class="back" href="/budget/health">Raspberry Pi health &rarr;</a>
     <a class="back" href="/budget">← Back to the gate</a>
 </div>
 </body>
@@ -1027,6 +1029,343 @@ scheduler = BackgroundScheduler()
 # you wake, and this avoids handing out fresh budget in the middle of the night window.
 scheduler.add_job(daily_reset, 'cron', hour=NIGHT_END_HOUR, minute=0)
 scheduler.start()
+
+# ---------------------------------------------------------------------------
+# Pi health monitor: read live system metrics straight off /proc, /sys and a
+# couple of quick shell-outs, and draw a line-art board whose ethernet port /
+# SoC / power connector reflect real state. Every reader is wrapped in _try so
+# a missing file on a non-Pi host degrades to a dash instead of a 500.
+# ---------------------------------------------------------------------------
+
+def _try(fn, default=None):
+    try:
+        return fn()
+    except Exception:
+        return default
+
+def _first_line(path):
+    with open(path) as f:
+        return f.readline().strip()
+
+def _cpu_pct(sample=0.2):
+    def snap():
+        with open("/proc/stat") as f:
+            v = list(map(int, f.readline().split()[1:]))
+        return v[3] + v[4], sum(v)          # idle+iowait, total
+    i1, t1 = snap()
+    time.sleep(sample)
+    i2, t2 = snap()
+    dt = t2 - t1
+    return round(100.0 * (1 - (i2 - i1) / dt), 1) if dt > 0 else 0.0
+
+def _loadavg():
+    return [float(x) for x in _first_line("/proc/loadavg").split()[:3]]
+
+def _temp_c():
+    return round(int(_first_line("/sys/class/thermal/thermal_zone0/temp")) / 1000.0, 1)
+
+def _mem():
+    info = {}
+    with open("/proc/meminfo") as f:
+        for line in f:
+            k, _, rest = line.partition(":")
+            info[k] = int(rest.strip().split()[0])   # kB
+    total = info["MemTotal"]
+    used = total - info.get("MemAvailable", info.get("MemFree", 0))
+    return {"used_mb": round(used / 1024), "total_mb": round(total / 1024),
+            "pct": round(100 * used / total, 1)}
+
+def _disk(path="/"):
+    st = os.statvfs(path)
+    total = st.f_blocks * st.f_frsize
+    used = total - st.f_bavail * st.f_frsize
+    return {"used_gb": round(used / 1e9, 1), "total_gb": round(total / 1e9, 1),
+            "pct": round(100 * used / total)}
+
+def _uptime():
+    secs = float(_first_line("/proc/uptime").split()[0])
+    d, h, m = int(secs // 86400), int(secs % 86400 // 3600), int(secs % 3600 // 60)
+    return f"{d}d {h}h {m}m" if d else (f"{h}h {m}m" if h else f"{m}m")
+
+def _iface(name):
+    base = f"/sys/class/net/{name}"
+    if not os.path.exists(base):
+        return None
+    state = _try(lambda: _first_line(f"{base}/operstate"), "unknown")
+    speed = _try(lambda: int(_first_line(f"{base}/speed")), None)
+    if speed is not None and speed < 0:
+        speed = None
+    # Real NICs report up/down honestly; tunnels (tailscale/wg) sit at "unknown"
+    # while perfectly up, so treat anything but an explicit "down" as connected.
+    up = state != "down" if name.startswith(("tailscale", "wg", "tun")) else state == "up"
+    return {"up": up, "state": state, "speed": speed}
+
+def _services(names):
+    def one(s):
+        return subprocess.run(["systemctl", "is-active", s],
+                              capture_output=True, text=True, timeout=2).stdout.strip()
+    return {s: _try(lambda s=s: one(s), "unknown") for s in names}
+
+def _power():
+    raw = _try(lambda: subprocess.run(["vcgencmd", "get_throttled"],
+              capture_output=True, text=True, timeout=2).stdout.strip(), "")
+    val = _try(lambda: int(raw.split("=")[1], 16), 0) if "=" in raw else 0
+    return {"ok": val == 0,
+            "under_voltage_now": bool(val & 0x1),
+            "throttled_now": bool(val & 0x4),
+            "under_voltage_ever": bool(val & 0x10000)}
+
+def _temp_class(t):
+    if t is None:
+        return "off"
+    return "cool" if t <= 55 else ("warm" if t <= 70 else "hot")
+
+def collect_health():
+    svc = _services(["cooldown-app", "cooldown-proxy", "cooldown-redirect", "redis-server", "tailscaled"])
+    return {
+        "model": _try(lambda: _first_line("/proc/device-tree/model").replace("\x00", ""), "Raspberry Pi"),
+        "cpu": {"pct": _try(_cpu_pct, 0.0), "load": _try(_loadavg, [0, 0, 0]), "cores": os.cpu_count() or 1},
+        "temp_c": _try(_temp_c),
+        "mem": _try(_mem, {"used_mb": 0, "total_mb": 0, "pct": 0}),
+        "disk": _try(_disk, {"used_gb": 0, "total_gb": 0, "pct": 0}),
+        "uptime": _try(_uptime, "?"),
+        "net": {n: _iface(n) for n in ("eth0", "tailscale0", "wlan0")},
+        "power": _try(_power, {"ok": True}),
+        "services": svc,
+        "services_ok": all(v == "active" for v in svc.values()),
+    }
+
+HEALTH_PAGE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Pi Health · Countdown</title>
+    <style>
+        :root{
+            --bg:#0b0d10; --card:#14171d; --line:#232732; --fg:#f4f6f8; --muted:#8b93a0;
+            --faint:#5f6773; --go:#3ecf7c; --wait:#f0a63a; --bad:#e5484d;
+        }
+        *{box-sizing:border-box}
+        body{
+            margin:0;background:radial-gradient(1100px 560px at 50% -10%,#161a22,var(--bg));
+            color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+            -webkit-font-smoothing:antialiased;padding:26px 16px max(26px,env(safe-area-inset-bottom));
+            display:flex;justify-content:center;
+        }
+        .wrap{width:100%;max-width:560px}
+        .kicker{display:flex;align-items:center;gap:8px;justify-content:center;font-size:11.5px;
+            font-weight:700;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-bottom:18px}
+        .kicker .dot{width:7px;height:7px;border-radius:50%;background:var(--go)}
+        .board{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px 10px 6px;margin-bottom:12px}
+        .board svg{display:block;width:100%;height:auto}
+        .caption{text-align:center;font-size:11.5px;color:var(--faint);margin:2px 0 6px}
+        /* board line-art */
+        .pcb{fill:#0c1a12;stroke:#2f5d43;stroke-width:1.5}
+        .hole{fill:var(--bg);stroke:#2f5d43;stroke-width:1.2}
+        .chip{fill:#161b22;stroke:#3a4150;stroke-width:1.2}
+        .port{fill:#0f1319;stroke:#3a4150;stroke-width:1.2}
+        .port.dark{fill:#090b0e}
+        .pin{stroke:#3a4150;stroke-width:2;stroke-dasharray:2 4}
+        .lbl{fill:var(--muted);font:600 9px -apple-system,Roboto,Arial,sans-serif;text-anchor:middle}
+        .lbl.r{text-anchor:end}
+        .ctext{fill:#6b7686;font:700 9px ui-monospace,Menlo,monospace;text-anchor:middle}
+        .led{fill:#2a2f3a}
+        /* ethernet — the star: green when the link is up */
+        #eth .jack{fill:#0f1319;stroke:#3a4150;stroke-width:1.5;transition:.4s}
+        #eth.on .jack{fill:#123522;stroke:var(--go)}
+        #eth.on .lbl{fill:var(--go)}
+        #eth.on .led.link{fill:var(--go)}
+        #eth.on .led.act{fill:var(--go);animation:blink 1.5s steps(1) infinite}
+        @keyframes blink{50%{opacity:.2}}
+        @media (prefers-reduced-motion:reduce){ #eth.on .led.act{animation:none} }
+        /* SoC tinted by temperature */
+        #soc{transition:.5s}
+        #soc.cool{fill:#123522;stroke:var(--go)} #soc.warm{fill:#2a2412;stroke:var(--wait)}
+        #soc.hot{fill:#2e1414;stroke:var(--bad)}
+        /* power connector */
+        #pwr{fill:#3a4150;transition:.4s} #pwr.on{fill:var(--go)} #pwr.bad{fill:var(--wait)}
+        /* metric cards */
+        .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+        @media (max-width:460px){.grid{grid-template-columns:repeat(2,1fr)}}
+        .metric{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:13px 13px 12px}
+        .mtop{display:flex;align-items:baseline;justify-content:space-between}
+        .mk{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.05em;font-weight:600}
+        .mv{font-size:20px;font-weight:700;letter-spacing:-.5px;font-variant-numeric:tabular-nums}
+        .metric.cool .mv{color:var(--go)} .metric.warm .mv{color:var(--wait)} .metric.hot .mv{color:var(--bad)}
+        .mbig{font-size:19px;font-weight:700;margin-top:6px;letter-spacing:-.4px}
+        .bar{background:#0e1116;border-radius:6px;height:7px;overflow:hidden;margin-top:9px}
+        .bar i{display:block;height:100%;width:0;background:var(--go);border-radius:6px;transition:width .5s,background .5s}
+        .metric.warm .bar i{background:var(--wait)} .metric.hot .bar i{background:var(--bad)}
+        .msub{font-size:11.5px;color:var(--faint);margin-top:8px}
+        .net{margin-top:9px;display:flex;flex-direction:column;gap:7px}
+        .nrow{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--fg)}
+        .nstate,.net .nstate{margin-left:auto;color:var(--muted);font-size:11.5px;font-variant-numeric:tabular-nums}
+        .ndot{width:8px;height:8px;border-radius:50%;background:var(--faint);flex:none}
+        .ndot.on{background:var(--go);box-shadow:0 0 0 3px rgba(62,207,124,.15)}
+        .ndot.off{background:#3a3f4a}
+        .svc{display:flex;flex-wrap:wrap;gap:7px;justify-content:center;margin-top:12px}
+        .pill{font-size:11px;font-weight:600;padding:6px 10px;border-radius:999px;border:1px solid var(--line);
+            display:flex;align-items:center;gap:6px;color:var(--muted)}
+        .pill::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--faint)}
+        .pill.ok{color:#cfe9d8}.pill.ok::before{background:var(--go)}
+        .pill.bad{color:#f0c9c9;border-color:#3a2222}.pill.bad::before{background:var(--bad)}
+        .foot{display:flex;gap:16px;justify-content:center;margin-top:20px}
+        .foot a{font-size:12.5px;color:var(--faint);text-decoration:none}
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <div class="kicker"><span class="dot"></span>{{ d.model }}</div>
+
+    <div class="board">
+      <svg viewBox="0 0 380 250" role="img" aria-label="Raspberry Pi board">
+        <rect class="pcb" x="18" y="34" width="344" height="182" rx="12"/>
+        <circle class="hole" cx="32" cy="48" r="5"/>
+        <circle class="hole" cx="32" cy="202" r="5"/>
+        <circle class="hole" cx="348" cy="202" r="5"/>
+        <!-- 40-pin GPIO header -->
+        <rect class="port dark" x="46" y="40" width="250" height="15" rx="2"/>
+        <line class="pin" x1="52" y1="44.5" x2="290" y2="44.5"/>
+        <line class="pin" x1="52" y1="50.5" x2="290" y2="50.5"/>
+        <!-- RAM + SoC -->
+        <rect class="chip" x="60" y="120" width="52" height="44" rx="3"/>
+        <text class="ctext" x="86" y="145">RAM</text>
+        <rect id="soc" class="chip {{ tclass }}" x="150" y="108" width="72" height="66" rx="6"/>
+        <text class="ctext" x="186" y="138">BCM</text>
+        <text class="ctext" x="186" y="150">2711</text>
+        <!-- Ethernet (the highlight) -->
+        <g id="eth" class="{{ 'on' if eth_on else 'off' }}">
+          <rect class="jack" x="300" y="52" width="68" height="46" rx="4"/>
+          <rect class="port dark" x="307" y="62" width="54" height="28" rx="2"/>
+          <circle class="led link" cx="307" cy="57" r="3"/>
+          <circle class="led act" cx="361" cy="57" r="3"/>
+          <text class="lbl r" x="294" y="70">ETH</text>
+          <text class="lbl r" x="294" y="83">1 GbE</text>
+        </g>
+        <!-- USB -->
+        <rect class="port dark" x="300" y="110" width="62" height="28" rx="3"/>
+        <text class="lbl r" x="294" y="128">USB 3.0</text>
+        <rect class="port dark" x="300" y="144" width="62" height="28" rx="3"/>
+        <text class="lbl r" x="294" y="162">USB 2.0</text>
+        <!-- bottom edge: power, HDMI, AV -->
+        <text class="lbl" x="83" y="206">PWR</text>
+        <rect id="pwr" class="{{ pwr_class }}" x="70" y="210" width="26" height="11" rx="2"/>
+        <text class="lbl" x="146" y="206">HDMI</text>
+        <rect class="port dark" x="120" y="210" width="22" height="11" rx="2"/>
+        <rect class="port dark" x="150" y="210" width="22" height="11" rx="2"/>
+        <rect class="port dark" x="196" y="210" width="16" height="11" rx="2"/>
+        <text class="lbl" x="204" y="206">AV</text>
+        <!-- microSD (left edge) -->
+        <rect class="port dark" x="8" y="150" width="12" height="34" rx="2"/>
+        <text class="lbl" x="14" y="145">SD</text>
+      </svg>
+      <div class="caption">Ethernet glows green when the link is up · SoC tints with temperature</div>
+    </div>
+
+    <div class="grid">
+      <div class="metric" id="cpuCard">
+        <div class="mtop"><span class="mk">CPU</span><span class="mv" id="cpuPct">{{ d.cpu.pct }}%</span></div>
+        <div class="bar"><i id="cpuBar" style="width:{{ d.cpu.pct }}%"></i></div>
+        <div class="msub">load <span id="cpuLoad">{{ '%.2f'|format(d.cpu.load[0]) }}</span> · {{ d.cpu.cores }} cores</div>
+      </div>
+      <div class="metric {{ tclass }}" id="tempCard">
+        <div class="mtop"><span class="mk">Temp</span><span class="mv" id="temp">{% if d.temp_c is not none %}{{ d.temp_c }}&deg;C{% else %}&mdash;{% endif %}</span></div>
+        <div class="bar"><i id="tempBar" style="width:{{ ((d.temp_c or 0)/85*100)|round }}%"></i></div>
+        <div class="msub">throttling <span id="throt">{{ 'none' if d.power.ok else 'ACTIVE' }}</span></div>
+      </div>
+      <div class="metric" id="memCard">
+        <div class="mtop"><span class="mk">Memory</span><span class="mv" id="memPct">{{ d.mem.pct }}%</span></div>
+        <div class="bar"><i id="memBar" style="width:{{ d.mem.pct }}%"></i></div>
+        <div class="msub"><span id="memText">{{ d.mem.used_mb }} / {{ d.mem.total_mb }} MB</span></div>
+      </div>
+      <div class="metric" id="diskCard">
+        <div class="mtop"><span class="mk">Disk</span><span class="mv" id="diskPct">{{ d.disk.pct }}%</span></div>
+        <div class="bar"><i id="diskBar" style="width:{{ d.disk.pct }}%"></i></div>
+        <div class="msub"><span id="diskText">{{ d.disk.used_gb }} / {{ d.disk.total_gb }} GB</span></div>
+      </div>
+      <div class="metric">
+        <div class="mtop"><span class="mk">Uptime</span></div>
+        <div class="mbig" id="uptime">{{ d.uptime }}</div>
+        <div class="msub">since boot</div>
+      </div>
+      <div class="metric">
+        <div class="mtop"><span class="mk">Network</span></div>
+        <div class="net">
+          <div class="nrow"><span class="ndot {{ 'on' if d.net.eth0 and d.net.eth0.up else 'off' }}" id="ndot_eth0"></span>Ethernet<span class="nstate" id="st_eth0">{% if d.net.eth0 and d.net.eth0.up %}Up{% if d.net.eth0.speed %} · {{ d.net.eth0.speed }}M{% endif %}{% else %}Down{% endif %}</span></div>
+          <div class="nrow"><span class="ndot {{ 'on' if d.net.tailscale0 and d.net.tailscale0.up else 'off' }}" id="ndot_tailscale0"></span>Tailscale<span class="nstate" id="st_tailscale0">{% if d.net.tailscale0 and d.net.tailscale0.up %}Up{% else %}Down{% endif %}</span></div>
+          <div class="nrow"><span class="ndot {{ 'on' if d.net.wlan0 and d.net.wlan0.up else 'off' }}" id="ndot_wlan0"></span>Wi-Fi<span class="nstate" id="st_wlan0">{% if d.net.wlan0 and d.net.wlan0.up %}Up{% else %}Off{% endif %}</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="svc">
+      {% for name, state in d.services.items() %}
+      <span class="pill {{ 'ok' if state=='active' else 'bad' }}" id="svc_{{ name }}">{{ name }}</span>
+      {% endfor %}
+    </div>
+
+    <div class="foot"><a href="/budget/stats">&larr; Usage stats</a><a href="/budget/health">Refresh</a></div>
+</div>
+{% raw %}
+<script>
+(function(){
+    function $(id){ return document.getElementById(id); }
+    function set(id,t){ var e=$(id); if(e) e.textContent=t; }
+    function width(id,p){ var e=$(id); if(e) e.style.width=Math.max(0,Math.min(100,p))+"%"; }
+    function tclass(t){ return t==null?"off":(t<=55?"cool":(t<=70?"warm":"hot")); }
+    function net(o){ if(!o) return "n/a"; if(!o.up) return "Down"; return o.speed?("Up · "+o.speed+"M"):"Up"; }
+    function dot(id,on){ var e=$(id); if(e) e.className="ndot "+(on?"on":"off"); }
+
+    function update(d){
+        set("cpuPct", d.cpu.pct+"%"); width("cpuBar", d.cpu.pct);
+        set("cpuLoad", d.cpu.load[0].toFixed(2));
+        if(d.temp_c!=null){
+            set("temp", d.temp_c+"°C"); width("tempBar", d.temp_c/85*100);
+            var soc=$("soc"); if(soc) soc.setAttribute("class","chip "+tclass(d.temp_c));
+            var tc=$("tempCard"); if(tc) tc.className="metric "+tclass(d.temp_c);
+        }
+        set("throt", d.power && d.power.ok ? "none" : "ACTIVE");
+        set("memPct", d.mem.pct+"%"); width("memBar", d.mem.pct);
+        set("memText", d.mem.used_mb+" / "+d.mem.total_mb+" MB");
+        set("diskPct", d.disk.pct+"%"); width("diskBar", d.disk.pct);
+        set("diskText", d.disk.used_gb+" / "+d.disk.total_gb+" GB");
+        set("uptime", d.uptime);
+        var e=d.net.eth0, ts=d.net.tailscale0, w=d.net.wlan0;
+        var eth=$("eth"); if(eth) eth.setAttribute("class", e&&e.up?"on":"off");
+        dot("ndot_eth0", e&&e.up); set("st_eth0", net(e));
+        dot("ndot_tailscale0", ts&&ts.up); set("st_tailscale0", ts&&ts.up?"Up":"Down");
+        dot("ndot_wlan0", w&&w.up); set("st_wlan0", w&&w.up?"Up":"Off");
+        var pwr=$("pwr"); if(pwr) pwr.setAttribute("class", d.power&&d.power.ok?"on":"bad");
+        Object.keys(d.services||{}).forEach(function(s){
+            var el=$("svc_"+s); if(el) el.className="pill "+(d.services[s]==="active"?"ok":"bad");
+        });
+    }
+    function poll(){
+        fetch("/budget/health?fmt=json&_="+Date.now(),{cache:"no-store"})
+          .then(function(r){ return r.json(); }).then(update).catch(function(){});
+    }
+    setInterval(poll, 4000);
+    document.addEventListener("visibilitychange", function(){ if(!document.hidden) poll(); });
+})();
+</script>
+{% endraw %}
+</body>
+</html>
+"""
+
+@app.route('/health')
+def health():
+    d = collect_health()
+    if request.args.get("fmt") == "json":
+        return jsonify(d)
+    eth = d["net"].get("eth0")
+    return render_template_string(
+        HEALTH_PAGE, d=d,
+        tclass=_temp_class(d["temp_c"]),
+        eth_on=bool(eth and eth["up"]),
+        pwr_class="on" if d["power"].get("ok") else "bad")
 
 if __name__ == '__main__':
     # Production WSGI server (waitress) instead of the Werkzeug dev server: more

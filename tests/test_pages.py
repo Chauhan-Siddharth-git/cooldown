@@ -248,3 +248,19 @@ def test_stats_stale_heartbeat_warns(client, rdb):
     rdb.set("last_charge", time.time() - 5 * 86400)
     html = client.get("/stats").data.decode()
     assert "broken heartbeat" in html
+
+
+# ---------- pi health monitor ----------
+
+def test_health_page_renders(client):
+    html = client.get("/health").data.decode()
+    assert 'id="eth"' in html          # the ethernet element (goes green when up)
+    assert 'id="soc"' in html          # the temp-tinted SoC
+    assert "Usage stats" in html       # nav back to stats
+
+def test_health_json_has_keys(client):
+    data = client.get("/health?fmt=json").get_json()
+    for k in ("model", "cpu", "mem", "disk", "net", "uptime", "services"):
+        assert k in data
+    assert "eth0" in data["net"]
+    assert set(data["cpu"]) >= {"pct", "load", "cores"}
