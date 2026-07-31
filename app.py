@@ -1,5 +1,6 @@
 from flask import Flask, jsonify, redirect, render_template_string, request
 from urllib.parse import urlparse
+from collections import deque
 import os
 import subprocess
 import redis
@@ -1037,6 +1038,9 @@ scheduler.start()
 # a missing file on a non-Pi host degrades to a dash instead of a 500.
 # ---------------------------------------------------------------------------
 
+_TEMP_HIST = deque(maxlen=90)   # recent CPU temps for the sparkline (~6 min at 4s polls)
+_NET_PREV = {}                  # iface -> (monotonic_t, rx_bytes, tx_bytes) for throughput
+
 def _try(fn, default=None):
     try:
         return fn()
@@ -1047,16 +1051,29 @@ def _first_line(path):
     with open(path) as f:
         return f.readline().strip()
 
-def _cpu_pct(sample=0.2):
+def _cpu_stats(sample=0.2):
+    # One 0.2s delta over /proc/stat gives both the aggregate and per-core busy %.
     def snap():
+        cpu = {}
         with open("/proc/stat") as f:
-            v = list(map(int, f.readline().split()[1:]))
-        return v[3] + v[4], sum(v)          # idle+iowait, total
-    i1, t1 = snap()
+            for line in f:
+                if not line.startswith("cpu"):
+                    break
+                p = line.split()
+                v = list(map(int, p[1:]))
+                cpu[p[0]] = (v[3] + v[4], sum(v))   # idle+iowait, total
+        return cpu
+    a = snap()
     time.sleep(sample)
-    i2, t2 = snap()
-    dt = t2 - t1
-    return round(100.0 * (1 - (i2 - i1) / dt), 1) if dt > 0 else 0.0
+    b = snap()
+    def pct(name):
+        i1, t1 = a.get(name, (0, 0))
+        i2, t2 = b.get(name, (0, 0))
+        dt = t2 - t1
+        return round(100.0 * (1 - (i2 - i1) / dt), 1) if dt > 0 else 0.0
+    cores = sorted((k for k in a if k != "cpu" and k.startswith("cpu")),
+                   key=lambda k: int(k[3:]))
+    return pct("cpu"), [pct(c) for c in cores]
 
 def _loadavg():
     return [float(x) for x in _first_line("/proc/loadavg").split()[:3]]
@@ -1098,7 +1115,19 @@ def _iface(name):
     # Real NICs report up/down honestly; tunnels (tailscale/wg) sit at "unknown"
     # while perfectly up, so treat anything but an explicit "down" as connected.
     up = state != "down" if name.startswith(("tailscale", "wg", "tun")) else state == "up"
-    return {"up": up, "state": state, "speed": speed}
+    # Throughput: bytes/sec since the previous read (kept in _NET_PREV per interface).
+    rx = _try(lambda: int(_first_line(f"{base}/statistics/rx_bytes")))
+    tx = _try(lambda: int(_first_line(f"{base}/statistics/tx_bytes")))
+    rx_bps = tx_bps = None
+    if rx is not None and tx is not None:
+        now = time.monotonic()
+        prev = _NET_PREV.get(name)
+        if prev and now - prev[0] >= 0.5:   # skip tiny gaps so the rate isn't a spike
+            dt = now - prev[0]
+            rx_bps = max(0, round((rx - prev[1]) / dt))
+            tx_bps = max(0, round((tx - prev[2]) / dt))
+        _NET_PREV[name] = (now, rx, tx)
+    return {"up": up, "state": state, "speed": speed, "rx_bps": rx_bps, "tx_bps": tx_bps}
 
 def _services(names):
     def one(s):
@@ -1120,12 +1149,36 @@ def _temp_class(t):
         return "off"
     return "cool" if t <= 55 else ("warm" if t <= 70 else "hot")
 
+def _pct_class(p):
+    # Shared green/amber/red for utilisation gauges (memory, and the RAM chip glow).
+    return "cool" if p < 70 else ("warm" if p < 85 else "hot")
+
+def _spark_points(hist, w=100, h=32, lo=30, hi=85):
+    # Map a temperature history to an SVG polyline "x,y x,y ..." over a w×h box.
+    pts = list(hist)[-40:]
+    if not pts:
+        return ""
+    if len(pts) == 1:
+        pts = pts * 2
+    n = len(pts)
+    out = []
+    for i, t in enumerate(pts):
+        x = w * i / (n - 1)
+        y = h - max(0.0, min(1.0, (t - lo) / (hi - lo))) * h
+        out.append(f"{x:.1f},{y:.1f}")
+    return " ".join(out)
+
 def collect_health():
     svc = _services(["cooldown-app", "cooldown-proxy", "cooldown-redirect", "redis-server", "tailscaled"])
+    agg, per_core = _try(_cpu_stats, (0.0, []))
+    temp = _try(_temp_c)
+    if temp is not None:
+        _TEMP_HIST.append(temp)
     return {
         "model": _try(lambda: _first_line("/proc/device-tree/model").replace("\x00", ""), "Raspberry Pi"),
-        "cpu": {"pct": _try(_cpu_pct, 0.0), "load": _try(_loadavg, [0, 0, 0]), "cores": os.cpu_count() or 1},
-        "temp_c": _try(_temp_c),
+        "cpu": {"pct": agg, "per_core": per_core, "load": _try(_loadavg, [0, 0, 0]), "cores": os.cpu_count() or 1},
+        "temp_c": temp,
+        "temp_hist": list(_TEMP_HIST),
         "mem": _try(_mem, {"used_mb": 0, "total_mb": 0, "pct": 0}),
         "disk": _try(_disk, {"used_gb": 0, "total_gb": 0, "pct": 0}),
         "uptime": _try(_uptime, "?"),
@@ -1179,11 +1232,18 @@ HEALTH_PAGE = """
         #eth.on .led.link{fill:var(--go)}
         #eth.on .led.act{fill:var(--go);animation:blink 1.5s steps(1) infinite}
         @keyframes blink{50%{opacity:.2}}
-        @media (prefers-reduced-motion:reduce){ #eth.on .led.act{animation:none} }
-        /* SoC tinted by temperature */
-        #soc{transition:.5s}
-        #soc.cool{fill:#123522;stroke:var(--go)} #soc.warm{fill:#2a2412;stroke:var(--wait)}
-        #soc.hot{fill:#2e1414;stroke:var(--bad)}
+        /* ethernet unplugged: red + an occasional shake */
+        #eth.down .jack{fill:#2e1414;stroke:var(--bad)}
+        #eth.down .lbl{fill:var(--bad)} #eth.down .led{fill:var(--bad)}
+        #eth.down{animation:shake 1.8s ease-in-out infinite;transform-box:fill-box;transform-origin:center}
+        @keyframes shake{0%,86%,100%{transform:translateX(0)}89%{transform:translateX(-2.5px)}92%{transform:translateX(2.5px)}95%{transform:translateX(-1.5px)}}
+        @media (prefers-reduced-motion:reduce){ #eth.on .led.act,#eth.down{animation:none} }
+        /* SoC tinted by temperature, RAM by memory use */
+        #soc,#ram{transition:.5s}
+        #soc.cool,#ram.cool{fill:#123522;stroke:var(--go)}
+        #soc.warm,#ram.warm{fill:#2a2412;stroke:var(--wait)}
+        #soc.hot,#ram.hot{fill:#2e1414;stroke:var(--bad)}
+        .divln{stroke:#2a2f3a;stroke-width:1}
         /* power connector */
         #pwr{fill:#3a4150;transition:.4s} #pwr.on{fill:var(--go)} #pwr.bad{fill:var(--wait)}
         /* metric cards */
@@ -1199,6 +1259,14 @@ HEALTH_PAGE = """
         .bar i{display:block;height:100%;width:0;background:var(--go);border-radius:6px;transition:width .5s,background .5s}
         .metric.warm .bar i{background:var(--wait)} .metric.hot .bar i{background:var(--bad)}
         .msub{font-size:11.5px;color:var(--faint);margin-top:8px}
+        .cores{display:flex;gap:3px;align-items:flex-end;height:26px;margin-top:9px}
+        .core{flex:1;height:100%;background:#0e1116;border-radius:2px;display:flex;align-items:flex-end;overflow:hidden}
+        .core i{width:100%;background:var(--go);border-radius:2px;transition:height .4s}
+        .spark{display:block;width:100%;height:32px;margin-top:9px}
+        .spark polyline{stroke:var(--go);stroke-width:2;fill:none;vector-effect:non-scaling-stroke;stroke-linejoin:round;stroke-linecap:round}
+        .metric.warm .spark polyline{stroke:var(--wait)} .metric.hot .spark polyline{stroke:var(--bad)}
+        .thru{margin-top:11px;font-size:11.5px;color:var(--faint);font-variant-numeric:tabular-nums;display:flex;gap:16px}
+        .thru b{color:var(--fg);font-weight:600}
         .net{margin-top:9px;display:flex;flex-direction:column;gap:7px}
         .nrow{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--fg)}
         .nstate,.net .nstate{margin-left:auto;color:var(--muted);font-size:11.5px;font-variant-numeric:tabular-nums}
@@ -1230,13 +1298,13 @@ HEALTH_PAGE = """
         <line class="pin" x1="52" y1="44.5" x2="290" y2="44.5"/>
         <line class="pin" x1="52" y1="50.5" x2="290" y2="50.5"/>
         <!-- RAM + SoC -->
-        <rect class="chip" x="60" y="120" width="52" height="44" rx="3"/>
+        <rect id="ram" class="chip {{ ram_class }}" x="60" y="120" width="52" height="44" rx="3"/>
         <text class="ctext" x="86" y="145">RAM</text>
         <rect id="soc" class="chip {{ tclass }}" x="150" y="108" width="72" height="66" rx="6"/>
         <text class="ctext" x="186" y="138">BCM</text>
         <text class="ctext" x="186" y="150">2711</text>
         <!-- Ethernet (the highlight) -->
-        <g id="eth" class="{{ 'on' if eth_on else 'off' }}">
+        <g id="eth" class="{{ eth_state }}">
           <rect class="jack" x="300" y="52" width="68" height="46" rx="4"/>
           <rect class="port dark" x="307" y="62" width="54" height="28" rx="2"/>
           <circle class="led link" cx="307" cy="57" r="3"/>
@@ -1244,10 +1312,12 @@ HEALTH_PAGE = """
           <text class="lbl r" x="294" y="70">ETH</text>
           <text class="lbl r" x="294" y="83">1 GbE</text>
         </g>
-        <!-- USB -->
+        <!-- USB (two stacked ports each) -->
         <rect class="port dark" x="300" y="110" width="62" height="28" rx="3"/>
+        <line class="divln" x1="301" y1="124" x2="361" y2="124"/>
         <text class="lbl r" x="294" y="128">USB 3.0</text>
         <rect class="port dark" x="300" y="144" width="62" height="28" rx="3"/>
+        <line class="divln" x1="301" y1="158" x2="361" y2="158"/>
         <text class="lbl r" x="294" y="162">USB 2.0</text>
         <!-- bottom edge: power, HDMI, AV -->
         <text class="lbl" x="83" y="206">PWR</text>
@@ -1267,20 +1337,22 @@ HEALTH_PAGE = """
     <div class="grid">
       <div class="metric" id="cpuCard">
         <div class="mtop"><span class="mk">CPU</span><span class="mv" id="cpuPct">{{ d.cpu.pct }}%</span></div>
-        <div class="bar"><i id="cpuBar" style="width:{{ d.cpu.pct }}%"></i></div>
+        <div class="cores" id="cpuCores">
+          {% for c in d.cpu.per_core %}<div class="core"><i style="height:{{ c }}%"></i></div>{% endfor %}
+        </div>
         <div class="msub">load <span id="cpuLoad">{{ '%.2f'|format(d.cpu.load[0]) }}</span> · {{ d.cpu.cores }} cores</div>
       </div>
       <div class="metric {{ tclass }}" id="tempCard">
         <div class="mtop"><span class="mk">Temp</span><span class="mv" id="temp">{% if d.temp_c is not none %}{{ d.temp_c }}&deg;C{% else %}&mdash;{% endif %}</span></div>
-        <div class="bar"><i id="tempBar" style="width:{{ ((d.temp_c or 0)/85*100)|round }}%"></i></div>
+        <svg class="spark" viewBox="0 0 100 32" preserveAspectRatio="none"><polyline id="tempLine" points="{{ spark_points }}"/></svg>
         <div class="msub">throttling <span id="throt">{{ 'none' if d.power.ok else 'ACTIVE' }}</span></div>
       </div>
-      <div class="metric" id="memCard">
+      <div class="metric {{ mcard }}" id="memCard">
         <div class="mtop"><span class="mk">Memory</span><span class="mv" id="memPct">{{ d.mem.pct }}%</span></div>
         <div class="bar"><i id="memBar" style="width:{{ d.mem.pct }}%"></i></div>
         <div class="msub"><span id="memText">{{ d.mem.used_mb }} / {{ d.mem.total_mb }} MB</span></div>
       </div>
-      <div class="metric" id="diskCard">
+      <div class="metric {{ dcard }}" id="diskCard">
         <div class="mtop"><span class="mk">Disk</span><span class="mv" id="diskPct">{{ d.disk.pct }}%</span></div>
         <div class="bar"><i id="diskBar" style="width:{{ d.disk.pct }}%"></i></div>
         <div class="msub"><span id="diskText">{{ d.disk.used_gb }} / {{ d.disk.total_gb }} GB</span></div>
@@ -1297,6 +1369,7 @@ HEALTH_PAGE = """
           <div class="nrow"><span class="ndot {{ 'on' if d.net.tailscale0 and d.net.tailscale0.up else 'off' }}" id="ndot_tailscale0"></span>Tailscale<span class="nstate" id="st_tailscale0">{% if d.net.tailscale0 and d.net.tailscale0.up %}Up{% else %}Down{% endif %}</span></div>
           <div class="nrow"><span class="ndot {{ 'on' if d.net.wlan0 and d.net.wlan0.up else 'off' }}" id="ndot_wlan0"></span>Wi-Fi<span class="nstate" id="st_wlan0">{% if d.net.wlan0 and d.net.wlan0.up %}Up{% else %}Off{% endif %}</span></div>
         </div>
+        <div class="thru">eth0<span id="rx">&darr; &mdash;</span><span id="tx">&uarr; &mdash;</span></div>
       </div>
     </div>
 
@@ -1318,36 +1391,52 @@ HEALTH_PAGE = """
     function net(o){ if(!o) return "n/a"; if(!o.up) return "Down"; return o.speed?("Up · "+o.speed+"M"):"Up"; }
     function dot(id,on){ var e=$(id); if(e) e.className="ndot "+(on?"on":"off"); }
 
+    function pclass(p){ return p<70?"cool":(p<85?"warm":"hot"); }
+    function cardcls(p){ return p<70?"":(p<85?"warm":"hot"); }
+    function rate(b){ if(b==null) return "—"; if(b<1024) return b+" B/s"; if(b<1048576) return (b/1024).toFixed(b<10240?1:0)+" KB/s"; return (b/1048576).toFixed(1)+" MB/s"; }
+    function spark(hist){
+        var pts=(hist||[]).slice(-40); if(!pts.length) return "";
+        if(pts.length===1){ pts=[pts[0],pts[0]]; }
+        var n=pts.length,lo=30,hi=85,w=100,h=32,out=[];
+        for(var i=0;i<n;i++){ var x=w*i/(n-1),y=h-Math.max(0,Math.min(1,(pts[i]-lo)/(hi-lo)))*h; out.push(x.toFixed(1)+","+y.toFixed(1)); }
+        return out.join(" ");
+    }
     function update(d){
-        set("cpuPct", d.cpu.pct+"%"); width("cpuBar", d.cpu.pct);
-        set("cpuLoad", d.cpu.load[0].toFixed(2));
+        set("cpuPct", d.cpu.pct+"%"); set("cpuLoad", d.cpu.load[0].toFixed(2));
+        var cores=$("cpuCores");
+        if(cores && d.cpu.per_core){
+            if(cores.children.length!==d.cpu.per_core.length)
+                cores.innerHTML=d.cpu.per_core.map(function(){ return '<div class="core"><i></i></div>'; }).join("");
+            d.cpu.per_core.forEach(function(c,i){ var b=cores.children[i]; if(b) b.firstElementChild.style.height=Math.max(0,Math.min(100,c))+"%"; });
+        }
         if(d.temp_c!=null){
-            set("temp", d.temp_c+"°C"); width("tempBar", d.temp_c/85*100);
+            set("temp", d.temp_c+"°C");
             var soc=$("soc"); if(soc) soc.setAttribute("class","chip "+tclass(d.temp_c));
             var tc=$("tempCard"); if(tc) tc.className="metric "+tclass(d.temp_c);
         }
+        var line=$("tempLine"); if(line && d.temp_hist) line.setAttribute("points", spark(d.temp_hist));
         set("throt", d.power && d.power.ok ? "none" : "ACTIVE");
         set("memPct", d.mem.pct+"%"); width("memBar", d.mem.pct);
         set("memText", d.mem.used_mb+" / "+d.mem.total_mb+" MB");
+        var ram=$("ram"); if(ram) ram.setAttribute("class","chip "+pclass(d.mem.pct));
+        var mc=$("memCard"); if(mc) mc.className="metric "+cardcls(d.mem.pct);
         set("diskPct", d.disk.pct+"%"); width("diskBar", d.disk.pct);
         set("diskText", d.disk.used_gb+" / "+d.disk.total_gb+" GB");
+        var dc=$("diskCard"); if(dc) dc.className="metric "+cardcls(d.disk.pct);
         set("uptime", d.uptime);
-        var e=d.net.eth0, ts=d.net.tailscale0, w=d.net.wlan0;
-        var eth=$("eth"); if(eth) eth.setAttribute("class", e&&e.up?"on":"off");
+        var e=d.net.eth0, ts=d.net.tailscale0, wl=d.net.wlan0;
+        var eth=$("eth"); if(eth) eth.setAttribute("class", e&&e.up?"on":(e?"down":"off"));
         dot("ndot_eth0", e&&e.up); set("st_eth0", net(e));
         dot("ndot_tailscale0", ts&&ts.up); set("st_tailscale0", ts&&ts.up?"Up":"Down");
-        dot("ndot_wlan0", w&&w.up); set("st_wlan0", w&&w.up?"Up":"Off");
+        dot("ndot_wlan0", wl&&wl.up); set("st_wlan0", wl&&wl.up?"Up":"Off");
+        if(e){ var rx=$("rx"), tx=$("tx"); if(rx) rx.innerHTML="↓ <b>"+rate(e.rx_bps)+"</b>"; if(tx) tx.innerHTML="↑ <b>"+rate(e.tx_bps)+"</b>"; }
         var pwr=$("pwr"); if(pwr) pwr.setAttribute("class", d.power&&d.power.ok?"on":"bad");
-        Object.keys(d.services||{}).forEach(function(s){
-            var el=$("svc_"+s); if(el) el.className="pill "+(d.services[s]==="active"?"ok":"bad");
-        });
+        Object.keys(d.services||{}).forEach(function(s){ var el=$("svc_"+s); if(el) el.className="pill "+(d.services[s]==="active"?"ok":"bad"); });
     }
-    function poll(){
-        fetch("/budget/health?fmt=json&_="+Date.now(),{cache:"no-store"})
-          .then(function(r){ return r.json(); }).then(update).catch(function(){});
-    }
+    function poll(){ fetch("/budget/health?fmt=json&_="+Date.now(),{cache:"no-store"}).then(function(r){ return r.json(); }).then(update).catch(function(){}); }
     setInterval(poll, 4000);
     document.addEventListener("visibilitychange", function(){ if(!document.hidden) poll(); });
+    poll();
 })();
 </script>
 {% endraw %}
@@ -1361,11 +1450,18 @@ def health():
     if request.args.get("fmt") == "json":
         return jsonify(d)
     eth = d["net"].get("eth0")
+    eth_state = "on" if (eth and eth["up"]) else ("down" if eth else "off")
+    mem_pct, disk_pct = d["mem"].get("pct", 0), d["disk"].get("pct", 0)
+    # Cards stay neutral until high, then warn — but the RAM chip always glows (cool too).
+    card = lambda p: "" if p < 70 else ("warm" if p < 85 else "hot")
     return render_template_string(
         HEALTH_PAGE, d=d,
         tclass=_temp_class(d["temp_c"]),
-        eth_on=bool(eth and eth["up"]),
-        pwr_class="on" if d["power"].get("ok") else "bad")
+        eth_state=eth_state,
+        ram_class=_pct_class(mem_pct),
+        mcard=card(mem_pct), dcard=card(disk_pct),
+        pwr_class="on" if d["power"].get("ok") else "bad",
+        spark_points=_spark_points(d["temp_hist"]))
 
 if __name__ == '__main__':
     # Production WSGI server (waitress) instead of the Werkzeug dev server: more

@@ -260,7 +260,7 @@ def test_health_page_renders(client):
 
 def test_health_json_has_keys(client):
     data = client.get("/health?fmt=json").get_json()
-    for k in ("model", "cpu", "mem", "disk", "net", "uptime", "services"):
+    for k in ("model", "cpu", "mem", "disk", "net", "uptime", "services", "temp_hist"):
         assert k in data
     assert "eth0" in data["net"]
-    assert set(data["cpu"]) >= {"pct", "load", "cores"}
+    assert set(data["cpu"]) >= {"pct", "load", "cores", "per_core"}
