@@ -1,8 +1,10 @@
 from flask import Flask, jsonify, redirect, render_template_string, request
 from urllib.parse import urlparse
 from collections import deque
+from datetime import datetime, timezone
 import os
 import subprocess
+import json
 import redis
 import time
 import uuid
@@ -1439,7 +1441,7 @@ HEALTH_PAGE = """
       {% endfor %}
     </div>
 
-    <div class="foot"><a href="/budget/stats">&larr; Usage stats</a><a href="/budget/health">Refresh</a></div>
+    <div class="foot"><a href="/budget/stats">&larr; Usage stats</a><a href="/budget/devices">Devices</a><a href="/budget/health">Refresh</a></div>
 </div>
 {% raw %}
 <script>
@@ -1522,6 +1524,253 @@ def health():
         mcard=card(mem_pct), dcard=card(disk_pct),
         pwr_class="on" if d["power"].get("ok") else "bad",
         spark_points=_spark_points(d["temp_hist"]))
+
+# ---------------------------------------------------------------------------
+# Devices page: the phone + laptop as the Pi sees them over Tailscale. Everything
+# comes from `tailscale status --json` (per-peer online/OS/traffic/last-seen); no
+# personal identifiers are baked in — device names are read live.
+# ---------------------------------------------------------------------------
+
+_TS_PREV = {}   # tailscale IP -> (monotonic_t, rx, tx) for per-device throughput
+
+def _ts_status():
+    out = subprocess.run(["tailscale", "status", "--json"],
+                         capture_output=True, text=True, timeout=4).stdout
+    return json.loads(out)
+
+def _dev_name(p):
+    h = p.get("HostName") or ""
+    if h and h.lower() != "localhost":
+        return h
+    dns = (p.get("DNSName") or "").split(".")[0]
+    return dns or (p.get("TailscaleIPs") or ["device"])[0]
+
+def _dev_kind(os_):
+    return "phone" if (os_ or "").lower() in ("ios", "android", "ipados") else "computer"
+
+def _fmt_bytes(n):
+    if n is None:
+        return "—"
+    for unit, div in (("GB", 1073741824), ("MB", 1048576), ("KB", 1024)):
+        if n >= div:
+            return (f"{n/div:.1f} {unit}" if unit != "KB" else f"{n/div:.0f} {unit}")
+    return f"{n} B"
+
+def _since(iso):
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        s = (datetime.now(timezone.utc) - dt).total_seconds()
+    except Exception:
+        return ""
+    if s < 0:
+        return "just now"
+    for unit, n in (("d", 86400), ("h", 3600), ("m", 60)):
+        if s >= n:
+            return f"{int(s // n)}{unit} ago"
+    return f"{int(s)}s ago"
+
+def _device(p):
+    ip = (p.get("TailscaleIPs") or [""])[0]
+    rx, tx = p.get("RxBytes", 0), p.get("TxBytes", 0)     # Pi<-peer, Pi->peer
+    down_bps = up_bps = None                               # device-centric: down = Pi->device
+    now = time.monotonic()
+    prev = _TS_PREV.get(ip)
+    if prev and now - prev[0] >= 0.5:
+        dt = now - prev[0]
+        up_bps = max(0, round((rx - prev[1]) / dt))
+        down_bps = max(0, round((tx - prev[2]) / dt))
+    _TS_PREV[ip] = (now, rx, tx)
+    online = bool(p.get("Online"))
+    return {
+        "name": _dev_name(p), "os": p.get("OS", "?"), "kind": _dev_kind(p.get("OS")),
+        "ip": ip, "online": online,
+        "direct": bool(p.get("CurAddr")), "relay": p.get("Relay", ""),
+        "down_bytes": tx, "up_bytes": rx, "down_bps": down_bps, "up_bps": up_bps,
+        "down_h": _fmt_bytes(tx), "up_h": _fmt_bytes(rx),
+        "last_seen": "online" if online else (_since(p.get("LastSeen", "")) or "offline"),
+    }
+
+def collect_devices():
+    st = _try(_ts_status)
+    if not st:
+        return {"ok": False, "self": {}, "devices": []}
+    devices = [_device(p) for p in st.get("Peer", {}).values()]
+    devices.sort(key=lambda d: (d["kind"] != "phone", not d["online"], d["name"].lower()))
+    self_ = st.get("Self", {})
+    return {"ok": True,
+            "self": {"name": _dev_name(self_), "ip": (self_.get("TailscaleIPs") or [""])[0]},
+            "devices": devices}
+
+DEVICES_PAGE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Devices · Countdown</title>
+    <style>
+        :root{
+            --bg:#0b0d10; --card:#14171d; --line:#232732; --fg:#f4f6f8; --muted:#8b93a0;
+            --faint:#5f6773; --go:#3ecf7c; --wait:#f0a63a; --bad:#e5484d;
+        }
+        *{box-sizing:border-box}
+        body{margin:0;background:radial-gradient(1100px 560px at 50% -10%,#161a22,var(--bg));
+            color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+            -webkit-font-smoothing:antialiased;padding:26px 16px max(26px,env(safe-area-inset-bottom));display:flex;justify-content:center}
+        .wrap{width:100%;max-width:560px}
+        .kicker{display:flex;align-items:center;gap:8px;justify-content:center;font-size:11.5px;
+            font-weight:700;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-bottom:18px}
+        .kicker .dot{width:7px;height:7px;border-radius:50%;background:var(--go)}
+        .board{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px 10px 8px;margin-bottom:12px}
+        .board svg{display:block;width:100%;height:auto}
+        .caption{text-align:center;font-size:11.5px;color:var(--faint);margin:4px 0 4px}
+        /* line-art nodes */
+        .dev .body{fill:#0f1319;stroke:#3a4150;stroke-width:1.5;transition:.4s}
+        .dev.on .body{fill:#101c15;stroke:var(--go)}
+        .dev .scr{fill:#0a0c10;stroke:#2a2f3a;stroke-width:1}
+        .dev.on .scr{stroke:#1f5137}
+        .dev .lbl{fill:var(--muted);font:600 10px -apple-system,Roboto,Arial,sans-serif;text-anchor:middle}
+        .dev.on .lbl{fill:var(--go)}
+        .dev .sub{fill:var(--faint);font:600 8.5px -apple-system,Roboto,Arial,sans-serif;text-anchor:middle}
+        .hub{fill:#0c1a12;stroke:#2f5d43;stroke-width:1.5}
+        .hubp{fill:#123522;stroke:var(--go);stroke-width:1.4}
+        .hubl{fill:var(--go);font:700 9px ui-monospace,Menlo,monospace;text-anchor:middle}
+        .gwl{fill:var(--faint);font:600 9px -apple-system,Roboto,Arial,sans-serif;text-anchor:middle}
+        .link{stroke:#3a3f4a;stroke-width:2.5;fill:none;transition:stroke .4s}
+        .link.on{stroke:var(--go)}
+        .link.flow{stroke-dasharray:5 6;animation:flow 1s linear infinite}
+        @keyframes flow{to{stroke-dashoffset:-11}}
+        @media (prefers-reduced-motion:reduce){.link.flow{animation:none}}
+        /* cards */
+        .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+        @media (max-width:460px){.grid{grid-template-columns:1fr}}
+        .dcard{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px}
+        .dhead{display:flex;align-items:center;gap:9px}
+        .dico{width:26px;height:26px;flex:none;color:var(--muted)}
+        .dcard.on .dico{color:var(--go)}
+        .dname{font-size:15px;font-weight:700;letter-spacing:-.2px;word-break:break-word}
+        .dos{font-size:11px;color:var(--faint);margin-top:1px;text-transform:uppercase;letter-spacing:.04em}
+        .drow{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--fg);margin-top:11px}
+        .drow .k{color:var(--faint)}.drow .v{margin-left:auto;font-variant-numeric:tabular-nums;color:var(--muted)}
+        .sdot{width:8px;height:8px;border-radius:50%;background:#3a3f4a;flex:none}
+        .dcard.on .sdot{background:var(--go);box-shadow:0 0 0 3px rgba(62,207,124,.15)}
+        .thru{margin-top:11px;padding-top:11px;border-top:1px solid var(--line);font-size:11.5px;
+            color:var(--faint);font-variant-numeric:tabular-nums;display:flex;gap:16px}
+        .thru b{color:var(--fg);font-weight:600}
+        .empty{color:var(--faint);font-size:13px;text-align:center;padding:20px}
+        .foot{display:flex;gap:16px;justify-content:center;margin-top:20px}
+        .foot a{font-size:12.5px;color:var(--faint);text-decoration:none}
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <div class="kicker"><span class="dot"></span>Your devices · via {{ d.self.name or 'Pi' }}</div>
+
+    <div class="board">
+      <svg viewBox="0 0 380 210" role="img" aria-label="Devices connected to the Pi">
+        <!-- connection lines (behind the nodes) -->
+        <path id="line-phone"  class="link {{ 'on' if phone and phone.online else '' }}" d="M92 108 H150"/>
+        <path id="line-laptop" class="link {{ 'on' if laptop and laptop.online else '' }}" d="M230 108 H286"/>
+        <!-- Pi hub -->
+        <rect class="hub" x="150" y="80" width="80" height="56" rx="9"/>
+        <circle class="hubp" cx="180" cy="93" r="2.5"/><circle class="hubp" cx="190" cy="93" r="2.5"/><circle class="hubp" cx="200" cy="93" r="2.5"/>
+        <text class="hubl" x="190" y="115">{{ (d.self.name or 'pi')[:9] }}</text>
+        <text class="gwl" x="190" y="150">gateway</text>
+        <!-- phone (left) -->
+        <g class="dev {{ 'on' if phone and phone.online else '' }}" id="dev-phone">
+          <rect class="body" x="34" y="66" width="52" height="96" rx="11"/>
+          <rect class="scr" x="41" y="78" width="38" height="66" rx="3"/>
+          <rect x="52" y="72" width="16" height="3" rx="1.5" fill="#2a2f3a"/>
+          <rect x="52" y="150" width="16" height="3" rx="1.5" fill="#2a2f3a"/>
+          <text class="lbl" x="60" y="178">{% if phone %}{{ phone.name[:14] }}{% else %}no phone{% endif %}</text>
+          <text class="sub" x="60" y="190" id="sub-phone">{% if phone %}{{ phone.last_seen }}{% else %}not connected{% endif %}</text>
+        </g>
+        <!-- laptop (right) -->
+        <g class="dev {{ 'on' if laptop and laptop.online else '' }}" id="dev-laptop">
+          <rect class="body" x="286" y="72" width="72" height="50" rx="4"/>
+          <rect class="scr" x="292" y="78" width="60" height="38" rx="2"/>
+          <path class="body" d="M280 122 H364 L370 134 H274 Z"/>
+          <text class="lbl" x="322" y="150">{% if laptop %}{{ laptop.name[:16] }}{% else %}no laptop{% endif %}</text>
+          <text class="sub" x="322" y="162" id="sub-laptop">{% if laptop %}{{ laptop.last_seen }}{% else %}not connected{% endif %}</text>
+        </g>
+      </svg>
+      <div class="caption">Lines glow green when a device is online, and flow when data's moving through the Pi</div>
+    </div>
+
+    <div class="grid" id="cards">
+      {% for x in d.devices %}
+      <div class="dcard {{ 'on' if x.online else '' }}" data-ip="{{ x.ip }}">
+        <div class="dhead">
+          <svg class="dico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+            {% if x.kind == 'phone' %}<rect x="7" y="2" width="10" height="20" rx="2.5"/><line x1="10" y1="18.5" x2="14" y2="18.5"/>
+            {% else %}<rect x="3" y="4" width="18" height="12" rx="1.5"/><line x1="1" y1="20" x2="23" y2="20"/>{% endif %}
+          </svg>
+          <div><div class="dname">{{ x.name }}</div><div class="dos">{{ x.os }}</div></div>
+        </div>
+        <div class="drow"><span class="sdot"></span><span class="k">Status</span><span class="v">{{ 'Online' if x.online else x.last_seen }}</span></div>
+        <div class="drow"><span class="k">Link</span><span class="v">{{ 'Direct' if x.direct else ('Relay · ' + x.relay if x.relay else 'Relay') }}</span></div>
+        <div class="drow"><span class="k">Through Pi</span><span class="v" data-total>&darr; {{ x.down_h }} &nbsp; &uarr; {{ x.up_h }}</span></div>
+        <div class="thru"><span data-rate>&darr; <b>&mdash;</b></span><span data-rate2>&uarr; <b>&mdash;</b></span></div>
+      </div>
+      {% else %}
+      <div class="empty">No devices on the tailnet right now.</div>
+      {% endfor %}
+    </div>
+
+    <div class="foot"><a href="/budget/health">&larr; Pi health</a><a href="/budget/stats">Usage stats</a><a href="/budget/devices">Refresh</a></div>
+</div>
+{% raw %}
+<script>
+(function(){
+    function fmtBytes(n){ if(n==null) return "—"; if(n<1024) return n+" B"; if(n<1048576) return (n/1024).toFixed(0)+" KB"; if(n<1073741824) return (n/1048576).toFixed(1)+" MB"; return (n/1073741824).toFixed(2)+" GB"; }
+    function fmtRate(b){ if(b==null) return "—"; if(b<1024) return b+" B/s"; if(b<1048576) return (b/1024).toFixed(b<10240?1:0)+" KB/s"; return (b/1048576).toFixed(1)+" MB/s"; }
+    function node(id, sub, dev){
+        var g=document.getElementById(id); if(!g) return;
+        g.setAttribute("class", "dev "+(dev&&dev.online?"on":""));
+        var s=document.getElementById(sub); if(s&&dev) s.textContent=dev.last_seen;
+    }
+    function line(id, dev){
+        var l=document.getElementById(id); if(!l) return;
+        var on=dev&&dev.online, flow=on&&((dev.down_bps||0)+(dev.up_bps||0)>0);
+        l.setAttribute("class", "link"+(on?" on":"")+(flow?" flow":""));
+    }
+    function card(x){
+        var el=document.querySelector('.dcard[data-ip="'+x.ip+'"]'); if(!el) return;
+        el.className="dcard "+(x.online?"on":"");
+        var st=el.querySelectorAll(".drow .v");
+        if(st[0]) st[0].textContent = x.online?"Online":x.last_seen;
+        if(st[1]) st[1].textContent = x.direct?"Direct":(x.relay?("Relay · "+x.relay):"Relay");
+        var tot=el.querySelector("[data-total]"); if(tot) tot.innerHTML="↓ "+fmtBytes(x.down_bytes)+" &nbsp; ↑ "+fmtBytes(x.up_bytes);
+        var r1=el.querySelector("[data-rate]"); if(r1) r1.innerHTML="↓ <b>"+fmtRate(x.down_bps)+"</b>";
+        var r2=el.querySelector("[data-rate2]"); if(r2) r2.innerHTML="↑ <b>"+fmtRate(x.up_bps)+"</b>";
+    }
+    function update(d){
+        var devs=d.devices||[];
+        var phone=devs.find(function(x){return x.kind==="phone";});
+        var laptop=devs.find(function(x){return x.kind==="computer";});
+        node("dev-phone","sub-phone",phone); line("line-phone",phone);
+        node("dev-laptop","sub-laptop",laptop); line("line-laptop",laptop);
+        devs.forEach(card);
+    }
+    function poll(){ fetch("/budget/devices?fmt=json&_="+Date.now(),{cache:"no-store"}).then(function(r){return r.json();}).then(update).catch(function(){}); }
+    setInterval(poll, 4000);
+    document.addEventListener("visibilitychange", function(){ if(!document.hidden) poll(); });
+    poll();
+})();
+</script>
+{% endraw %}
+</body>
+</html>
+"""
+
+@app.route('/devices')
+def devices():
+    d = collect_devices()
+    if request.args.get("fmt") == "json":
+        return jsonify(d)
+    phone = next((x for x in d["devices"] if x["kind"] == "phone"), None)
+    laptop = next((x for x in d["devices"] if x["kind"] == "computer"), None)
+    return render_template_string(DEVICES_PAGE, d=d, phone=phone, laptop=laptop)
 
 if __name__ == '__main__':
     # Production WSGI server (waitress) instead of the Werkzeug dev server: more

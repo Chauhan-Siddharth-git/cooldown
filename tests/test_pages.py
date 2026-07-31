@@ -278,3 +278,17 @@ def test_health_json_has_keys(client):
         assert k in data
     assert "eth0" in data["net"]
     assert set(data["cpu"]) >= {"pct", "load", "cores", "per_core"}
+
+
+# ---------- devices (tailscale) ----------
+
+def test_devices_page_renders(client):
+    html = client.get("/devices").data.decode()
+    assert 'id="dev-phone"' in html          # phone node
+    assert 'id="dev-laptop"' in html         # laptop node
+    assert "Pi health" in html               # nav
+
+def test_devices_json_shape(client):
+    data = client.get("/devices?fmt=json").get_json()
+    assert {"ok", "self", "devices"} <= set(data)
+    assert isinstance(data["devices"], list)   # empty is fine on a non-tailscale host
