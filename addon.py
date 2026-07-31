@@ -263,7 +263,31 @@ FACEBOOK_OVERLAY = """
   "use strict";
   if (window.__cdFbBlock) return; window.__cdFbBlock = true;
 
-  function isHome() { var p = location.pathname; return p === "/" || p === "/home.php"; }
+  // Allow-list model: block EVERY Facebook page except the few the roommate search needs,
+  // so profiles, Watch, search and any Messenger→profile hop are covered without having to
+  // recognise each doomscroll surface. Login/checkpoint and logged-out pages are never touched.
+  var ALLOW = ["/marketplace", "/groups", "/messages", "/notifications",
+               "/settings", "/friends", "/bookmarks", "/me"];
+
+  function selfId() { var m = document.cookie.match(/(?:^|;)\\s*c_user=(\\d+)/); return m ? m[1] : null; }
+  function loggedIn() { return !!selfId() || !!document.querySelector('[role="tablist"],[role="banner"]'); }
+  function authSurface() {
+    if (document.querySelector('input[type="password"]')) return true;   // login / re-auth / checkpoint
+    return /^\\/(login|checkpoint|recover|reg|two_step|two_factor|security|help|privacy|policies|terms|legal|confirmemail|device)/.test(location.pathname);
+  }
+  function allowed() {
+    var p = location.pathname;
+    for (var i = 0; i < ALLOW.length; i++) { if (p === ALLOW[i] || p.indexOf(ALLOW[i] + "/") === 0) return true; }
+    if (p === "/profile.php") {                    // your own profile only, never anyone else's
+      var id = new URLSearchParams(location.search).get("id"), s = selfId();
+      return !id || (s && id === s);
+    }
+    return false;
+  }
+  function shouldBlock() {
+    if (authSurface() || !loggedIn()) return false;   // never wall login / logged-out
+    return !allowed();                                 // home + everything off the allow-list
+  }
 
   function ensureStyle() {
     if (document.getElementById("cd-fb-style")) return;
@@ -293,9 +317,9 @@ FACEBOOK_OVERLAY = """
     if (!c) {
       c = document.createElement("div");
       c.id = "cd-fb-cover";
-      var t = document.createElement("div"); t.className = "cd-t"; t.textContent = "Home feed is off";
+      var t = document.createElement("div"); t.className = "cd-t"; t.textContent = "This page is off";
       var p = document.createElement("div"); p.className = "cd-p";
-      p.textContent = "You're here for Marketplace, Groups and your posts — not the scroll.";
+      p.textContent = "Facebook here is Marketplace, Groups, Messages and your own profile — the feed and the rest stay closed.";
       c.appendChild(t); c.appendChild(p);
       parent.appendChild(c);
     }
@@ -307,9 +331,10 @@ FACEBOOK_OVERLAY = """
     ensureStyle();
     var tablist = document.querySelector('[role="tablist"]');
     var main = document.querySelector('[role="main"]');
+    var mobile = window.innerWidth < 900;
 
-    if (window.innerWidth < 900 && tablist) {
-      // MOBILE: leave the tab bar exposed, cover the rest, freeze scroll.
+    if (mobile && tablist) {
+      // MOBILE: leave the tab bar exposed (Marketplace/Groups/Messages), cover the rest.
       if (!document.documentElement.classList.contains("cd-fb-noscroll")) window.scrollTo(0, 0);
       var r = tablist.getBoundingClientRect();
       var c = coverIn(document.documentElement, "mob");
@@ -320,13 +345,17 @@ FACEBOOK_OVERLAY = """
       }
       document.documentElement.classList.add("cd-fb-noscroll");
       if (main) main.classList.remove("cd-fb-lock");
-    } else if (main) {
-      // DESKTOP: cover just the feed column; the rest of the page is untouched.
+    } else if (!mobile && main) {
+      // DESKTOP: cover just the content column; the top bar + rail stay live to navigate.
       document.documentElement.classList.remove("cd-fb-noscroll");
       main.classList.add("cd-fb-lock");
       coverIn(main, "desk");
     } else {
-      unlock();   // nothing to anchor to yet — wait for FB to render
+      // No nav to preserve (mobile without a tab bar, or a bare page) → cover it all.
+      if (main) main.classList.remove("cd-fb-lock");
+      document.documentElement.classList.add("cd-fb-noscroll");
+      var f = coverIn(document.documentElement, "mob");
+      f.style.top = "0"; f.style.bottom = "0";
     }
   }
 
@@ -338,14 +367,14 @@ FACEBOOK_OVERLAY = """
     if (m) m.classList.remove("cd-fb-lock");
   }
 
-  function tick() { if (isHome()) lock(); else unlock(); }
+  function tick() { if (shouldBlock()) lock(); else unlock(); }
 
   ["pushState", "replaceState"].forEach(function (fn) {
     var o = history[fn];
     history[fn] = function () { var r = o.apply(this, arguments); setTimeout(tick, 60); return r; };
   });
   window.addEventListener("popstate", tick);
-  window.addEventListener("resize", function () { if (isHome()) lock(); });
+  window.addEventListener("resize", function () { if (shouldBlock()) lock(); });
   document.addEventListener("DOMContentLoaded", tick);
   setInterval(tick, 700);
   tick();

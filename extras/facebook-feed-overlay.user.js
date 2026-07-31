@@ -1,27 +1,52 @@
 // ==UserScript==
-// @name         Facebook Feed — hard block
+// @name         Facebook — allow-list block
 // @namespace    cooldown
-// @version      3.0
-// @description  Completely blocks the Facebook home feed — no scroll, no reveal — while keeping the nav usable. Handles desktop (role=main column) and mobile (covers all but the tab bar + freezes scroll). Home page only.
+// @version      4.0
+// @description  Blocks all of Facebook except an allow-list (Marketplace, Groups, Messages, your own profile) — no scroll, no reveal — while keeping the nav usable. Handles desktop (role=main column) and mobile (covers all but the tab bar + freezes scroll). Login / logged-out pages are left alone.
 // @match        https://www.facebook.com/*
 // @match        https://web.facebook.com/*
+// @match        https://m.facebook.com/*
 // @run-at       document-start
 // @grant        none
 // ==/UserScript==
 (function () {
   "use strict";
 
-  function isHome() { var p = location.pathname; return p === "/" || p === "/home.php"; }
+  // Allow-list model: block EVERY Facebook page except the few the roommate search needs,
+  // so profiles, Watch, search and any Messenger→profile hop are covered without having to
+  // recognise each doomscroll surface. Login/checkpoint and logged-out pages are never touched.
+  var ALLOW = ["/marketplace", "/groups", "/messages", "/notifications",
+               "/settings", "/friends", "/bookmarks", "/me"];
+
+  function selfId() { var m = document.cookie.match(/(?:^|;)\s*c_user=(\d+)/); return m ? m[1] : null; }
+  function loggedIn() { return !!selfId() || !!document.querySelector('[role="tablist"],[role="banner"]'); }
+  function authSurface() {
+    if (document.querySelector('input[type="password"]')) return true;   // login / re-auth / checkpoint
+    return /^\/(login|checkpoint|recover|reg|two_step|two_factor|security|help|privacy|policies|terms|legal|confirmemail|device)/.test(location.pathname);
+  }
+  function allowed() {
+    var p = location.pathname;
+    for (var i = 0; i < ALLOW.length; i++) { if (p === ALLOW[i] || p.indexOf(ALLOW[i] + "/") === 0) return true; }
+    if (p === "/profile.php") {                    // your own profile only, never anyone else's
+      var id = new URLSearchParams(location.search).get("id"), s = selfId();
+      return !id || (s && id === s);
+    }
+    return false;
+  }
+  function shouldBlock() {
+    if (authSurface() || !loggedIn()) return false;   // never wall login / logged-out
+    return !allowed();                                 // home + everything off the allow-list
+  }
 
   function ensureStyle() {
     if (document.getElementById("cd-fb-style")) return;
     var s = document.createElement("style");
     s.id = "cd-fb-style";
     s.textContent = [
-      // Desktop: clip the feed column and block interaction under the cover.
+      // Desktop: clip the content column and block interaction under the cover.
       ".cd-fb-lock{position:relative!important;max-height:calc(100vh - 60px)!important;overflow:hidden!important;}",
       ".cd-fb-lock > *:not(#cd-fb-cover){pointer-events:none!important;}",
-      // Mobile: freeze the page so the feed can't scroll.
+      // Mobile: freeze the page so nothing can scroll.
       "html.cd-fb-noscroll, html.cd-fb-noscroll > body { overflow:hidden !important; }",
       // The cover (solid, theme-aware). Desktop = absolute inside the column; mobile = fixed.
       "#cd-fb-cover{z-index:2147483000;display:flex;flex-direction:column;align-items:center;",
@@ -41,9 +66,9 @@
     if (!c) {
       c = document.createElement("div");
       c.id = "cd-fb-cover";
-      var t = document.createElement("div"); t.className = "cd-t"; t.textContent = "Home feed is off";
+      var t = document.createElement("div"); t.className = "cd-t"; t.textContent = "This page is off";
       var p = document.createElement("div"); p.className = "cd-p";
-      p.textContent = "You're here for Marketplace, Groups and your posts — not the scroll.";
+      p.textContent = "Facebook here is Marketplace, Groups, Messages and your own profile — the feed and the rest stay closed.";
       c.appendChild(t); c.appendChild(p);
       parent.appendChild(c);
     }
@@ -55,9 +80,10 @@
     ensureStyle();
     var tablist = document.querySelector('[role="tablist"]');
     var main = document.querySelector('[role="main"]');
+    var mobile = window.innerWidth < 900;
 
-    if (window.innerWidth < 900 && tablist) {
-      // MOBILE: leave the tab bar exposed, cover the rest, freeze scroll.
+    if (mobile && tablist) {
+      // MOBILE: leave the tab bar exposed (Marketplace/Groups/Messages), cover the rest.
       if (!document.documentElement.classList.contains("cd-fb-noscroll")) window.scrollTo(0, 0);
       var r = tablist.getBoundingClientRect();
       var c = coverIn(document.documentElement, "mob");
@@ -68,13 +94,17 @@
       }
       document.documentElement.classList.add("cd-fb-noscroll");
       if (main) main.classList.remove("cd-fb-lock");
-    } else if (main) {
-      // DESKTOP: cover just the feed column; the rest of the page is untouched.
+    } else if (!mobile && main) {
+      // DESKTOP: cover just the content column; the top bar + rail stay live to navigate.
       document.documentElement.classList.remove("cd-fb-noscroll");
       main.classList.add("cd-fb-lock");
       coverIn(main, "desk");
     } else {
-      unlock();   // nothing to anchor to yet — wait for FB to render
+      // No nav to preserve (mobile without a tab bar, or a bare page) → cover it all.
+      if (main) main.classList.remove("cd-fb-lock");
+      document.documentElement.classList.add("cd-fb-noscroll");
+      var f = coverIn(document.documentElement, "mob");
+      f.style.top = "0"; f.style.bottom = "0";
     }
   }
 
@@ -86,14 +116,14 @@
     if (m) m.classList.remove("cd-fb-lock");
   }
 
-  function tick() { if (isHome()) lock(); else unlock(); }
+  function tick() { if (shouldBlock()) lock(); else unlock(); }
 
   ["pushState", "replaceState"].forEach(function (fn) {
     var o = history[fn];
     history[fn] = function () { var r = o.apply(this, arguments); setTimeout(tick, 60); return r; };
   });
   window.addEventListener("popstate", tick);
-  window.addEventListener("resize", function () { if (isHome()) lock(); });
+  window.addEventListener("resize", function () { if (shouldBlock()) lock(); });
   document.addEventListener("DOMContentLoaded", tick);
   setInterval(tick, 700);
   tick();

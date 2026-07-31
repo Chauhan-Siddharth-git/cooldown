@@ -128,9 +128,13 @@ traffic. The gotcha: with **HTTP/1.1** the bootstrap strangles and the page hang
 cost us two failed attempts). The fix is **`--set http2=true`** on the proxy — then
 Facebook loads fine and can be injected like any other site. Only the **web-page hosts**
 (`www`/`web`/`m`/`mbasic.facebook.com`) are decrypted, for **injection only** (no budget,
-no gate) — a solid feed block (home page only) + a service-worker kill, with only the HTML
-doc buffered/CSP-stripped (realtime traffic streams). This covers **every device behind the
-proxy — including a phone — with no per-device extension.**
+no gate) — an **allow-list block** (everything is covered *except* Marketplace, Groups,
+Messages and your own profile) + a service-worker kill, with only the HTML doc
+buffered/CSP-stripped (realtime traffic streams). Blocking by allow-list rather than just
+the home feed closes the escape hatches — a profile link, Watch, search, or a Messenger→
+profile hop all land on the block, not a browsable page. Login and logged-out pages are
+never touched. This covers **every device behind the proxy — including a phone — with no
+per-device extension.**
 
 Three things to know:
 - **`http2=true` is required** (see the `deploy/*-proxy.service` units). Facebook won't
@@ -144,7 +148,7 @@ Three things to know:
 
 Prefer to keep Facebook off the proxy entirely? The same overlay ships as a client-side
 userscript — **[`extras/facebook-feed-overlay.user.js`](extras/facebook-feed-overlay.user.js)**
-(solid block — no scroll) or **[`extras/facebook-declutter.user.js`](extras/facebook-declutter.user.js)**
+(allow-list block — no scroll) or **[`extras/facebook-declutter.user.js`](extras/facebook-declutter.user.js)**
 (removes the feed + Reels) — for Violentmonkey / Tampermonkey. Use *one* feed approach at
 a time.
 
