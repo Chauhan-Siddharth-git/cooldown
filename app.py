@@ -321,19 +321,20 @@ BUDGET_PAGE = """
       }
       function mkBubble(){ return { x:rnd(0,W), y:H+rnd(0,40), r:rnd(1,3.4), v:rnd(0.25,1.0) }; }
       function seed(){
-        motes=[]; bubbles=[]; var n=reduce?18:70;
+        motes=[]; bubbles=[]; var n=reduce?18:264;
         for(var i=0;i<n;i++) motes.push(mkMote(true));
         for(var j=0;j<11;j++) bubbles.push(mkBubble());
       }
       function draw(){
         if(!reduce) intensity += (target-intensity)*0.04;                // ease toward the polled level
-        var vis = reduce? motes.length : Math.round(12 + intensity*56);  // MORE hex when traffic's high
-        var spd = 0.3 + intensity*2.0, abr = 0.55 + intensity*1.2;       // + faster + brighter
+        var vis = reduce? motes.length : Math.round(14 + Math.pow(intensity,1.5)*246);  // up to ~260 hex when busy
+        var spd = 0.3 + intensity*2.0, abr = 0.55 + intensity*1.2, lastF="";  // + faster + brighter
         ctx.fillStyle=bgGrad; ctx.fillRect(0,0,W,H); ctx.textBaseline="middle";
         for(var i=0;i<motes.length;i++){ var m=motes[i];
           if(!reduce){ m.x += m.dir*m.base*spd; m.bob+=0.01; }
           if(i<vis){
-            ctx.font="600 "+m.size.toFixed(0)+"px ui-monospace,Menlo,monospace";
+            var f="600 "+m.size.toFixed(0)+"px ui-monospace,Menlo,monospace";
+            if(f!==lastF){ ctx.font=f; lastF=f; }   // skip redundant font sets (the pricey part)
             ctx.fillStyle="rgba(88,222,201,"+(m.alpha*abr).toFixed(3)+")";
             ctx.fillText(m.text, m.x, m.y+Math.sin(m.bob)*m.bobA);
           }
