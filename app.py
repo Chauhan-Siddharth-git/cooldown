@@ -227,7 +227,7 @@ BUDGET_PAGE = """
             <form action="/budget/study?site={{ site }}" method="post">
                 <button class="study{% if study_primary %} study-cta{% endif %}" type="submit">{% if study_primary %}Study while you wait{% else %}Study mode{% endif %}</button>
             </form>
-            <div class="hint">{% if study_primary %}Turn the break into Security+ progress — locked to the course, no scrolling.{% else %}Locked to the course playlist — no scrolling.{% endif %}</div>
+            <div class="hint">{% if study_primary %}Turn the break into real progress — locked to the course, no scrolling.{% else %}Locked to the course playlist — no scrolling.{% endif %}</div>
             {% endif %}
         </div>
         <a class="foot" href="/budget/stats">Usage stats</a>
@@ -1640,7 +1640,7 @@ DEVICES_PAGE = """
         .hubp{fill:#123522;stroke:var(--go);stroke-width:1.4}
         .hubl{fill:var(--go);font:700 9px ui-monospace,Menlo,monospace;text-anchor:middle}
         .gwl{fill:var(--faint);font:600 9px -apple-system,Roboto,Arial,sans-serif;text-anchor:middle}
-        .lane{stroke:#3a3f4a;stroke-width:2;fill:none;transition:stroke .4s}
+        .lane{stroke:#3a3f4a;stroke-width:1.6;fill:none;transition:stroke .4s,stroke-width .35s}
         .lane.dn.on{stroke:var(--go)}
         .lane.up.on{stroke:var(--sleep)}
         .lane.dn.flow{stroke-dasharray:5 7;animation:flowdn .9s linear infinite}
@@ -1738,11 +1738,12 @@ DEVICES_PAGE = """
         g.setAttribute("class", "dev "+(dev&&dev.online?"on":""));
         var s=document.getElementById(sub); if(s&&dev) s.textContent=dev.last_seen;
     }
+    function laneW(bps){ if(!bps||bps<=0) return 1.6; return Math.max(1.6, Math.min(5.5, 1.6+1.0*Math.log(bps/400)/Math.LN10)); }
     function lanes(prefix, dev){
         var on=dev&&dev.online;
         var dn=document.getElementById(prefix+"-dn"), up=document.getElementById(prefix+"-up");
-        if(dn) dn.setAttribute("class","lane dn"+(on?" on":"")+(on&&dev.down_bps>0?" flow":""));
-        if(up) up.setAttribute("class","lane up"+(on?" on":"")+(on&&dev.up_bps>0?" flow":""));
+        if(dn){ dn.setAttribute("class","lane dn"+(on?" on":"")+(on&&dev.down_bps>0?" flow":"")); dn.style.strokeWidth=laneW(on?dev.down_bps:0)+"px"; }
+        if(up){ up.setAttribute("class","lane up"+(on?" on":"")+(on&&dev.up_bps>0?" flow":"")); up.style.strokeWidth=laneW(on?dev.up_bps:0)+"px"; }
     }
     function card(x){
         var el=document.querySelector('.dcard[data-ip="'+x.ip+'"]'); if(!el) return;

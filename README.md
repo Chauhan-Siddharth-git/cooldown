@@ -16,6 +16,23 @@ is spent, shows a calm "Countdown" page instead of the feed.
 
 ---
 
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/countdown.png" alt="The cooldown countdown page"><br><sub><b>The cooldown.</b> When a session's up, a calm countdown — not a wall — with a free Study escape hatch.</sub></td>
+    <td width="50%"><img src="docs/screenshots/reflection.png" alt="Pre-entry reflection prompt"><br><sub><b>A pause before you dive in.</b> Name why you're reaching for it and get a better option — Continue is always one tap away.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/health.png" alt="Raspberry Pi health monitor"><br><sub><b>Pi health.</b> A live line-art board — the ethernet port glows green, the SoC tints with temperature.</sub></td>
+    <td width="50%"><img src="docs/screenshots/devices.png" alt="Connected devices over Tailscale"><br><sub><b>Your devices.</b> Phone + laptop over Tailscale, lanes flowing (and thickening) with live traffic.</sub></td>
+  </tr>
+</table>
+
+> All screenshots use mock data — the pages are private and reachable only through your own box.
+
+---
+
 ## Why it's different
 
 Most screen-time tools **block** (on/off) or enforce a **daily cap**. Cooldown's bet
