@@ -144,8 +144,10 @@ BUDGET_PAGE = """
             min-height:100dvh;padding:24px;
             padding-bottom:max(24px,env(safe-area-inset-bottom));
         }
+        /* Ambient "encrypted traffic through the porthole" background (canvas). */
+        #bp-bg{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:block}
         .card{
-            position:relative;overflow:hidden;
+            position:relative;z-index:1;overflow:hidden;
             width:100%;max-width:380px;background:var(--card);border:1px solid var(--line);
             border-radius:20px;padding:38px 28px 30px;text-align:center;
             box-shadow:0 24px 70px rgba(0,0,0,.55);
@@ -197,6 +199,7 @@ BUDGET_PAGE = """
     </style>
 </head>
 <body>
+    <canvas id="bp-bg" aria-hidden="true"></canvas>
     <div class="card {{ mood }}">
         <div class="kicker"><span class="dot"></span>{{ overline }}</div>
         {% if countdown %}<div id="cd" class="big" data-secs="{{ countdown }}">·</div>
@@ -294,6 +297,61 @@ BUDGET_PAGE = """
     })();
     </script>
     {% endraw %}{% endif %}
+    {% raw %}
+    <script>
+    (function(){
+      var c=document.getElementById("bp-bg"); if(!c||!c.getContext) return;
+      var ctx=c.getContext("2d"), W=0, H=0, DPR=Math.min(2, window.devicePixelRatio||1);
+      var HEX="0123456789abcdef", reduce=window.matchMedia&&window.matchMedia("(prefers-reduced-motion:reduce)").matches;
+      var motes=[], bubbles=[], intensity=0.3, bgGrad, vig;
+      function rnd(a,b){ return a+Math.random()*(b-a); }
+      function hx(n){ var s=""; for(var i=0;i<n;i++) s+=HEX[(Math.random()*16)|0]; return s; }
+      function resize(){
+        W=c.clientWidth; H=c.clientHeight; c.width=W*DPR; c.height=H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0);
+        bgGrad=ctx.createLinearGradient(0,0,0,H);
+        bgGrad.addColorStop(0,"#07141a"); bgGrad.addColorStop(0.55,"#08181c"); bgGrad.addColorStop(1,"#050a0d");
+        vig=ctx.createRadialGradient(W/2,H/2,Math.min(W,H)*0.32, W/2,H/2,Math.max(W,H)*0.72);
+        vig.addColorStop(0,"rgba(0,0,0,0)"); vig.addColorStop(1,"rgba(0,0,0,0.5)");
+      }
+      function mkMote(fresh){
+        var depth=Math.random(), dir=Math.random()<0.5?1:-1;
+        return { x: fresh? rnd(0,W): (dir>0? -rnd(20,200): W+rnd(20,200)),
+                 y: rnd(0,H), dir:dir, base:0.15+depth*0.9, size:8+depth*8,
+                 alpha:0.05+depth*0.22, bob:Math.random()*6.28, bobA:rnd(2,9), text:hx(2+((Math.random()*6)|0)) };
+      }
+      function mkBubble(){ return { x:rnd(0,W), y:H+rnd(0,40), r:rnd(1,3.4), v:rnd(0.25,1.0) }; }
+      function seed(){
+        motes=[]; bubbles=[]; var n=reduce?16:44;
+        for(var i=0;i<n;i++) motes.push(mkMote(true));
+        for(var j=0;j<11;j++) bubbles.push(mkBubble());
+      }
+      function draw(){
+        ctx.fillStyle=bgGrad; ctx.fillRect(0,0,W,H); ctx.textBaseline="middle";
+        for(var i=0;i<motes.length;i++){ var m=motes[i];
+          if(!reduce){ m.x += m.dir*m.base*(0.5+intensity); m.bob+=0.01; }
+          ctx.font="600 "+m.size.toFixed(0)+"px ui-monospace,Menlo,monospace";
+          ctx.fillStyle="rgba(88,222,201,"+m.alpha+")";
+          ctx.fillText(m.text, m.x, m.y+Math.sin(m.bob)*m.bobA);
+          if(m.x>W+240 || m.x<-240) motes[i]=mkMote(false);
+        }
+        ctx.fillStyle="rgba(120,205,214,0.09)";
+        for(var b=0;b<bubbles.length;b++){ var bb=bubbles[b];
+          if(!reduce) bb.y-=bb.v; ctx.beginPath(); ctx.arc(bb.x,bb.y,bb.r,0,6.283); ctx.fill();
+          if(bb.y<-10) bubbles[b]=mkBubble();
+        }
+        ctx.fillStyle=vig; ctx.fillRect(0,0,W,H);
+        if(!reduce) requestAnimationFrame(draw);
+      }
+      function poll(){
+        fetch("/budget/traffic?_="+Date.now(),{cache:"no-store"}).then(function(r){return r.json();})
+          .then(function(d){ if(d&&typeof d.bps==="number") intensity=Math.max(0.15, Math.min(1, Math.log(1+d.bps/1000)/Math.log(2000))); }).catch(function(){});
+      }
+      resize(); seed(); draw();
+      window.addEventListener("resize", function(){ resize(); seed(); });
+      if(!reduce){ poll(); setInterval(poll, 2500); }
+    })();
+    </script>
+    {% endraw %}
 </body>
 </html>
 """
@@ -1102,6 +1160,7 @@ scheduler.start()
 
 _TEMP_HIST = deque(maxlen=90)   # recent CPU temps for the sparkline (~6 min at 4s polls)
 _NET_PREV = {}                  # iface -> (monotonic_t, rx_bytes, tx_bytes) for throughput
+_TRAFFIC_PREV = {}              # {"v": (monotonic_t, total_bytes)} for the ambient gate bg
 
 def _try(fn, default=None):
     try:
@@ -1524,6 +1583,19 @@ def health():
         mcard=card(mem_pct), dcard=card(disk_pct),
         pwr_class="on" if d["power"].get("ok") else "bad",
         spark_points=_spark_points(d["temp_hist"]))
+
+@app.route('/traffic')
+def traffic():
+    # Total bytes/sec across eth0 (all traffic in/out of the Pi), for the ambient gate
+    # background — its drift speed scales with how much real traffic is flowing right now.
+    rx = _try(lambda: int(_first_line("/sys/class/net/eth0/statistics/rx_bytes")), 0)
+    tx = _try(lambda: int(_first_line("/sys/class/net/eth0/statistics/tx_bytes")), 0)
+    total, now, bps = rx + tx, time.monotonic(), 0
+    prev = _TRAFFIC_PREV.get("v")
+    if prev and now - prev[0] >= 0.3:
+        bps = max(0, round((total - prev[1]) / (now - prev[0])))
+    _TRAFFIC_PREV["v"] = (now, total)
+    return jsonify({"bps": bps})
 
 # ---------------------------------------------------------------------------
 # Devices page: the phone + laptop as the Pi sees them over Tailscale. Everything
