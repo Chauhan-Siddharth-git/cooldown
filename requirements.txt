@@ -1,12 +1,21 @@
 # Pinned to the versions verified working on the dev laptop, for a reproducible
 # Pi (arm64) image. mitmproxy + cryptography ship prebuilt arm64 wheels, so no
 # compiler is needed in the image.
-flask==3.1.2
+# Range: mitmproxy 11 (the Python 3.11 line) caps flask below 3.1, while mitmproxy 12
+# wants 3.1.x. Pinning flask exactly made the two mutually exclusive, so pip gave up with
+# "ResolutionImpossible" on Bookworm. Let the resolver pick the pair that fits.
+flask>=3.0,<4
 waitress==3.0.2
 redis==7.4.0
 requests==2.31.0
 apscheduler==3.11.2
-mitmproxy==12.2.1
+# A range, not a pin, so this installs on BOTH current Raspberry Pi OS releases:
+#   Bookworm (Debian 12, Python 3.11)  -> resolves to mitmproxy 11.x
+#   Trixie   (Debian 13, Python 3.12+) -> resolves to mitmproxy 12.x
+# mitmproxy 12 requires Python >= 3.12, so pinning it locked out every Bookworm user
+# (pip failed *after* apt had already run, leaving a half-finished install).
+# The full suite passes on 3.11 + mitmproxy 11.0.2 and on 3.13 + mitmproxy 12.2.1.
+mitmproxy>=11.0.2,<13
 # Provides zoneinfo data so a local TZ (for the midnight daily_reset) resolves
 # inside the slim image without installing system tzdata.
 tzdata==2024.1

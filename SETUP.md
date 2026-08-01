@@ -5,10 +5,27 @@ The reference deployment is a Raspberry Pi running the three services natively
 
 > Do **[SECURITY.md](SECURITY.md)** first. You are about to trust a CA you
 > generate. Understand what that means.
+> New to the terminology? [**CONCEPTS.md**](CONCEPTS.md) explains every term.
+
+> ### 💡 There's an installer that does all of this
+>
+> ```bash
+> ./install.sh --check     # dry run: prints what it would do, changes nothing
+> ./install.sh             # the real thing
+> ```
+>
+> It's idempotent (safe to re-run), asks before anything that matters, and
+> `./install.sh --uninstall` reverses it. **This page is the manual version** — read it if
+> you'd rather do it yourself, or to understand what the installer is doing on your behalf.
 
 ## 1. The box
 
 - A Raspberry Pi (or any always-on Linux box), Debian-based.
+- **Needs Python 3.11 or newer** — both current Raspberry Pi OS releases qualify
+  (Bookworm ships 3.11, Trixie ships 3.13). `requirements.txt` picks the matching
+  mitmproxy automatically: 11.x on 3.11, 12.x on 3.12+. The full test suite passes on
+  both. Check yours with `python3 --version`; the installer verifies it before changing
+  anything.
 - Install dependencies:
   ```bash
   sudo apt update

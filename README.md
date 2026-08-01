@@ -121,7 +121,24 @@ Tripping over unfamiliar words? [**CONCEPTS.md**](CONCEPTS.md) explains every te
 your devices route through, so the budget applies everywhere — phone and laptop, wifi and
 cellular, all day, without you having to remember anything.
 
-Full walkthrough: **[SETUP.md](SETUP.md)**. Roughly an afternoon, and the shape of it is:
+**There's an installer.** On the box, run:
+
+```bash
+git clone https://github.com/<your-fork>/cooldown && cd cooldown
+./install.sh --check      # optional: shows exactly what it would do, changes nothing
+./install.sh
+```
+
+It installs the dependencies, creates the locked-down service accounts, **generates your
+own certificate** (never downloads one), sets up the firewall rules and starts everything
+on boot — asking before anything that matters, and safe to re-run. Then it walks you
+through the two steps it can't do for you: putting your devices on Tailscale, and trusting
+the certificate on each one.
+
+Changed your mind? `./install.sh --uninstall` removes it all.
+
+Prefer to do it by hand, or want to know what the installer is doing? Every step is spelled
+out in **[SETUP.md](SETUP.md)**. The shape of it:
 
 1. Set up a Raspberry Pi; install Python and Redis.
 2. Create the Python environment and install the dependencies.
