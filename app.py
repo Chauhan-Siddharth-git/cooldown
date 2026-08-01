@@ -1866,7 +1866,7 @@ BG_SCRIPT = next(b for b in re.findall(r"\{% raw %\}\s*<script>.*?</script>\s*\{
                                        BUDGET_PAGE, re.S) if "bp-bg" in b)
 BG_STYLE = ("#bp-bg{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:block}"
             ".wrap{position:relative;z-index:1}"
-            ".card,.tile,.board,.metric,.dcard,.study-card{background:rgba(18,21,27,0.6)!important;"
+            ".card,.tile,.board,.metric,.dcard,.study-card{background:rgba(18,21,27,0.4)!important;"
             "-webkit-backdrop-filter:blur(13px);backdrop-filter:blur(13px)}")
 
 def _add_bg(page, full=True):
