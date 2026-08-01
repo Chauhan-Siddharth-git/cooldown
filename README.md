@@ -179,6 +179,14 @@ Pins the whole time state machine — phases, refill grace, cooldown lifecycle,
 heartbeat charging/blocking per phase, night buffer, usage history, and every gate
 state. Run before touching the budget constants.
 
+`tests/test_addon.py` covers the interception layer against mock mitmproxy flows: host
+matching (`evil-reddit.com` and `reddit.com.attacker.io` must **not** match — a substring
+check there would silently gate *and decrypt* the wrong domain), which Facebook hosts get
+decrypted (bare `facebook.com` must not — Messenger pins its cert), CSP stripping and the
+buffer-vs-stream choice, the request gate (block / study lock / pass-through / cross-site
+POST rejection), and what gets injected into a page. Each of those was verified by
+mutation testing — breaking the behaviour makes the suite fail.
+
 ## Status & limitations
 
 Works, and runs daily on the author's setup — but it's a personal project, not a
