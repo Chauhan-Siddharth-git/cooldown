@@ -304,7 +304,7 @@ BUDGET_PAGE = """
       var c=document.getElementById("bp-bg"); if(!c||!c.getContext) return;
       var ctx=c.getContext("2d"), W=0, H=0, DPR=Math.min(2, window.devicePixelRatio||1);
       var HEX="0123456789abcdef", reduce=window.matchMedia&&window.matchMedia("(prefers-reduced-motion:reduce)").matches;
-      var motes=[], bubbles=[], target=0.3, intensity=0.3, bgGrad, vig;
+      var motes=[], target=0.3, intensity=0.3, bgGrad, vig;
       function rnd(a,b){ return a+Math.random()*(b-a); }
       function hx(n){ var s=""; for(var i=0;i<n;i++) s+=HEX[(Math.random()*16)|0]; return s; }
       function resize(){
@@ -320,11 +320,9 @@ BUDGET_PAGE = """
                  y: rnd(0,H), dir:dir, base:0.15+depth*0.9, size:8+depth*8,
                  alpha:0.05+depth*0.22, bob:Math.random()*6.28, bobA:rnd(2,9), text:hx(2+((Math.random()*6)|0)) };
       }
-      function mkBubble(){ return { x:rnd(0,W), y:H+rnd(0,40), r:rnd(1,3.4), v:rnd(0.25,1.0) }; }
       function seed(){
-        motes=[]; bubbles=[]; var n=reduce?18:264;
+        motes=[]; var n=reduce?18:264;
         for(var i=0;i<n;i++) motes.push(mkMote(true));
-        for(var j=0;j<11;j++) bubbles.push(mkBubble());
       }
       function draw(){
         if(!reduce) intensity += (target-intensity)*0.04;                // ease toward the polled level
@@ -340,11 +338,6 @@ BUDGET_PAGE = """
             ctx.fillText(m.text, m.x, m.y+Math.sin(m.bob)*m.bobA);
           }
           if(m.x>W+240 || m.x<-240) motes[i]=mkMote(false);
-        }
-        ctx.fillStyle="rgba(120,205,214,0.09)";
-        for(var b=0;b<bubbles.length;b++){ var bb=bubbles[b];
-          if(!reduce) bb.y-=bb.v; ctx.beginPath(); ctx.arc(bb.x,bb.y,bb.r,0,6.283); ctx.fill();
-          if(bb.y<-10) bubbles[b]=mkBubble();
         }
         ctx.fillStyle=vig; ctx.fillRect(0,0,W,H);
         if(!reduce) requestAnimationFrame(draw);
