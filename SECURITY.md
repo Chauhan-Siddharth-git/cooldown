@@ -72,11 +72,17 @@ Cooldown touches your firewall, so it's worth being precise about who does what.
   and validate with `sudo visudo -c` before you log out.
 - If that read isn't permitted (or you're in Docker, or not on Linux), the app degrades
   quietly: the counters read zero and the background just shows less red. Nothing breaks.
-- **Run the app as its own unprivileged user.** `cooldown-app.service` should use a
-  `User=` that is *not* in the `sudo` group; with the rule above that account can do
-  exactly one read and nothing else. If you run it as a user with blanket `NOPASSWD: ALL`
-  (a stock Raspberry Pi OS `pi` account, say), then any flaw in the app is root — the
-  scoped rule documents the requirement but can't take that privilege away.
+- **The app runs as its own unprivileged user.** `cooldown-app.service` ships with
+  `User=cooldownapp` — a system account with no password, no login shell, and no
+  membership in `sudo`. Combined with the rule above, the web app's *entire* elevated
+  capability is one firewall read: it cannot flush your rules, read `/etc/shadow`, restart
+  services, or open a root shell. Since the app is the part that listens to the network,
+  this is what keeps a bug in it from becoming a root compromise. If you instead run it as
+  a user with blanket `NOPASSWD: ALL` (a stock Raspberry Pi OS `pi` account, say), any
+  flaw in the app is root — the scoped rule documents the requirement but cannot take
+  that privilege away.
+- The **proxy** still runs as the user that owns the mitmproxy CA, since it needs the CA
+  key to sign certificates. Moving it to its own account means relocating that key.
 
 ## Data
 

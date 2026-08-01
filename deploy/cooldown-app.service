@@ -3,7 +3,7 @@ Description=Cooldown Flask app
 After=network.target redis-server.service
 Requires=redis-server.service
 [Service]
-User=pi
+User=cooldownapp
 WorkingDirectory=/home/pi/cooldown
 ExecStart=/home/pi/cooldown/venv/bin/python /home/pi/cooldown/app.py
 Restart=always

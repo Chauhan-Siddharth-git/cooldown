@@ -73,8 +73,17 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now cooldown-app cooldown-proxy cooldown-redirect
 ```
 
-Optional — the packet-feed background reads one firewall counter to tell encrypted
-traffic from plaintext. Grant the app exactly that one read (and nothing more):
+The app unit ships with `User=cooldownapp`, so create that account and let it reach the
+code. Running the web app as a user *without* sudo is what stops a bug in it from becoming
+a root compromise:
+
+```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin cooldownapp
+sudo chmod 711 /home/$USER      # traverse-only: it can reach the code, not list your home
+```
+
+The packet-feed background reads one firewall counter to tell encrypted traffic from
+plaintext. Grant that account exactly that one read (and nothing more):
 
 ```bash
 sudo install -m 440 -o root -g root deploy/sudoers.d-cooldown /etc/sudoers.d/cooldown
