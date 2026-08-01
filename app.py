@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import os
 import subprocess
 import json
+import re
 import redis
 import time
 import uuid
@@ -1854,6 +1855,31 @@ DEVICES_PAGE = """
 </body>
 </html>
 """
+
+# --- Shared ambient background: give EVERY page the gate's "encrypted traffic" porthole,
+# and frost the panels so the drifting hex softly shows through instead of vanishing behind
+# them. The animation is defined once (in BUDGET_PAGE) and reused, so there's no drift. ---
+BG_CANVAS = '<canvas id="bp-bg" aria-hidden="true"></canvas>'
+# The {% raw %}<script>…</script>{% endraw %} block from BUDGET_PAGE that owns #bp-bg (the
+# other raw/script block on that page is the reflection prompt — pick the bp-bg one).
+BG_SCRIPT = next(b for b in re.findall(r"\{% raw %\}\s*<script>.*?</script>\s*\{% endraw %\}",
+                                       BUDGET_PAGE, re.S) if "bp-bg" in b)
+BG_STYLE = ("#bp-bg{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:block}"
+            ".wrap{position:relative;z-index:1}"
+            ".card,.tile,.board,.metric,.dcard,.study-card{background:rgba(18,21,27,0.6)!important;"
+            "-webkit-backdrop-filter:blur(13px);backdrop-filter:blur(13px)}")
+
+def _add_bg(page, full=True):
+    page = page.replace("</style>", BG_STYLE + "</style>", 1)   # frost + canvas layer + z-index
+    if full:                                                    # pages that don't already have the canvas
+        page = page.replace("<body>", "<body>\n" + BG_CANVAS, 1)
+        page = page.replace("</body>", BG_SCRIPT + "\n</body>", 1)
+    return page
+
+STATS_PAGE = _add_bg(STATS_PAGE)
+HEALTH_PAGE = _add_bg(HEALTH_PAGE)
+DEVICES_PAGE = _add_bg(DEVICES_PAGE)
+BUDGET_PAGE = _add_bg(BUDGET_PAGE, full=False)   # already carries the canvas + script; just frost it
 
 @app.route('/devices')
 def devices():
