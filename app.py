@@ -303,7 +303,7 @@ BUDGET_PAGE = """
       var c=document.getElementById("bp-bg"); if(!c||!c.getContext) return;
       var ctx=c.getContext("2d"), W=0, H=0, DPR=Math.min(2, window.devicePixelRatio||1);
       var HEX="0123456789abcdef", reduce=window.matchMedia&&window.matchMedia("(prefers-reduced-motion:reduce)").matches;
-      var motes=[], bubbles=[], intensity=0.3, bgGrad, vig;
+      var motes=[], bubbles=[], target=0.3, intensity=0.3, bgGrad, vig;
       function rnd(a,b){ return a+Math.random()*(b-a); }
       function hx(n){ var s=""; for(var i=0;i<n;i++) s+=HEX[(Math.random()*16)|0]; return s; }
       function resize(){
@@ -321,17 +321,22 @@ BUDGET_PAGE = """
       }
       function mkBubble(){ return { x:rnd(0,W), y:H+rnd(0,40), r:rnd(1,3.4), v:rnd(0.25,1.0) }; }
       function seed(){
-        motes=[]; bubbles=[]; var n=reduce?16:44;
+        motes=[]; bubbles=[]; var n=reduce?18:70;
         for(var i=0;i<n;i++) motes.push(mkMote(true));
         for(var j=0;j<11;j++) bubbles.push(mkBubble());
       }
       function draw(){
+        if(!reduce) intensity += (target-intensity)*0.04;                // ease toward the polled level
+        var vis = reduce? motes.length : Math.round(12 + intensity*56);  // MORE hex when traffic's high
+        var spd = 0.3 + intensity*2.0, abr = 0.55 + intensity*1.2;       // + faster + brighter
         ctx.fillStyle=bgGrad; ctx.fillRect(0,0,W,H); ctx.textBaseline="middle";
         for(var i=0;i<motes.length;i++){ var m=motes[i];
-          if(!reduce){ m.x += m.dir*m.base*(0.5+intensity); m.bob+=0.01; }
-          ctx.font="600 "+m.size.toFixed(0)+"px ui-monospace,Menlo,monospace";
-          ctx.fillStyle="rgba(88,222,201,"+m.alpha+")";
-          ctx.fillText(m.text, m.x, m.y+Math.sin(m.bob)*m.bobA);
+          if(!reduce){ m.x += m.dir*m.base*spd; m.bob+=0.01; }
+          if(i<vis){
+            ctx.font="600 "+m.size.toFixed(0)+"px ui-monospace,Menlo,monospace";
+            ctx.fillStyle="rgba(88,222,201,"+(m.alpha*abr).toFixed(3)+")";
+            ctx.fillText(m.text, m.x, m.y+Math.sin(m.bob)*m.bobA);
+          }
           if(m.x>W+240 || m.x<-240) motes[i]=mkMote(false);
         }
         ctx.fillStyle="rgba(120,205,214,0.09)";
@@ -344,7 +349,7 @@ BUDGET_PAGE = """
       }
       function poll(){
         fetch("/budget/traffic?_="+Date.now(),{cache:"no-store"}).then(function(r){return r.json();})
-          .then(function(d){ if(d&&typeof d.bps==="number") intensity=Math.max(0.15, Math.min(1, Math.log(1+d.bps/1000)/Math.log(2000))); }).catch(function(){});
+          .then(function(d){ if(d&&typeof d.bps==="number") target=Math.max(0.12, Math.min(1, Math.log(1+d.bps/1000)/Math.log(2000))); }).catch(function(){});
       }
       resize(); seed(); draw();
       var rzT;   // debounce, and DON'T re-seed (that teleported every mote on iOS overscroll)
