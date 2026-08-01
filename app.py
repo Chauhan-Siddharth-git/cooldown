@@ -305,13 +305,11 @@ BUDGET_PAGE = """
       var ctx=c.getContext("2d"), W=0, H=0, DPR=Math.min(2, window.devicePixelRatio||1);
       var reduce=window.matchMedia&&window.matchMedia("(prefers-reduced-motion:reduce)").matches;
       var HEX="0123456789abcdef";
-      var HOSTS=["example.com","cdn.example.net","api.service.io","assets.site.org","telemetry.app.co","mail.host.net","update.pkg.io","img.cache.com","auth.login.net","pool.ntp.org"];
-      var lineH=18, buf=[], sub=0, speed=0.2, tspeed=0.2, redP=0.05, tred=0.05, topFade, botFade;
+      var lineH=18, buf=[], sub=0, speed=0.6, redP=0.05, tred=0.05, topFade, botFade;   // constant (uniform) scroll
       function hx(n){ var s=""; for(var i=0;i<n;i++){ s+=HEX[(Math.random()*16)|0]; if(i&1) s+=" "; } return s.trim(); }
-      // green = encrypted (random hex, unreadable); red = plaintext that leaves in the clear (readable)
+      // both are hex; colour is the only tell — green = encrypted (TLS), red = unencrypted (DNS/HTTP)
       function greenRow(){ return { r:0, tag:"TLS", text:hx(4+((Math.random()*24)|0)) }; }
-      function redRow(){ var h=HOSTS[(Math.random()*HOSTS.length)|0];
-        return Math.random()<0.72 ? { r:1, tag:"DNS", text:"A?  "+h } : { r:1, tag:"HTTP", text:"GET /  Host: "+h }; }
+      function redRow(){ return { r:1, tag:Math.random()<0.7?"DNS":"HTTP", text:hx(4+((Math.random()*24)|0)) }; }
       function newRow(){ return Math.random()<redP ? redRow() : greenRow(); }
       function resize(){
         W=c.clientWidth; H=c.clientHeight; c.width=W*DPR; c.height=H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0);
@@ -322,7 +320,7 @@ BUDGET_PAGE = """
         botFade=ctx.createLinearGradient(0,H-64,0,H); botFade.addColorStop(0,"rgba(7,11,14,0)"); botFade.addColorStop(1,"#070b0e");
       }
       function draw(){
-        if(!reduce){ speed+=(tspeed-speed)*0.05; redP+=(tred-redP)*0.05; sub+=speed;
+        if(!reduce){ redP+=(tred-redP)*0.05; sub+=speed;
           while(sub>=lineH){ sub-=lineH; buf.shift(); buf.push(newRow()); } }
         ctx.fillStyle="#070b0e"; ctx.fillRect(0,0,W,H);
         ctx.font="600 12px ui-monospace,Menlo,monospace"; ctx.textBaseline="alphabetic";
@@ -337,7 +335,6 @@ BUDGET_PAGE = """
       function poll(){
         fetch("/budget/feed?_="+Date.now(),{cache:"no-store"}).then(function(r){return r.json();})
           .then(function(d){ if(d){ var tot=(d.enc||0)+(d.unenc||0);
-            tspeed=Math.max(0.12, Math.min(3.2, 0.12+Math.log(1+tot/500)*0.16));   // scroll faster with traffic
             tred=tot>0? Math.max(0.015, Math.min(0.7, d.unenc/tot)) : 0.02;  // red share = the REAL exposed ratio
           } }).catch(function(){});
       }
@@ -1904,12 +1901,14 @@ BG_CANVAS = '<canvas id="bp-bg" aria-hidden="true"></canvas>'
 # other raw/script block on that page is the reflection prompt — pick the bp-bg one).
 BG_SCRIPT = next(b for b in re.findall(r"\{% raw %\}\s*<script>.*?</script>\s*\{% endraw %\}",
                                        BUDGET_PAGE, re.S) if "bp-bg" in b)
-BG_STYLE = ("#bp-bg{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:block}"
+BG_STYLE = ("html,body{background:#070b0e!important}"
+            "#bp-bg{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:block}"
             ".wrap{position:relative;z-index:1}"
             ".card,.tile,.board,.metric,.dcard,.study-card{background:rgba(18,21,27,0.4)!important;"
             "-webkit-backdrop-filter:blur(5px);backdrop-filter:blur(5px)}")
 
 def _add_bg(page, full=True):
+    page = page.replace("</head>", '<meta name="theme-color" content="#070b0e"></head>', 1)  # dark iOS status/URL bars
     page = page.replace("</style>", BG_STYLE + "</style>", 1)   # frost + canvas layer + z-index
     if full:                                                    # pages that don't already have the canvas
         page = page.replace("<body>", "<body>\n" + BG_CANVAS, 1)
