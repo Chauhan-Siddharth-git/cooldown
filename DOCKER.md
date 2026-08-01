@@ -5,7 +5,7 @@ desktop. It runs mitmproxy as an **explicit HTTP proxy**: you point a browser (o
 the whole OS) at it, install the CA once, and the gated sites start counting down.
 
 No iptables, no Tailscale, no root — that heavier setup is only needed for the
-"gate my phone over the network" deployment (see [Transparent mode](#transparent-mode-the-pi-setup) below).
+"gate my phone over the network" deployment (see [Gating a phone](#gating-a-phone) below).
 
 > **Read [SECURITY.md](SECURITY.md) first.** Cooldown works by man-in-the-middling
 > your own HTTPS. The CA it generates can decrypt traffic from any device that

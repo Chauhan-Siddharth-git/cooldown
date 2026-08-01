@@ -101,7 +101,7 @@ sudo visudo -c          # validate BEFORE you log out
 ```
 
 Skip it and everything still works — the background just shows less red. See
-[SECURITY.md](SECURITY.md#privileges-what-runs-as-root-and-what-the-web-app-may-do).
+[SECURITY.md](SECURITY.md#the-technical-details).
 
 ## 7. Verify
 

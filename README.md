@@ -11,8 +11,21 @@ phone and laptop route through it, and for the sites you choose — Reddit, YouT
 etc. — it meters the minutes you actually *look at the screen* and, when the budget
 is spent, shows a calm "Countdown" page instead of the feed.
 
-> ⚠️ **Cooldown decrypts your own HTTPS to do this. Read [SECURITY.md](SECURITY.md)
-> before you run it.** You generate your own CA; this repo ships none.
+> ### ⚠️ Read this before you install anything
+>
+> To do its job, Cooldown **reads your own internet traffic**. That means giving your
+> phone and laptop a permission they don't normally give anything: *trust this box
+> completely.* It's a reasonable trade when the box is yours — but it's a real one, and
+> you should understand it first.
+>
+> **[SECURITY.md](SECURITY.md) explains exactly what that means, in plain language.**
+> Five minutes, no jargon. It's the one page not to skip.
+>
+> The short version: you create your own "master key" on your box and nowhere else. This
+> repo ships none, and **you should never install one that anybody hands you.**
+
+**New to any of this?** [**CONCEPTS.md**](CONCEPTS.md) explains every term the docs use —
+proxy, certificate, exit node, DNS — in plain English, with no assumed background.
 
 ---
 
@@ -96,39 +109,49 @@ Only browser traffic is gated — native apps pin certificates and can't be
 intercepted (by design; the answer there is "use the mobile site"). See the
 architecture notes for the full picture.
 
-## Quick start
+## Getting started
 
-### Option A — try it on one computer (Docker)
+**Before anything else, read [SECURITY.md](SECURITY.md).** It explains in plain language
+what you're agreeing to — it takes five minutes and it's the one page you shouldn't skip.
+Tripping over unfamiliar words? [**CONCEPTS.md**](CONCEPTS.md) explains every term.
 
-Gates the tempting sites in **a browser on the computer running Docker**. No Pi, no
-root, no Tailscale. Full step-by-step (with a troubleshooting table) in
-**[DOCKER.md](DOCKER.md)**:
+### 🏠 The main setup — your phone and laptop, all the time
+
+**This is Cooldown.** A small always-on box in your home (a Raspberry Pi, ~$50–80) that
+your devices route through, so the budget applies everywhere — phone and laptop, wifi and
+cellular, all day, without you having to remember anything.
+
+Full walkthrough: **[SETUP.md](SETUP.md)**. Roughly an afternoon, and the shape of it is:
+
+1. Set up a Raspberry Pi; install Python and Redis.
+2. Create the Python environment and install the dependencies.
+3. Let mitmproxy generate its certificate, then **install that certificate on your phone
+   and mark it fully trusted.** (This is the step everyone misses — skip it and websites
+   just quietly fail to load.)
+4. Put the box on Tailscale and choose it as your phone's exit node.
+5. Install the services from `deploy/` so everything starts on boot.
+6. Edit the site list and time budgets at the top of `app.py` to taste.
+
+### 🧪 Want to try it before committing? (about 10 minutes, Docker)
+
+Runs the whole thing in a container on the computer you're sitting at, so you can see the
+gate and the countdown for yourself. **It only gates a browser on that one computer — not
+your phone**, and it stops when you close it. It's a demo, not the real setup.
+
+Step-by-step, with troubleshooting: **[DOCKER.md](DOCKER.md)**.
 
 ```bash
-TZ=America/New_York docker compose up -d --build   # then set browser proxy to 127.0.0.1:8080, install the CA from http://mitm.it
+TZ=America/New_York docker compose up -d --build
+# then point your browser's proxy at 127.0.0.1:8080 and install the CA from http://mitm.it
 ```
 
-> ⚠️ **This does *not* gate your phone** — it's locked to the local machine. To gate a
-> phone *from* this computer, see the advanced Tailscale variant below (or Option B).
+### 📱 No Pi yet, but want your phone gated too? (advanced)
 
-### Option A+ — also gate your phone, from the same computer (advanced, Tailscale)
+The same Docker setup plus Tailscale, so your phone routes through the container and gets
+gated even on cellular. It needs a **privileged container** and only works while your
+computer is awake and online — a stopgap, not the reliable answer.
 
-Same Docker setup, plus Tailscale, so your **phone** routes through the container (an
-exit node) and gets gated too — even on cellular. It's a **privileged container** and
-only gates while your computer is awake and online, so it's a "no Pi yet" option, not
-the reliable one. Full walkthrough + warnings in **[DOCKER-PHONE.md](DOCKER-PHONE.md)**.
-
-### Option B — gate your phone / whole network, reliably (Raspberry Pi)
-
-The real daily-driver setup — full walkthrough in **[SETUP.md](SETUP.md)**. The shape of it:
-
-1. Flash a Raspberry Pi, install Redis + Python.
-2. `python -m venv venv && venv/bin/pip install -r requirements.txt`
-3. Let mitmproxy generate its CA, then **install that CA with full trust** on your
-   phone (the step everyone misses — without it, HTTPS silently fails).
-4. Put the box on Tailscale and select it as your exit node.
-5. Install the `deploy/` systemd units + the iptables redirect.
-6. Edit the site list / budgets at the top of `app.py` to taste.
+Walkthrough and warnings: **[DOCKER-PHONE.md](DOCKER-PHONE.md)**.
 
 ## Configure
 

@@ -2,7 +2,15 @@
 
 A tour of the whole machine: what each part does and how a single tap on a Reddit
 link becomes a countdown. Each idea is **plain terms first**, then **under the
-hood** for the curious. New words are defined in the [glossary](#glossary).
+hood** for the curious.
+
+> 🧭 **Never seen this stuff before?** Start with [**CONCEPTS.md**](CONCEPTS.md) — it
+> explains proxies, certificates, DNS and the rest from scratch, no background assumed.
+> There's also a quick [glossary](#glossary) at the bottom of this page.
+>
+> 👀 **Want to see it actually happen?** Jump to
+> [Watch one real request, step by step](#watch-one-real-request-step-by-step) — a single
+> tap followed all the way through, with the real data at each stage.
 
 ---
 
@@ -94,6 +102,159 @@ can't tell: it arrives sealed with a certificate the phone already trusts.
 From then on the loop runs itself: the injected heartbeat makes its **own** requests
 back to the box every few seconds — tunnel → redirect → proxy → brain → memory — so
 the box keeps the clock honest without you lifting a finger.
+
+---
+
+## Watch one real request, step by step
+
+The story above, but with the actual data. You tap a Reddit link at **3:47 pm**. You've
+already used 8 of your 10 minutes today.
+
+### Step 0 · Your phone asks "where is reddit.com?"
+
+Before any page can load, your phone looks up the address. This lookup is **not sealed** —
+it goes out in readable text:
+
+```
+DNS query   →   "A?  www.reddit.com"          ← anyone in between can read this
+DNS reply   ←   "www.reddit.com = 151.101.1.140"
+```
+
+> This is why the gate's background paints DNS in **red**. It's genuinely exposed. Nothing
+> Cooldown does causes that; it's how the internet has always worked.
+
+### Step 1 · The request leaves your phone — sealed
+
+Your phone builds a request. In plain form it would read:
+
+```http
+GET /r/programming HTTP/2
+Host: www.reddit.com
+Cookie: session=8f3c…
+```
+
+But it's sealed with HTTPS first, so what actually travels the wire is gibberish:
+
+```
+17 03 03 04 a1  9d 6c 3f e2  b8 04 77 1c  aa 5f 90 c3  …
+```
+
+**Nobody can read that** — not your café's wifi, not your ISP. This is also exactly what
+the gate's background shows in **green**: real encrypted traffic looks like nothing at all.
+
+### Step 2 · The box grabs it
+
+Because your phone routes through the box, those bytes arrive there. A firewall rule
+shoves anything headed for a web port into the interceptor instead of letting it pass:
+
+```
+packet for 151.101.1.140:443
+        │
+        │  iptables:  -j REDIRECT --to-ports 8080
+        ▼
+    mitmproxy (listening on 8080)
+```
+
+*(QUIC — a faster protocol the box can't read — is blocked, so your phone falls back to
+the interceptable one.)*
+
+### Step 3 · The box opens the envelope
+
+Here's the moment the whole design rests on. The box presents a certificate saying
+"I'm www.reddit.com," signed by **the certificate authority you installed**. Your phone
+checks its trusted list, finds it, and accepts.
+
+So the gibberish becomes readable — *to your box, on your own traffic*:
+
+```http
+GET /r/programming HTTP/2
+Host: www.reddit.com
+```
+
+> **This is the trade.** That capability is the entire reason Cooldown can work — and the
+> entire reason [SECURITY.md](SECURITY.md) matters. The box can read *anything* from a
+> device that trusts it, not just Reddit.
+
+### Step 4 · The decision
+
+Now the box knows the request is for Reddit, so it asks the brain:
+
+```
+  host = "www.reddit.com"     → a budgeted site? ................ yes
+  Redis: active session?       → yes
+  Redis: spent:main            → 487 seconds  (8 min 07 s)
+  Reddit's cap                 → 600 seconds  (10 min)
+  → 113 seconds left. Let it through.
+```
+
+Two ways this goes:
+
+| Time left | What the box does |
+|---|---|
+| **Yes** (our case) | Fetch the real page, but modify it on the way back — Step 5 |
+| **No** | Never fetch Reddit at all. Return the Countdown page instead, at the same URL |
+
+That second row is worth noticing: when you're out of time, **your phone never reaches
+Reddit**. The box answers in its place.
+
+### Step 5 · The page is rewritten on the way back
+
+Reddit's real page comes back to the box. Two edits happen before you see it:
+
+```diff
+  <html>
+    <head>
+-     Content-Security-Policy: script-src 'self'      ← removed
+    </head>
+    <body>
+      …the actual Reddit page, untouched…
++     <script>                                        ← added
++       // ping the box every 10s, but ONLY while this tab is visible
++       setInterval(ping, 10000);
++       document.addEventListener("visibilitychange", …);
++     </script>
+    </body>
+  </html>
+```
+
+The first edit removes the site's rule forbidding outside scripts (otherwise the browser
+would refuse the second edit). The second adds the stopwatch.
+
+Then the box **reseals** the modified page with its certificate and sends it on. Your
+phone renders it with a padlock, none the wiser.
+
+### Step 6 · The clock runs — only while you look
+
+Every 10 seconds, that script sends a tiny ping:
+
+```
+phone → box:   POST /budget/heartbeat?site=reddit
+box   → phone: {"status":"ok","remaining":103}      ← 10 seconds charged
+```
+
+Switch apps or lock your phone and the pings **stop**, so the clock stops. This is why a
+tab forgotten in the background costs you nothing.
+
+### Step 7 · Zero
+
+At `remaining: 0` the box answers the next heartbeat differently:
+
+```
+box → phone:   403 Forbidden   {"status":"blocked"}
+```
+
+The script sees it and reloads the page — so the Countdown appears **mid-scroll**, within
+about ten seconds, without you clicking anything. A cooldown starts, and until it expires
+every Reddit request gets the gate instead of Reddit.
+
+### The whole trip on one line
+
+```
+tap → DNS (red, readable) → sealed bytes → box → firewall redirect → mitmproxy
+    → opened with YOUR certificate → "is there time?" → Redis says yes
+    → fetch real page → strip CSP + inject stopwatch → reseal → your screen
+    → ping, ping, ping (only while visible) → zero → gate
+```
 
 ---
 
