@@ -51,6 +51,33 @@ from that device — for *any* site, not just the ones Cooldown gates.
 - QUIC (UDP/443) is blocked so clients fall back to interceptable TCP. See
   `deploy/cooldown-redirect.sh`.
 
+## Privileges: what runs as root, and what the web app may do
+
+Cooldown touches your firewall, so it's worth being precise about who does what.
+
+- **`cooldown-redirect.service` runs as root** (it must: it manages `iptables`). At boot
+  it installs the transparent-redirect rules, the QUIC block, the proxy-port firewall
+  above, and a **`TRAFFIC_ACCT`** chain in the `mangle` table.
+- **`TRAFFIC_ACCT` is observational only.** It holds four rules with **no target**, so
+  packets are counted and fall straight through — it cannot drop, alter, or reroute
+  anything. It exists so the UI can tell encrypted traffic (`:443`) from the plaintext
+  that leaves in the clear (`:80`, `:53`) for the packet-feed background. Inspect it with
+  `sudo iptables -t mangle -nvxL TRAFFIC_ACCT`; remove it with
+  `sudo /usr/local/sbin/cooldown-redirect.sh down`.
+- **The web app itself never writes to the firewall.** Its one privileged action is a
+  single read — `sudo -n iptables -t mangle -nvxL TRAFFIC_ACCT` — and
+  `deploy/sudoers.d-cooldown` pins sudo to exactly that fully-qualified command.
+  Install it with
+  `sudo install -m 440 -o root -g root deploy/sudoers.d-cooldown /etc/sudoers.d/cooldown`
+  and validate with `sudo visudo -c` before you log out.
+- If that read isn't permitted (or you're in Docker, or not on Linux), the app degrades
+  quietly: the counters read zero and the background just shows less red. Nothing breaks.
+- **Run the app as its own unprivileged user.** `cooldown-app.service` should use a
+  `User=` that is *not* in the `sudo` group; with the rule above that account can do
+  exactly one read and nothing else. If you run it as a user with blanket `NOPASSWD: ALL`
+  (a stock Raspberry Pi OS `pi` account, say), then any flaw in the app is root — the
+  scoped rule documents the requirement but can't take that privilege away.
+
 ## Data
 
 All state (time spent, cooldowns, usage history) lives in a local Redis on your

@@ -1,0 +1,19 @@
+# Scoped sudo for the cooldown web app — install as /etc/sudoers.d/cooldown:
+#
+#   sudo install -m 440 -o root -g root deploy/sudoers.d-cooldown /etc/sudoers.d/cooldown
+#   sudo visudo -c            # ALWAYS validate before logging out
+#
+# The app reads one iptables counter chain (TRAFFIC_ACCT) to tell encrypted traffic from
+# plaintext for the packet-feed background. That is the ONLY privileged thing it does, and
+# this rule is the only privileged thing it should be able to do. The command is fully
+# qualified with its arguments, so this grants a single read — not "run iptables".
+#
+# NOTE: on the reference Pi the login user also has a blanket `NOPASSWD: ALL` rule for
+# interactive admin. Because the app currently runs AS that user, this file documents and
+# pins the app's real requirement but does not by itself reduce its privilege. To actually
+# drop the app to least privilege, run it as a dedicated service account (a `User=` in
+# cooldown-app.service that is NOT in the sudo group) — then this rule is all it needs.
+
+Cmnd_Alias COOLDOWN_ACCT = /usr/sbin/iptables -t mangle -nvxL TRAFFIC_ACCT
+
+pi ALL=(root) NOPASSWD: COOLDOWN_ACCT

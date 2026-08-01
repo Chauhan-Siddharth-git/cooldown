@@ -1152,7 +1152,8 @@ scheduler.start()
 
 _TEMP_HIST = deque(maxlen=90)   # recent CPU temps for the sparkline (~6 min at 4s polls)
 _NET_PREV = {}                  # iface -> (monotonic_t, rx_bytes, tx_bytes) for throughput
-_TRAFFIC_PREV = {}              # {"v": (monotonic_t, total_bytes)} for the ambient gate bg
+_CPU_PREV = {}                  # {"v": /proc/stat snapshot} — CPU% is measured between calls
+_HEALTH_CACHE = {}              # {"t": monotonic, "d": payload} — collapses concurrent pollers
 _FEED_PREV = {}                 # {"v": (monotonic_t, enc_bytes, unenc_bytes)} for the packet feed
 
 def _try(fn, default=None):
@@ -1165,27 +1166,36 @@ def _first_line(path):
     with open(path) as f:
         return f.readline().strip()
 
-def _cpu_stats(sample=0.2):
-    # One 0.2s delta over /proc/stat gives both the aggregate and per-core busy %.
-    def snap():
-        cpu = {}
-        with open("/proc/stat") as f:
-            for line in f:
-                if not line.startswith("cpu"):
-                    break
-                p = line.split()
-                v = list(map(int, p[1:]))
-                cpu[p[0]] = (v[3] + v[4], sum(v))   # idle+iowait, total
-        return cpu
-    a = snap()
-    time.sleep(sample)
-    b = snap()
+def _cpu_snap():
+    cpu = {}
+    with open("/proc/stat") as f:
+        for line in f:
+            if not line.startswith("cpu"):
+                break
+            p = line.split()
+            v = list(map(int, p[1:]))
+            cpu[p[0]] = (v[3] + v[4], sum(v))   # idle+iowait, total
+    return cpu
+
+def _cpu_stats():
+    """Aggregate + per-core busy %, measured BETWEEN calls rather than by sleeping.
+
+    This used to sleep 0.2s to take its own delta, which held one of waitress's few
+    worker threads for the whole request — a handful of concurrent /health hits could
+    starve the pool and stall the gate (and silently stop heartbeat charging). Now we
+    diff against the previous snapshot, so a request never blocks; the poller's ~4s
+    cadence also gives a steadier reading than a 0.2s window. First call reads 0.
+    """
+    a, b = _CPU_PREV.get("v"), _cpu_snap()
+    _CPU_PREV["v"] = b
     def pct(name):
+        if not a:
+            return 0.0
         i1, t1 = a.get(name, (0, 0))
         i2, t2 = b.get(name, (0, 0))
         dt = t2 - t1
-        return round(100.0 * (1 - (i2 - i1) / dt), 1) if dt > 0 else 0.0
-    cores = sorted((k for k in a if k != "cpu" and k.startswith("cpu")),
+        return round(max(0.0, min(100.0, 100.0 * (1 - (i2 - i1) / dt))), 1) if dt > 0 else 0.0
+    cores = sorted((k for k in b if k != "cpu" and k.startswith("cpu")),
                    key=lambda k: int(k[3:]))
     return pct("cpu"), [pct(c) for c in cores]
 
@@ -1282,13 +1292,19 @@ def _spark_points(hist, w=100, h=32, lo=30, hi=85):
         out.append(f"{x:.1f},{y:.1f}")
     return " ".join(out)
 
-def collect_health():
+def collect_health(max_age=2.0):
+    """Snapshot of the box. Cached briefly: the page polls every 4s and several tabs (or a
+    hostile same-origin script) would otherwise each spawn ~5 `systemctl` subprocesses per
+    hit. Serving a <=2s-old payload keeps the worker threads free for the gate itself."""
+    hit = _HEALTH_CACHE.get("d")
+    if hit is not None and time.monotonic() - _HEALTH_CACHE.get("t", 0) < max_age:
+        return hit
     svc = _services(["cooldown-app", "cooldown-proxy", "cooldown-redirect", "redis-server", "tailscaled"])
     agg, per_core = _try(_cpu_stats, (0.0, []))
     temp = _try(_temp_c)
     if temp is not None:
         _TEMP_HIST.append(temp)
-    return {
+    out = {
         "model": _try(lambda: _first_line("/proc/device-tree/model").replace("\x00", ""), "Raspberry Pi"),
         "cpu": {"pct": agg, "per_core": per_core, "load": _try(_loadavg, [0, 0, 0]), "cores": os.cpu_count() or 1},
         "temp_c": temp,
@@ -1301,6 +1317,8 @@ def collect_health():
         "services": svc,
         "services_ok": all(v == "active" for v in svc.values()),
     }
+    _HEALTH_CACHE.update(t=time.monotonic(), d=out)
+    return out
 
 HEALTH_PAGE = """
 <!DOCTYPE html>
@@ -1577,44 +1595,14 @@ def health():
         pwr_class="on" if d["power"].get("ok") else "bad",
         spark_points=_spark_points(d["temp_hist"]))
 
-@app.route('/traffic')
-def traffic():
-    # Total bytes/sec across eth0 (all traffic in/out of the Pi), for the ambient gate
-    # background — its drift speed scales with how much real traffic is flowing right now.
-    rx = _try(lambda: int(_first_line("/sys/class/net/eth0/statistics/rx_bytes")), 0)
-    tx = _try(lambda: int(_first_line("/sys/class/net/eth0/statistics/tx_bytes")), 0)
-    total, now, bps = rx + tx, time.monotonic(), 0
-    prev = _TRAFFIC_PREV.get("v")
-    if prev and now - prev[0] >= 0.3:
-        bps = max(0, round((total - prev[1]) / (now - prev[0])))
-    _TRAFFIC_PREV["v"] = (now, total)
-    return jsonify({"bps": bps})
-
-def _ensure_acct():
-    """Make sure the TRAFFIC_ACCT counting chain exists (self-heals after a reboot or a
-    manual flush). Pure observational counters (no target = count-and-continue) jumped from
-    mangle PRE/POSTROUTING — they can't affect routing. Cheap existence check each call;
-    only rebuilds when missing. No-op off-Pi (sudo/iptables absent -> checks just fail)."""
-    def ipt(*a):
-        return subprocess.run(["sudo", "-n", "iptables", "-t", "mangle", *a],
-                              capture_output=True, timeout=3).returncode
-    try:
-        if ipt("-nL", "TRAFFIC_ACCT") == 0 and ipt("-C", "PREROUTING", "-j", "TRAFFIC_ACCT") == 0:
-            return                                      # already set up, nothing to do
-        ipt("-N", "TRAFFIC_ACCT")                       # harmless error if it already exists
-        for proto, port in (("tcp", "443"), ("tcp", "80"), ("udp", "53"), ("tcp", "53")):
-            if ipt("-C", "TRAFFIC_ACCT", "-p", proto, "--dport", port) != 0:
-                ipt("-A", "TRAFFIC_ACCT", "-p", proto, "--dport", port)
-        for chain in ("PREROUTING", "POSTROUTING"):
-            if ipt("-C", chain, "-j", "TRAFFIC_ACCT") != 0:
-                ipt("-A", chain, "-j", "TRAFFIC_ACCT")
-    except Exception:
-        pass
-
 def _acct_counters():
-    """Encrypted vs unencrypted bytes seen by the Pi, from the observational iptables
-    counting chain (TRAFFIC_ACCT in the mangle table): :443 = TLS (encrypted), :80 + :53 =
-    HTTP + DNS (plaintext). Read-only; needs passwordless sudo (the Pi has it)."""
+    """Encrypted vs unencrypted bytes seen by the Pi, from the observational TRAFFIC_ACCT
+    chain (mangle table): :443 = TLS (encrypted), :80 + :53 = HTTP + DNS (plaintext).
+
+    STRICTLY READ-ONLY. The chain is created by the root-run redirect script at boot, not
+    here: an earlier version rebuilt it inline, which meant an unauthenticated GET could
+    trigger privileged firewall *writes* and spawn ~10 sudo processes per request. The app
+    now only ever runs this one read, which is all `sudoers.d/budget-proxy` permits."""
     out = subprocess.run(["sudo", "-n", "iptables", "-t", "mangle", "-nvxL", "TRAFFIC_ACCT"],
                          capture_output=True, text=True, timeout=3).stdout
     enc = unenc = 0
@@ -1633,7 +1621,6 @@ def _acct_counters():
 def feed():
     # Encrypted vs unencrypted bytes/sec, driving the packet-feed background (green = TLS,
     # red = the plaintext DNS/HTTP that actually leaves your network in the clear).
-    _ensure_acct()
     enc, unenc = _try(_acct_counters, (0, 0))
     now, e, u = time.monotonic(), 0, 0
     prev = _FEED_PREV.get("v")
@@ -1934,4 +1921,4 @@ if __name__ == '__main__':
     # robust for 24/7 operation, no dev-server warning. Localhost-only — it's only
     # ever reached via the mitmproxy addon over loopback.
     from waitress import serve
-    serve(app, host='127.0.0.1', port=5000)
+    serve(app, host='127.0.0.1', port=5000, threads=12)

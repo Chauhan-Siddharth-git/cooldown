@@ -55,7 +55,31 @@ fw_dn(){ for ipt in iptables ip6tables; do
           $ipt -D INPUT -i lo    -p tcp -m multiport --dports "$PORTS" -j ACCEPT 2>/dev/null || true
           $ipt -D INPUT          -p tcp -m multiport --dports "$PORTS" -j DROP   2>/dev/null || true
         done; }
+# Observational byte counters for the packet-feed background: TRAFFIC_ACCT holds four
+# rules with NO target, so they only count and fall through — they cannot affect routing.
+# :443 = TLS (encrypted), :80 + :53 = HTTP + DNS (the plaintext that leaves in the clear).
+# Created here (as root, at boot) rather than by the web app, so the app needs nothing
+# beyond a single read; see deploy/sudoers.d-budget-proxy.
+acct_up(){
+  iptables -t mangle -nL TRAFFIC_ACCT >/dev/null 2>&1 || iptables -t mangle -N TRAFFIC_ACCT
+  for spec in "tcp 443" "tcp 80" "udp 53" "tcp 53"; do
+    set -- $spec
+    iptables -t mangle -C TRAFFIC_ACCT -p "$1" --dport "$2" 2>/dev/null || \
+      iptables -t mangle -A TRAFFIC_ACCT -p "$1" --dport "$2"
+  done
+  for ch in PREROUTING POSTROUTING; do
+    iptables -t mangle -C "$ch" -j TRAFFIC_ACCT 2>/dev/null || \
+      iptables -t mangle -A "$ch" -j TRAFFIC_ACCT
+  done
+}
+acct_dn(){
+  for ch in PREROUTING POSTROUTING; do
+    iptables -t mangle -D "$ch" -j TRAFFIC_ACCT 2>/dev/null || true
+  done
+  iptables -t mangle -F TRAFFIC_ACCT 2>/dev/null || true
+  iptables -t mangle -X TRAFFIC_ACCT 2>/dev/null || true
+}
 case "$1" in
-  up)   r4 80; r4 443; r6 80; r6 443; q_up; fw_up ;;
-  down) d4 80; d4 443; d6 80; d6 443; q_dn; fw_dn ;;
+  up)   r4 80; r4 443; r6 80; r6 443; q_up; fw_up; acct_up ;;
+  down) d4 80; d4 443; d6 80; d6 443; q_dn; fw_dn; acct_dn ;;
 esac

@@ -73,6 +73,17 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now cooldown-app cooldown-proxy cooldown-redirect
 ```
 
+Optional — the packet-feed background reads one firewall counter to tell encrypted
+traffic from plaintext. Grant the app exactly that one read (and nothing more):
+
+```bash
+sudo install -m 440 -o root -g root deploy/sudoers.d-cooldown /etc/sudoers.d/cooldown
+sudo visudo -c          # validate BEFORE you log out
+```
+
+Skip it and everything still works — the background just shows less red. See
+[SECURITY.md](SECURITY.md#privileges-what-runs-as-root-and-what-the-web-app-may-do).
+
 ## 7. Verify
 
 - `systemctl is-active cooldown-app cooldown-proxy cooldown-redirect redis-server` → all `active`.
