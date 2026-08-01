@@ -1867,7 +1867,7 @@ BG_SCRIPT = next(b for b in re.findall(r"\{% raw %\}\s*<script>.*?</script>\s*\{
 BG_STYLE = ("#bp-bg{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:block}"
             ".wrap{position:relative;z-index:1}"
             ".card,.tile,.board,.metric,.dcard,.study-card{background:rgba(18,21,27,0.4)!important;"
-            "-webkit-backdrop-filter:blur(13px);backdrop-filter:blur(13px)}")
+            "-webkit-backdrop-filter:blur(5px);backdrop-filter:blur(5px)}")
 
 def _add_bg(page, full=True):
     page = page.replace("</style>", BG_STYLE + "</style>", 1)   # frost + canvas layer + z-index
