@@ -81,8 +81,16 @@ Cooldown touches your firewall, so it's worth being precise about who does what.
   a user with blanket `NOPASSWD: ALL` (a stock Raspberry Pi OS `pi` account, say), any
   flaw in the app is root — the scoped rule documents the requirement but cannot take
   that privilege away.
-- The **proxy** still runs as the user that owns the mitmproxy CA, since it needs the CA
-  key to sign certificates. Moving it to its own account means relocating that key.
+- **The proxy runs as its own unprivileged user too.** `cooldown-proxy.service` ships with
+  `User=cooldownproxy` and `--set confdir=/var/lib/cooldown/mitmproxy`, so the CA lives in
+  a directory that account owns (`700`) rather than in a login user's home. It has **no**
+  sudo rights whatsoever. The two service accounts are also isolated from each other: the
+  web-app account cannot read the proxy's CA private key.
+- **Relocating the CA is the one step to get right.** Copy the existing directory with
+  `cp -a` (preserving the `600` key modes) and confirm the fingerprint is unchanged —
+  `openssl x509 -in <confdir>/mitmproxy-ca-cert.pem -noout -fingerprint -sha256`. If
+  mitmproxy can't read the CA it silently **generates a new one**, and every device you've
+  installed the old CA on will start failing TLS until you install the new one.
 
 ## Data
 

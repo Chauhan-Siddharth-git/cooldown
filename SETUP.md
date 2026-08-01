@@ -79,7 +79,17 @@ a root compromise:
 
 ```bash
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin cooldownapp
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin cooldownproxy
 sudo chmod 711 /home/$USER      # traverse-only: it can reach the code, not list your home
+
+# give the proxy its own CA directory (cp -a preserves the 600 key modes)
+sudo mkdir -p /var/lib/cooldown
+sudo cp -a ~/.mitmproxy /var/lib/cooldown/mitmproxy
+sudo chown -R cooldownproxy:cooldownproxy /var/lib/cooldown
+sudo chmod 700 /var/lib/cooldown /var/lib/cooldown/mitmproxy
+
+# confirm the CA did NOT change — devices trust this exact certificate
+sudo openssl x509 -in /var/lib/cooldown/mitmproxy/mitmproxy-ca-cert.pem -noout -fingerprint -sha256
 ```
 
 The packet-feed background reads one firewall counter to tell encrypted traffic from
