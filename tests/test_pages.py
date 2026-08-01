@@ -293,6 +293,11 @@ def test_devices_json_shape(client):
     assert {"ok", "self", "devices"} <= set(data)
     assert isinstance(data["devices"], list)   # empty is fine on a non-tailscale host
 
+def test_feed_json_shape(client):
+    data = client.get("/feed").get_json()   # off-Pi (no counters) degrades to zeros, never errors
+    assert set(data) == {"enc", "unenc"}
+    assert isinstance(data["enc"], int) and isinstance(data["unenc"], int)
+
 def test_active_peer_reads_as_online():
     # A directly-connected peer can report Online=false while still Active with traffic;
     # it must NOT show as offline (else "offline, but downloading").

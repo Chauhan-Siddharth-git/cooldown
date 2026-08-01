@@ -303,55 +303,47 @@ BUDGET_PAGE = """
     (function(){
       var c=document.getElementById("bp-bg"); if(!c||!c.getContext) return;
       var ctx=c.getContext("2d"), W=0, H=0, DPR=Math.min(2, window.devicePixelRatio||1);
-      var HEX="0123456789abcdef", reduce=window.matchMedia&&window.matchMedia("(prefers-reduced-motion:reduce)").matches;
-      var motes=[], target=0.3, intensity=0.3, bgGrad, vig;
-      function rnd(a,b){ return a+Math.random()*(b-a); }
-      function hx(n){ var s=""; for(var i=0;i<n;i++) s+=HEX[(Math.random()*16)|0]; return s; }
+      var reduce=window.matchMedia&&window.matchMedia("(prefers-reduced-motion:reduce)").matches;
+      var HEX="0123456789abcdef";
+      var HOSTS=["example.com","cdn.example.net","api.service.io","assets.site.org","telemetry.app.co","mail.host.net","update.pkg.io","img.cache.com","auth.login.net","pool.ntp.org"];
+      var lineH=18, buf=[], sub=0, speed=0.2, tspeed=0.2, redP=0.05, tred=0.05, topFade, botFade;
+      function hx(n){ var s=""; for(var i=0;i<n;i++){ s+=HEX[(Math.random()*16)|0]; if(i&1) s+=" "; } return s.trim(); }
+      // green = encrypted (random hex, unreadable); red = plaintext that leaves in the clear (readable)
+      function greenRow(){ return { r:0, tag:"TLS", text:hx(4+((Math.random()*24)|0)) }; }
+      function redRow(){ var h=HOSTS[(Math.random()*HOSTS.length)|0];
+        return Math.random()<0.72 ? { r:1, tag:"DNS", text:"A?  "+h } : { r:1, tag:"HTTP", text:"GET /  Host: "+h }; }
+      function newRow(){ return Math.random()<redP ? redRow() : greenRow(); }
       function resize(){
         W=c.clientWidth; H=c.clientHeight; c.width=W*DPR; c.height=H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0);
-        bgGrad=ctx.createLinearGradient(0,0,0,H);
-        bgGrad.addColorStop(0,"#07141a"); bgGrad.addColorStop(0.55,"#08181c"); bgGrad.addColorStop(1,"#050a0d");
-        vig=ctx.createRadialGradient(W/2,H/2,Math.min(W,H)*0.32, W/2,H/2,Math.max(W,H)*0.72);
-        vig.addColorStop(0,"rgba(0,0,0,0)"); vig.addColorStop(1,"rgba(0,0,0,0.5)");
-      }
-      function mkMote(fresh){
-        var depth=Math.random(), dir=Math.random()<0.5?1:-1;
-        return { x: fresh? rnd(0,W): (dir>0? -rnd(20,200): W+rnd(20,200)),
-                 y: rnd(0,H), dir:dir, base:0.15+depth*0.9, size:8+depth*8,
-                 alpha:0.05+depth*0.22, bob:Math.random()*6.28, bobA:rnd(2,9), text:hx(2+((Math.random()*6)|0)) };
-      }
-      function seed(){
-        motes=[]; var n=reduce?18:264;
-        for(var i=0;i<n;i++) motes.push(mkMote(true));
+        var N=Math.ceil(H/lineH)+2;
+        while(buf.length<N) buf.push(newRow());
+        if(buf.length>N) buf=buf.slice(buf.length-N);
+        topFade=ctx.createLinearGradient(0,0,0,64); topFade.addColorStop(0,"#070b0e"); topFade.addColorStop(1,"rgba(7,11,14,0)");
+        botFade=ctx.createLinearGradient(0,H-64,0,H); botFade.addColorStop(0,"rgba(7,11,14,0)"); botFade.addColorStop(1,"#070b0e");
       }
       function draw(){
-        if(!reduce) intensity += (target-intensity)*0.04;                // ease toward the polled level
-        var vis = reduce? motes.length : Math.round(14 + Math.pow(intensity,1.5)*246);  // up to ~260 hex when busy
-        var spd = 0.3 + intensity*2.0, abr = 0.55 + intensity*1.2, lastF="";  // + faster + brighter
-        ctx.fillStyle=bgGrad; ctx.fillRect(0,0,W,H); ctx.textBaseline="middle";
-        for(var i=0;i<motes.length;i++){ var m=motes[i];
-          if(!reduce){ m.x += m.dir*m.base*spd; m.bob+=0.01; }
-          if(i<vis){
-            var f="600 "+m.size.toFixed(0)+"px ui-monospace,Menlo,monospace";
-            if(f!==lastF){ ctx.font=f; lastF=f; }   // skip redundant font sets (the pricey part)
-            ctx.fillStyle="rgba(88,222,201,"+(m.alpha*abr).toFixed(3)+")";
-            ctx.fillText(m.text, m.x, m.y+Math.sin(m.bob)*m.bobA);
-          }
-          if(m.x>W+240 || m.x<-240) motes[i]=mkMote(false);
+        if(!reduce){ speed+=(tspeed-speed)*0.05; redP+=(tred-redP)*0.05; sub+=speed;
+          while(sub>=lineH){ sub-=lineH; buf.shift(); buf.push(newRow()); } }
+        ctx.fillStyle="#070b0e"; ctx.fillRect(0,0,W,H);
+        ctx.font="600 12px ui-monospace,Menlo,monospace"; ctx.textBaseline="alphabetic";
+        for(var i=0;i<buf.length;i++){ var row=buf[i], y=i*lineH - sub + lineH;
+          ctx.fillStyle="rgba(120,132,142,0.34)"; ctx.fillText(row.tag, 12, y);
+          ctx.fillStyle=row.r? "rgba(240,96,96,0.52)":"rgba(78,222,140,0.42)"; ctx.fillText(row.text, 56, y);
         }
-        ctx.fillStyle=vig; ctx.fillRect(0,0,W,H);
+        ctx.fillStyle=topFade; ctx.fillRect(0,0,W,64);
+        ctx.fillStyle=botFade; ctx.fillRect(0,H-64,W,64);
         if(!reduce) requestAnimationFrame(draw);
       }
       function poll(){
-        fetch("/budget/traffic?_="+Date.now(),{cache:"no-store"}).then(function(r){return r.json();})
-          .then(function(d){ if(d&&typeof d.bps==="number") target=Math.max(0.12, Math.min(1, Math.log(1+d.bps/1000)/Math.log(2000))); }).catch(function(){});
+        fetch("/budget/feed?_="+Date.now(),{cache:"no-store"}).then(function(r){return r.json();})
+          .then(function(d){ if(d){ var tot=(d.enc||0)+(d.unenc||0);
+            tspeed=Math.max(0.12, Math.min(3.2, 0.12+Math.log(1+tot/500)*0.16));   // scroll faster with traffic
+            tred=tot>0? Math.max(0.02, Math.min(0.55, Math.sqrt(d.unenc/tot)*1.1)) : 0.03;  // red share = real exposed ratio
+          } }).catch(function(){});
       }
-      resize(); seed(); draw();
-      var rzT;   // debounce, and DON'T re-seed (that teleported every mote on iOS overscroll)
-      window.addEventListener("resize", function(){ clearTimeout(rzT); rzT=setTimeout(function(){
-        resize(); for(var i=0;i<motes.length;i++){ if(motes[i].y>H) motes[i].y=rnd(0,H); }
-      }, 220); });
-      if(!reduce){ poll(); setInterval(poll, 2500); }
+      resize(); draw();
+      var rzT; window.addEventListener("resize", function(){ clearTimeout(rzT); rzT=setTimeout(resize, 220); });
+      if(!reduce){ poll(); setInterval(poll, 2000); }
     })();
     </script>
     {% endraw %}
@@ -1164,6 +1156,7 @@ scheduler.start()
 _TEMP_HIST = deque(maxlen=90)   # recent CPU temps for the sparkline (~6 min at 4s polls)
 _NET_PREV = {}                  # iface -> (monotonic_t, rx_bytes, tx_bytes) for throughput
 _TRAFFIC_PREV = {}              # {"v": (monotonic_t, total_bytes)} for the ambient gate bg
+_FEED_PREV = {}                 # {"v": (monotonic_t, enc_bytes, unenc_bytes)} for the packet feed
 
 def _try(fn, default=None):
     try:
@@ -1599,6 +1592,60 @@ def traffic():
         bps = max(0, round((total - prev[1]) / (now - prev[0])))
     _TRAFFIC_PREV["v"] = (now, total)
     return jsonify({"bps": bps})
+
+def _ensure_acct():
+    """Make sure the TRAFFIC_ACCT counting chain exists (self-heals after a reboot or a
+    manual flush). Pure observational counters (no target = count-and-continue) jumped from
+    mangle PRE/POSTROUTING — they can't affect routing. Cheap existence check each call;
+    only rebuilds when missing. No-op off-Pi (sudo/iptables absent -> checks just fail)."""
+    def ipt(*a):
+        return subprocess.run(["sudo", "-n", "iptables", "-t", "mangle", *a],
+                              capture_output=True, timeout=3).returncode
+    try:
+        if ipt("-nL", "TRAFFIC_ACCT") == 0 and ipt("-C", "PREROUTING", "-j", "TRAFFIC_ACCT") == 0:
+            return                                      # already set up, nothing to do
+        ipt("-N", "TRAFFIC_ACCT")                       # harmless error if it already exists
+        for proto, port in (("tcp", "443"), ("tcp", "80"), ("udp", "53"), ("tcp", "53")):
+            if ipt("-C", "TRAFFIC_ACCT", "-p", proto, "--dport", port) != 0:
+                ipt("-A", "TRAFFIC_ACCT", "-p", proto, "--dport", port)
+        for chain in ("PREROUTING", "POSTROUTING"):
+            if ipt("-C", chain, "-j", "TRAFFIC_ACCT") != 0:
+                ipt("-A", chain, "-j", "TRAFFIC_ACCT")
+    except Exception:
+        pass
+
+def _acct_counters():
+    """Encrypted vs unencrypted bytes seen by the Pi, from the observational iptables
+    counting chain (TRAFFIC_ACCT in the mangle table): :443 = TLS (encrypted), :80 + :53 =
+    HTTP + DNS (plaintext). Read-only; needs passwordless sudo (the Pi has it)."""
+    out = subprocess.run(["sudo", "-n", "iptables", "-t", "mangle", "-nvxL", "TRAFFIC_ACCT"],
+                         capture_output=True, text=True, timeout=3).stdout
+    enc = unenc = 0
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 8 or not parts[1].isdigit():
+            continue
+        b = int(parts[1])                       # column 2 = bytes
+        if "dpt:443" in line:
+            enc += b
+        elif "dpt:80" in line or "dpt:53" in line:
+            unenc += b
+    return enc, unenc
+
+@app.route('/feed')
+def feed():
+    # Encrypted vs unencrypted bytes/sec, driving the packet-feed background (green = TLS,
+    # red = the plaintext DNS/HTTP that actually leaves your network in the clear).
+    _ensure_acct()
+    enc, unenc = _try(_acct_counters, (0, 0))
+    now, e, u = time.monotonic(), 0, 0
+    prev = _FEED_PREV.get("v")
+    if prev and now - prev[0] >= 0.3:
+        dt = now - prev[0]
+        e = max(0, round((enc - prev[1]) / dt))
+        u = max(0, round((unenc - prev[2]) / dt))
+    _FEED_PREV["v"] = (now, enc, unenc)
+    return jsonify({"enc": e, "unenc": u})
 
 # ---------------------------------------------------------------------------
 # Devices page: the phone + laptop as the Pi sees them over Tailscale. Everything
