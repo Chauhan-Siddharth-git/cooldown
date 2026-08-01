@@ -347,7 +347,10 @@ BUDGET_PAGE = """
           .then(function(d){ if(d&&typeof d.bps==="number") intensity=Math.max(0.15, Math.min(1, Math.log(1+d.bps/1000)/Math.log(2000))); }).catch(function(){});
       }
       resize(); seed(); draw();
-      window.addEventListener("resize", function(){ resize(); seed(); });
+      var rzT;   // debounce, and DON'T re-seed (that teleported every mote on iOS overscroll)
+      window.addEventListener("resize", function(){ clearTimeout(rzT); rzT=setTimeout(function(){
+        resize(); for(var i=0;i<motes.length;i++){ if(motes[i].y>H) motes[i].y=rnd(0,H); }
+      }, 220); });
       if(!reduce){ poll(); setInterval(poll, 2500); }
     })();
     </script>
