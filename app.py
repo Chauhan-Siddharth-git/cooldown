@@ -338,7 +338,7 @@ BUDGET_PAGE = """
         fetch("/budget/feed?_="+Date.now(),{cache:"no-store"}).then(function(r){return r.json();})
           .then(function(d){ if(d){ var tot=(d.enc||0)+(d.unenc||0);
             tspeed=Math.max(0.12, Math.min(3.2, 0.12+Math.log(1+tot/500)*0.16));   // scroll faster with traffic
-            tred=tot>0? Math.max(0.02, Math.min(0.55, Math.sqrt(d.unenc/tot)*1.1)) : 0.03;  // red share = real exposed ratio
+            tred=tot>0? Math.max(0.015, Math.min(0.7, d.unenc/tot)) : 0.02;  // red share = the REAL exposed ratio
           } }).catch(function(){});
       }
       resize(); draw();
