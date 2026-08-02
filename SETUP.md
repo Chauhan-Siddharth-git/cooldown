@@ -134,6 +134,33 @@ sudo visudo -c          # validate BEFORE you log out
 Skip it and everything still works — the background just shows less red. See
 [SECURITY.md](SECURITY.md#the-technical-details).
 
+## 6b. Back up the history (recommended)
+
+Your usage history lives on the box's SD card, and a dying SD card is the most common
+way a Pi fails. A nightly job writes it to plain JSON, and a script pulls copies to
+your laptop:
+
+```bash
+sudo cp deploy/cooldown-backup.{service,timer} /etc/systemd/system/
+sudo mkdir -p /var/backups/cooldown && sudo chown $USER:$USER /var/backups/cooldown
+sudo chmod 700 /var/backups/cooldown
+sudo systemctl daemon-reload && sudo systemctl enable --now cooldown-backup.timer
+sudo systemctl start cooldown-backup.service     # run one right now
+```
+
+Then, **from your laptop** (not the box):
+
+```bash
+COOLDOWN_HOST=pi@<your-box> ./pull-backup.sh
+```
+
+The files are gzipped JSON you can read without Redis (`zcat backups/<file> | python3 -m
+json.tool`). To put one back: `venv/bin/python backup.py --restore <file>` — it refuses to
+overwrite existing keys unless you add `--force`.
+
+Only history is saved (what you did, per day). Live state — sessions, current spend, a
+running cooldown — is skipped on purpose: it's meaningless an hour later.
+
 ## 7. Verify
 
 - `systemctl is-active cooldown-app cooldown-proxy cooldown-redirect redis-server` → all `active`.

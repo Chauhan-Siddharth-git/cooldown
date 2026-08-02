@@ -1,0 +1,8 @@
+[Unit]
+Description=Budget proxy — back up usage history to JSON
+After=redis-server.service
+Requires=redis-server.service
+[Service]
+Type=oneshot
+User=pi
+ExecStart=/home/pi/cooldown/venv/bin/python /home/pi/cooldown/backup.py

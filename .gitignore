@@ -35,3 +35,4 @@ dump.rdb
 .DS_Store
 *.local
 *.log
+backups/       # pulled copies of the box's usage history (personal)
