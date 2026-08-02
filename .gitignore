@@ -35,4 +35,6 @@ dump.rdb
 .DS_Store
 *.local
 *.log
-backups/       # pulled copies of the box's usage history (personal)
+# Pulled copies of the box's usage history — personal behavioural data, never commit.
+# (NB: a trailing comment on the same line becomes part of the pattern and matches nothing.)
+backups/
