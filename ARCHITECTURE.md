@@ -372,9 +372,18 @@ Everything above describes the reference box, a Raspberry Pi. But the **same cod
 runs in three shapes. The only thing that changes is *how your traffic reaches the
 interceptor* — and that one choice decides what can be gated.
 
-```
-  Explicit     Browser ──▶ Interceptor    you set the browser's proxy; it volunteers
-  Transparent    Phone ──▶ Interceptor    routing + iptables divert it silently
+```mermaid
+flowchart LR
+    subgraph e ["Explicit — the traffic volunteers"]
+        direction LR
+        B["💻 Browser"] -- "you set its proxy setting" --> I1["Interceptor"]
+    end
+    subgraph t ["Transparent — the traffic is diverted"]
+        direction LR
+        P["📱 Phone"] -. "routing + iptables, silently" .-> I2["Interceptor"]
+    end
+    style e fill:#12161c,stroke:#3a4150,color:#c9d1d9
+    style t fill:#0d1b12,stroke:#3ecf7c,color:#e6f2ea
 ```
 
 - **1 · The Raspberry Pi** — the always-on reference. The phone routes through it over
