@@ -35,12 +35,31 @@ makes you take a break. **The pause is the whole point.**
 Everything routes through one small computer you own, between your devices and the
 internet:
 
-```
-                        ┌─────────── The box · a Raspberry Pi ───────────┐
-  You                   │  mitmproxy      Flask          Redis           │
-  phone / laptop ──────▶│  (interceptor)  (brain)        (memory)        │──────▶  Reddit
-     private tunnel     └────────────────────────────────────────────────┘  real   YouTube
-                                                                            internet
+```mermaid
+flowchart LR
+    subgraph you [" "]
+        P["📱 Your phone"]
+        L["💻 Your laptop"]
+    end
+    subgraph box ["The box · a Raspberry Pi you own"]
+        direction LR
+        M["mitmproxy<br/><i>the interceptor</i><br/>reads &amp; rewrites"]
+        F["Flask<br/><i>the brain</i><br/>budget rules"]
+        R[("Redis<br/><i>the memory</i><br/>time spent")]
+        M <--> F
+        F <--> R
+    end
+    W["🌐 Reddit · YouTube<br/>the real internet"]
+
+    P -- "private tunnel" --> M
+    L -- "browser proxy" --> M
+    M <-- "fetches the real page" --> W
+
+    style box fill:#0d1b12,stroke:#2f5d43,color:#e6f2ea
+    style M fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
+    style F fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
+    style R fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
+    style you fill:transparent,stroke:transparent
 ```
 
 Three small programs run on the box, easiest to remember by their **jobs**:
@@ -54,6 +73,38 @@ Three small programs run on the box, easiest to remember by their **jobs**:
 ## The journey of a tap
 
 What actually happens, start to finish, when you open a Reddit link — the heart of it:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant P as 📱 Your phone
+    participant M as mitmproxy<br/>(interceptor)
+    participant F as Flask<br/>(brain)
+    participant R as Redis<br/>(memory)
+    participant S as 🌐 Reddit
+
+    P->>M: tap a link — traffic routes<br/>through the box first
+    Note over M: a firewall rule pulls web traffic in —<br/>QUIC is blocked so it can be read
+    M->>M: unlock the page<br/>(your phone trusts the box's certificate)
+    M->>F: any time left on reddit?
+    F->>R: look up session + minutes spent
+    R-->>F: 8 of 10 minutes used
+    alt time left
+        F-->>M: let them in
+        M->>S: fetch the real page
+        S-->>M: the page
+        M-->>P: page + an invisible stopwatch
+        loop every 10s, only while you're looking
+            P->>F: still here
+            F->>R: charge the time
+        end
+    else no time / cooling down
+        F-->>M: serve the Countdown page
+        M-->>P: 🚫 the gate — Reddit is never contacted
+    end
+```
+
+Step by step:
 
 1. **You tap a Reddit link.** Your phone's internet travels through the box first.
    *(The phone routes via the box — a private tunnel that works on Wi-Fi and cellular.)*
@@ -82,11 +133,24 @@ What actually happens, start to finish, when you open a Reddit link — the hear
 Reaching the site was only half the round trip — the most interesting rewriting
 happens on the way **back** to you.
 
-```
-  Reddit ──▶  [ The box · rewriting on the way back ]  ──▶  Your phone
-  sends the    1. strip CSP (the page's script rules)        renders it &
-  real page    2. inject heartbeat + remove Shorts           runs the script
-               3. re-encrypt with the box's certificate
+```mermaid
+flowchart LR
+    S["🌐 Reddit<br/>sends the real page"]
+    subgraph rew ["The box · rewriting on the way back"]
+        direction TB
+        A["1 · strip CSP<br/><i>the page's rule against outside scripts</i>"]
+        B["2 · inject the heartbeat<br/><i>+ remove Shorts &amp; the feed</i>"]
+        C["3 · re-seal with your certificate"]
+        A --> B --> C
+    end
+    D["📱 Your phone<br/>renders it, runs the script,<br/>shows a padlock"]
+    S --> A
+    C --> D
+
+    style rew fill:#0d1b12,stroke:#2f5d43,color:#e6f2ea
+    style A fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
+    style B fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
+    style C fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
 ```
 
 The page your phone shows is **not quite** the one the site sent — de-clawed (Shorts
@@ -262,23 +326,23 @@ tap → DNS (red, readable) → sealed bytes → box → firewall redirect → m
 
 Everything lives on one Raspberry Pi, in layers — the anatomy of the box:
 
-```
-┌─ Raspberry Pi · Debian Linux · always on ──────────────────────────┐
-│                                                                     │
-│  ① Network plumbing — how traffic gets in                          │
-│     Tailscale (tailscale0) · iptables :80/:443 → 8080               │
-│     firewall: proxy ports → Tailscale only · QUIC (UDP 443) blocked │
-│                                                                     │
-│  ② Processes — 3 systemd services (user "pi", Python venv)          │
-│     cooldown-proxy   mitmproxy   :8080 + :8081                      │
-│     cooldown-app     Flask       :5000  (localhost)                 │
-│     redis-server     Redis       :6379  (localhost)                 │
-│                                                                     │
-│  ③ On disk — what persists                                          │
-│     ~/.mitmproxy/   the CA key (never leaves the box)               │
-│     Redis AOF       spent time, cooldowns, history                  │
-│     ~/cooldown/     the code (app.py, addon.py)                     │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph pi ["🍓 Raspberry Pi · Debian Linux · always on"]
+        direction TB
+        T["Tailscale<br/><i>the private tunnel your devices arrive through</i>"]
+        I["iptables<br/><i>shoves web traffic into the interceptor, blocks QUIC</i>"]
+        MM["mitmproxy + addon.py<br/><i>decrypt · strip CSP · inject the stopwatch · serve the gate</i>"]
+        FF["Flask + app.py<br/><i>the time rules, and every page you see</i>"]
+        RR[("Redis<br/><i>spent · cooldowns · sessions · history</i>")]
+        T --> I --> MM --> FF --> RR
+    end
+    style pi fill:#0d1b12,stroke:#2f5d43,color:#e6f2ea
+    style T fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
+    style I fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
+    style MM fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
+    style FF fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
+    style RR fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
 ```
 
 **Who talks to whom** — everything but the proxy is localhost-only:
@@ -339,11 +403,18 @@ interceptor* — and that one choice decides what can be gated.
 
 ### 1 · Charging only the time you're actually looking
 
-```
-  Tab on screen                 Tab hidden / phone locked
-  ♥ · · ♥ · · ♥ · · ♥           · · · · · · · · · ·
-  pings every 10s               no pings
-  → budget ticks down           → completely free
+```mermaid
+flowchart LR
+    subgraph on ["👁️ Tab on screen"]
+        direction TB
+        O1["heartbeat every 10s"] --> O2["box subtracts the time"] --> O3["budget goes down"]
+    end
+    subgraph off ["🌙 Tab hidden · phone locked"]
+        direction TB
+        F1["heartbeat stops"] --> F2["nothing reaches the box"] --> F3["budget untouched — it's free"]
+    end
+    style on fill:#0d1b12,stroke:#3ecf7c,color:#e6f2ea
+    style off fill:#12161c,stroke:#3a4150,color:#c9d1d9
 ```
 
 This is what makes the budget honest. A crude tool charges you for *traffic*;
@@ -363,10 +434,16 @@ visible?" signal.
 
 ### 3 · A day that winds down to bedtime
 
-```
-  |————————— DAY —————————|— WIND-DOWN —|——— NIGHT ———|
-  7am                    10pm         11pm          7am
-  full budget + refill    ramps down    tiny buffer, then closed
+```mermaid
+flowchart LR
+    D["☀️ <b>DAY</b><br/>7am → 10pm<br/><br/>full budget<br/>refills while you're away"]
+    W["🌇 <b>WIND-DOWN</b><br/>10pm → 11pm<br/><br/>the cap shrinks<br/>toward the night floor"]
+    N["🌙 <b>NIGHT</b><br/>11pm → 7am<br/><br/>one small buffer,<br/>then closed"]
+    D --> W --> N
+    N -. "7am reset — a fresh day" .-> D
+    style D fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
+    style W fill:#2a2412,stroke:#f0a63a,color:#f4e4c4
+    style N fill:#141a2e,stroke:#7aa2ff,color:#dbe4ff
 ```
 
 Deliberately **soft** — a wind-down and a small (independent, non-refilling) night
