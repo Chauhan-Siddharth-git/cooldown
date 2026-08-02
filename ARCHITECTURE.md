@@ -108,15 +108,16 @@ Step by step:
 Reaching the site was only half the round trip — the most interesting rewriting
 happens on the way **back** to you.
 
-<img src="docs/diagrams/trip-back.svg" alt="Reddit sends the real page; the box strips CSP, injects the stopwatch and strips Shorts, then re-seals it with your certificate before your phone renders it." width="100%">
+<img src="docs/diagrams/trip-back.svg" alt="Reddit sends the real page; the box adds its nonce to the page's CSP, injects the stopwatch and strips Shorts, then re-seals it with your certificate before your phone renders it." width="100%">
 
 The page your phone shows is **not quite** the one the site sent — de-clawed (Shorts
 and the endless feed removed) and wired with the timer, all invisibly. Your browser
 can't tell: it arrives sealed with a certificate the phone already trusts.
 
 > *Under the hood:* mitmproxy's response hooks run on the return trip —
-> `responseheaders` deletes the site's `Content-Security-Policy` (which normally
-> forbids injected code), then the `response` hook splices in the heartbeat script
+> `responseheaders` adds a one-time nonce to the site's `Content-Security-Policy` — the
+> rule that would otherwise forbid injected code — and leaves the rest of the policy
+> enforced, then the `response` hook splices in the heartbeat script
 > and the YouTube declutter. mitmproxy re-encrypts with its own certificate, so the
 > browser renders it as if it came straight from the site.
 
@@ -273,7 +274,7 @@ every Reddit request gets the gate instead of Reddit.
 ```
 tap → DNS (red, readable) → sealed bytes → box → firewall redirect → mitmproxy
     → opened with YOUR certificate → "is there time?" → Redis says yes
-    → fetch real page → strip CSP + inject stopwatch → reseal → your screen
+    → fetch real page → nonce the CSP + inject stopwatch → reseal → your screen
     → ping, ping, ping (only while visible) → zero → gate
 ```
 
@@ -287,7 +288,7 @@ Everything lives on one Raspberry Pi, in layers — the anatomy of the box:
 |---|---|---|
 | **Tailscale** | private mesh network | the tunnel your devices arrive through |
 | **iptables** | firewall rules | shoves web traffic into the interceptor, blocks QUIC |
-| **mitmproxy** + `addon.py` | the interceptor | decrypt · strip CSP · inject the stopwatch · serve the gate |
+| **mitmproxy** + `addon.py` | the interceptor | decrypt · nonce the CSP · inject the stopwatch · serve the gate |
 | **Flask** + `app.py` | the brain | the time rules, and every page you see |
 | **Redis** | the memory | spent · cooldowns · sessions · history |
 
@@ -309,7 +310,7 @@ and memory listen on localhost only — nothing off the box can reach them.
 
 | Part | Job | Where it lives · listens · talks to |
 |---|---|---|
-| **Interceptor** — mitmproxy | Reads each page; serves the gate or injects the timer. The only part facing the network. Decrypts HTTPS, strips CSP, injects the heartbeat, removes YouTube Shorts + feed. | `addon.py` · service `cooldown-proxy` · listens `:8080` (transparent) + `:8081` (regular) · → Flask `:5000` |
+| **Interceptor** — mitmproxy | Reads each page; serves the gate or injects the timer. The only part facing the network. Decrypts HTTPS, nonces the CSP, injects the heartbeat, removes YouTube Shorts + feed. | `addon.py` · service `cooldown-proxy` · listens `:8080` (transparent) + `:8081` (regular) · → Flask `:5000` |
 | **Brain** — Flask | Owns all the rules: budget size, cooldowns, night mode, refills. Serves the gate/stats pages and `/heartbeat`, `/enter`. | `app.py` · service `cooldown-app` · listens `:5000` (localhost) · → Redis `:6379` · run by the waitress WSGI server |
 | **Memory** — Redis | Remembers spent time, cooldowns, usage history (keys like `spent:main`, `cooldown:main`). | service `redis-server` · listens `:6379` (localhost) · persists via an append-only file on disk |
 

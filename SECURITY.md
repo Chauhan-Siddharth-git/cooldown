@@ -134,27 +134,31 @@ Genuinely — that's the honest recommendation, no hard feelings.
 
 Everything above, stated precisely.
 
-**About stripping CSP.** To run its stopwatch on a page, Cooldown removes that page's
-`Content-Security-Policy`, which is the rule telling the browser not to run outside
-scripts. Worth being precise about the cost:
+**About the Content-Security-Policy.** A site's CSP is the rule telling your browser which
+scripts it is allowed to run. Cooldown has to run one of its own, so it has to appear in
+that rule. Worth being precise about how, and what it costs:
 
-- It only happens on **HTML documents of the sites you gate** — not on their JSON/JS/CSS,
-  and never on any site outside the allow-list. Your bank and email keep their CSP.
-- **Only CSP is removed.** HSTS, `X-Frame-Options`, `X-Content-Type-Options` and
-  `Referrer-Policy` pass through untouched, and cookie flags (`HttpOnly`, `SameSite`)
-  are unaffected.
-- CSP is a *mitigation*, not a fix: removing it doesn't create a hole, it removes a net
-  that would have caught one. The real exposure is that **if a gated site ships an XSS
-  bug, it is more exploitable for you than for other visitors** — the injected script
-  runs, and CSP's `connect-src` is no longer limiting where it can send data. Scope is
-  that one origin.
-- Your largest surface is the **news list** — dozens of domains, many with far weaker
-  security than Reddit or YouTube. Keep it as short as you'll actually use.
 - **The policy is amended, not deleted.** Cooldown adds a one-time `nonce` to
   `script-src` and leaves everything else in place, so `default-src`, `frame-ancestors`,
   `connect-src` and `form-action` all stay enforced. On live Reddit, whose policy is
   `default-src 'none'`, the page arrives with that intact and both nonces present —
   Reddit's own and ours.
+- Earlier versions deleted the header outright. That was the blunt version of the same
+  idea, and it threw away protections that had nothing to do with script injection —
+  written up as F8 in [SECURITY-CASESTUDY.md](SECURITY-CASESTUDY.md).
+- It only touches **HTML documents of the sites you gate** — not their JSON/JS/CSS, and
+  never a site outside the allow-list. Your bank and email are not modified at all.
+- **Nothing else in the response is changed.** HSTS, `X-Frame-Options`,
+  `X-Content-Type-Options` and `Referrer-Policy` pass through untouched, and cookie flags
+  (`HttpOnly`, `SameSite`) are unaffected.
+- **The residual risk, honestly.** The nonce is fresh per response and random, so it
+  doesn't hand an attacker a free pass — lifting it out of the DOM is exactly as hard as
+  lifting the site's own. What genuinely changes is that our script runs with the site's
+  privileges on that origin: a bug in *our* injected code would be a bug on Reddit's
+  origin, for you. Far smaller than deleting the policy, but not zero — and the reason the
+  injected script stays as small as it is.
+- Your largest surface is the **news list** — dozens of domains, many with far weaker
+  security than Reddit or YouTube. Keep it as short as you'll actually use.
 - One case is deliberately left alone: if a policy allows `'unsafe-inline'` with no nonce
   or hash, adding a nonce would switch `'unsafe-inline'` **off** and break the site's own
   inline scripts. Our script is already permitted there, so the header is untouched.

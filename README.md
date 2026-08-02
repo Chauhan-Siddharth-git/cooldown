@@ -97,14 +97,14 @@ seriously.
      ▼
  Your box (Raspberry Pi, native venv + systemd)
    ├─ iptables redirect  :80/:443 → mitmproxy, QUIC (UDP/443) blocked
-   ├─ mitmproxy (addon.py)   decrypt · strip CSP · inject heartbeat · serve the gate
+   ├─ mitmproxy (addon.py)   decrypt · nonce the CSP · inject heartbeat · serve the gate
    ├─ Flask (app.py)         budget logic + gate/stats pages + /heartbeat /enter
    └─ Redis                  state: spent, cooldown, sessions, usage history
 ```
 
 - **`app.py`** — the brain: the time state machine (shared bucket, per-site caps,
   passive refill, cooldown, day/wind-down/night phases) and all the pages.
-- **`addon.py`** — the mitmproxy addon: interception, CSP stripping, heartbeat +
+- **`addon.py`** — the mitmproxy addon: interception, CSP amendment, heartbeat +
   YouTube-declutter injection, and serving the gate in place of a gated site.
 - **`deploy/`** — the systemd units and the iptables redirect script, as run on the
   reference Pi.
@@ -207,7 +207,7 @@ Facebook loads fine and can be injected like any other site. Only the **web-page
 (`www`/`web`/`m`/`mbasic.facebook.com`) are decrypted, for **injection only** (no budget,
 no gate) — an **allow-list block** (everything is covered *except* Marketplace, Groups,
 Messages and your own profile) + a service-worker kill, with only the HTML doc
-buffered/CSP-stripped (realtime traffic streams). Blocking by allow-list rather than just
+buffered/CSP-amended (realtime traffic streams). Blocking by allow-list rather than just
 the home feed closes the escape hatches — a profile link, Watch, search, or a Messenger→
 profile hop all land on the block, not a browsable page. Login and logged-out pages are
 never touched. This covers **every device behind the proxy — including a phone — with no
@@ -242,7 +242,7 @@ state. Run before touching the budget constants.
 `tests/test_addon.py` covers the interception layer against mock mitmproxy flows: host
 matching (`evil-reddit.com` and `reddit.com.attacker.io` must **not** match — a substring
 check there would silently gate *and decrypt* the wrong domain), which Facebook hosts get
-decrypted (bare `facebook.com` must not — Messenger pins its cert), CSP stripping and the
+decrypted (bare `facebook.com` must not — Messenger pins its cert), CSP amendment and the
 buffer-vs-stream choice, the request gate (block / study lock / pass-through / cross-site
 POST rejection), and what gets injected into a page. Each of those was verified by
 mutation testing — breaking the behaviour makes the suite fail.
