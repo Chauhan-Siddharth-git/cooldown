@@ -42,11 +42,12 @@
   <text class="sub" x="272" y="203">so the browser sees a page it trusts</text>
 
   <!-- arrow out -->
-  <path class="wire" d="M688 122 h 52" marker-end="url(#a)"/>
+  <path class="wire" d="M688 122 h 44" marker-end="url(#a)"/>
 
   <!-- the phone -->
-  <rect class="end" x="742" y="76" width="132" height="92" rx="9"/>
-  <rect x="772" y="90" width="26" height="46" rx="4" fill="none" stroke="#8b93a0" stroke-width="1.4"/>
-  <text class="lbl" x="808" y="112">phone</text>
-  <text class="sub" x="756" y="156">renders it · padlock shown</text>
+  <rect class="end" x="738" y="66" width="146" height="112" rx="9"/>
+  <rect x="756" y="82" width="24" height="42" rx="4" fill="none" stroke="#8b93a0" stroke-width="1.4"/>
+  <text class="lbl" x="790" y="108">phone</text>
+  <text class="sub" x="754" y="146">renders it —</text>
+  <text class="sub" x="754" y="162">padlock shown</text>
 </svg>
