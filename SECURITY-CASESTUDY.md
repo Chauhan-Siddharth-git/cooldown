@@ -4,7 +4,12 @@ A walkthrough of every weakness found in this setup, why it mattered, and how it
 was fixed. Written as a learning reference — each finding is
 **what it is → how it bit us → impact → the fix → the concept behind it.**
 
+> This is the public copy. Findings are described in the detail needed to learn from them;
+> live addresses, configuration and anything directly exploitable stay in the private
 > version-controlled copy.
+
+New to any of the words below? *Nonce*, *same-origin*, *least privilege* and the rest are
+all explained in plain English in [**CONCEPTS.md**](CONCEPTS.md).
 
 **Scorecard:** 12 findings fixed & verified live · 4 risks accepted by design · 172 tests green.
 

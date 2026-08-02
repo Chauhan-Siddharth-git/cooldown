@@ -25,6 +25,14 @@ The padlock in your address bar means the envelope is sealed.
 **Encryption** — the scrambling itself. Scrambled data looks like meaningless gibberish;
 that's why Cooldown's background shows encrypted traffic as random letters and numbers.
 
+**Headers** — the writing on the envelope, as opposed to the letter inside. Every request
+and response carries a few dozen: what kind of content this is, how long to keep it, which
+cookies to send. You never see them, and almost every rule in this project is one.
+
+**TLS** — the technology that does the actual sealing. "HTTPS" is just ordinary web traffic
+with TLS wrapped around it. When the docs say the box *terminates TLS*, that's the polite
+way of saying the box is where the envelope gets opened.
+
 **DNS** — the internet's phone book. Before your phone can reach `reddit.com` it asks
 "what's the number for reddit.com?" Here's the catch: **that question is usually sent
 unsealed**, in plain readable text. That's why Cooldown's background paints DNS in red —
@@ -91,6 +99,90 @@ number. Useful for checking "is this still the same key?" after moving things ar
 
 ---
 
+## The words the security pages use
+
+These turn up in [SECURITY.md](SECURITY.md) and the
+[case study](SECURITY-CASESTUDY.md). None of them are as forbidding as they look.
+
+**Origin** — one website's territory, written as scheme + host: `https://reddit.com`. The
+browser treats it as a fence.
+
+**Same-origin** — the rule that code from one origin can read anything else on that origin
+and almost nothing on another. It's the reason a random open tab can't rifle through your
+email. Worth understanding here because Cooldown **adds its own pages to a site's origin** —
+`/budget/stats` is served on Reddit's — so Reddit's scripts start out on the inside of that
+fence with them. Rebuilding that boundary by hand is finding F9.
+
+**Content-Security-Policy (CSP)** — a header in which a site lists what its own pages are
+allowed to load and run: which scripts, where data may be sent, who may embed it. It is a
+site saying *"even if somebody smuggles code into my page, don't run it."*
+
+**Nonce** — "number used once." A random code word the box invents **fresh for every single
+page load**, then writes in two places: into that page's CSP (*"scripts carrying this word
+may run"*) and onto the one script Cooldown injects. The browser matches them, runs the
+stopwatch, and goes on refusing everything else.
+
+> Why it matters here: to inject anything, Cooldown has to get past the site's CSP. The
+> blunt way is to delete the whole header — which also throws away the rules about where
+> data may be sent and who may embed the page, none of which had anything to do with our
+> script. The nonce is the surgical way: **add one line to the policy, leave the rest
+> enforced.** The word is discarded after that page load, so it can't be learned in advance
+> and reused. This is finding F8, and it's the single biggest security improvement in the
+> project.
+
+**XSS (cross-site scripting)** — the bug CSP exists to contain: an attacker gets their code
+running inside someone else's page — smuggled through a comment, a username, a search term
+the site echoes back — where it acts with that page's full privileges, including your
+logged-in session.
+
+**CSRF (cross-site request forgery)** — tricking *your* browser into making a
+state-changing request while you're logged in. Another site quietly submits a form to
+yours; your cookies ride along and it looks legitimate. The defence is requiring something
+the other site can't know or forge.
+
+**Allow-list** — naming what's permitted and refusing everything else, rather than listing
+what's banned. More tedious, much harder to slip past — a ban-list only stops what you
+thought of.
+
+**Exfiltration** — the "and then what?" of an attack: getting the stolen data out to
+somewhere the attacker controls. A lot of CSP is really about making this step hard.
+
+**Least privilege** — giving each program exactly the power its job needs and not a scrap
+more, so a break-in yields as little as possible.
+
+**`root`** — Linux's administrator: unlimited power over the machine. **Privilege
+escalation** is an attacker turning a small foothold into that.
+
+**Forbidden header name** — a header the browser flatly refuses to let page code set, no
+matter what. `Sec-Fetch-Dest` is one: the browser fills it in with *how* a request was
+made, and a script cannot lie about it. That unforgeability is what makes it usable as a
+lock (F9).
+
+**Tamper-evidence** — not stopping someone interfering, just making it impossible for them
+to do it *unnoticed*. Weaker than prevention, and often the only honest option — the reboot
+alarm is this, and so is a sticker over the SD slot.
+
+**Mutation testing** — checking your tests by deliberately breaking the code and confirming
+they fail. A test that passes either way is decoration, and this is how you find out.
+
+**Brute force** — simply guessing, millions of times, until a password works. The reason
+SSH is key-only now.
+
+**Supply chain** — everything you didn't write but ship anyway. Someone else's bug becomes
+yours the moment you install it.
+
+**Open redirect** — a page that forwards visitors to whatever address the link hands it,
+which lets an attacker borrow your site's good name to send someone somewhere bad.
+
+**Parser differential** — two pieces of code disagreeing about what the same text means.
+Attacks live in the gap: one component sees a harmless address, the other sees a different
+one and acts on it.
+
+**Hash** — a one-way fingerprint of some data. Easy to compute, effectively impossible to
+reverse.
+
+---
+
 ## Inside the box
 
 **Linux** — the operating system the box runs. Not Windows, not macOS.
@@ -115,6 +207,29 @@ of one that controls the whole box.
 **Firewall / iptables** — the box's door policy: which traffic is allowed in, from where.
 Cooldown uses it to make sure only *your* devices can reach the proxy, and to send your
 phone's web traffic into the proxy in the first place.
+
+**QUIC** — a newer, faster way browsers talk to Google and YouTube. Cooldown blocks it, so
+the browser falls back to the older form it can actually read. Costs a little speed, buys
+the entire feature.
+
+**Transparent redirect** — bending traffic into the proxy without the device being told.
+Your phone thinks it's talking to Reddit; the box quietly intercepts on the way past. It's
+why there are no proxy settings to configure on the phone.
+
+**Chain (iptables)** — a named list of firewall rules. Most end in a verdict — accept, drop.
+`TRAFFIC_ACCT` deliberately has none: packets are counted and fall straight through, which
+is why the traffic background can't break your internet even if it's wrong.
+
+**Loopback and IPv6** — loopback is the box talking to itself (`127.0.0.1`). IPv6 is the
+newer style of address that runs alongside the old one — worth naming because a firewall
+rule written only for the old style leaves the new one wide open, which was finding F1.
+
+**venv** — a private folder of Python libraries belonging to one project, so it can't
+collide with anything else on the box.
+
+**Buffering vs streaming** — buffering means holding a whole response so it can be edited;
+streaming means passing it straight through untouched. Cooldown buffers only HTML pages it
+needs to inject into, and streams everything else — which is why video still plays smoothly.
 
 **Redis** — a small, fast place to store notes. Cooldown keeps its numbers there: minutes
 spent today, whether a cooldown is running, your usage history. It's all on your box; none
