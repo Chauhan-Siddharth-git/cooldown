@@ -6,6 +6,7 @@ import os
 import subprocess
 import json
 import re
+import random
 import redis
 import time
 import uuid
@@ -238,10 +239,14 @@ BUDGET_PAGE = """
         {% if title %}<h1>{{ title }}</h1>{% endif %}
         <p>{{ message }}</p>
         <div class="actions">
-            {% if can_enter %}
+            {% if can_enter and not show_reflect %}
+            <form action="/budget/enter?site={{ site }}{% if next_url %}&next={{ next_url|urlencode }}{% endif %}" method="post">
+                <button class="enter" type="submit">Enter {{ label }}</button>
+            </form>
+            {% elif can_enter %}
             <button class="enter" type="button" id="beginBtn">Enter {{ label }}</button>
             <div id="reflect" hidden>
-                <p class="r-q">Part of you doesn't want to scroll. What's pulling you in right now?</p>
+                <p class="r-q">{{ reflect_q }}</p>
                 <div class="chips" id="chips"></div>
                 <div class="r-list" id="rlist" hidden>
                     <p class="r-lead" id="rlead"></p>
@@ -302,7 +307,7 @@ BUDGET_PAGE = """
     })();
     </script>
     {% endif %}
-    {% if can_enter %}{% raw %}
+    {% if can_enter and show_reflect %}{% raw %}
     <script>
     (function(){
         var TRIGGERS = [
@@ -319,6 +324,8 @@ BUDGET_PAGE = """
           { key:"need", label:"\\u2705 I actually need it", lead:"Fair enough \\u2014 be deliberate.",
             items:["Get in, get what you need, get out","Hold a rough time limit in mind","Then back to the real thing"] }
         ];
+        for(var i=TRIGGERS.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1));
+          var t=TRIGGERS[i]; TRIGGERS[i]=TRIGGERS[j]; TRIGGERS[j]=t; }   // no fixed positions to memorise
         var reflect=document.getElementById("reflect"); if(!reflect) return;
         var picked="";
         var begin=document.getElementById("beginBtn"), chips=document.getElementById("chips"),
@@ -821,6 +828,31 @@ REFLECT_TRIGGERS = {
     "need":     "Actually needed it",
 }
 
+# Anything shown identically every time becomes wallpaper — that's how Screen Time's
+# "Ignore for today" ends up being tapped without reading. Two defences:
+#   · it isn't shown every time (never on your first session of the day, and only on a
+#     stable-but-unpredictable ~70% of the rest), so it can't become part of the routine;
+#   · the wording rotates and the chips are shuffled, so there's no fixed motor pattern.
+# Deliberately seeded rather than live-random, so reloading the page can't reroll it away.
+REFLECT_QUESTIONS = [
+    "Part of you doesn't want to scroll. What's pulling you in right now?",
+    "Before you go in — what are you actually reaching for?",
+    "Quick check: what's driving this one?",
+    "What's underneath the urge right now?",
+    "Honestly — why this, why now?",
+    "Something sent you here. What was it?",
+]
+
+def reflect_decision(now=None):
+    """(show_it, which_question). Skips your first entry of the day, then appears
+    unpredictably — the point is that it can't be anticipated and tapped through."""
+    now = now if now is not None else time.time()
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    entries = int(r.get(f"entries:{day}") or 0)
+    seed = random.Random(f"{day}:{entries}")
+    question = REFLECT_QUESTIONS[seed.randrange(len(REFLECT_QUESTIONS))]
+    return (entries >= 1 and seed.random() < 0.7), question
+
 def log_reflection(trigger, action, now=None):
     if trigger not in REFLECT_TRIGGERS or action not in ("pass", "enter"):
         return
@@ -936,7 +968,8 @@ def _safe_next(site, nxt):
 
 def render_gate(site, label, *, overline, message, title="", mood="wait",
                 can_enter=False, button_text="", headline="",
-                countdown=0, show_study=False, study_primary=False, refresh=0, next_url=""):
+                countdown=0, show_study=False, study_primary=False, refresh=0, next_url="",
+                show_reflect=False, reflect_q=""):
     # One template, many states. `overline` is the uppercase kicker; `countdown` (secs)
     # renders a live ticking timer that reloads at zero; `headline` renders a big static
     # time; `mood` picks the accent colour (go/wait/sleep). `next_url`, when set, makes
@@ -947,7 +980,8 @@ def render_gate(site, label, *, overline, message, title="", mood="wait",
         site=site, label=label, overline=overline, title=title, message=message, mood=mood,
         can_enter=can_enter, button_text=button_text, headline=headline,
         countdown=int(countdown), show_study=show_study, study_primary=study_primary,
-        refresh=refresh, next_url=next_url)
+        refresh=refresh, next_url=next_url,
+        show_reflect=show_reflect, reflect_q=reflect_q)
 
 @app.route('/budget')
 def budget_page():
@@ -972,8 +1006,10 @@ def budget_page():
                     countdown=secs_until_hour(NIGHT_END_HOUR), show_study=study_ok,
                     title="Get some sleep",
                     message=f"{label} is closed for the night. It reopens at {NIGHT_END_HOUR} AM.")
+            nshow, nq = reflect_decision()
             return render_gate(site, label, overline=f"{label} · Night mode", mood="sleep",
                 headline=clock(remaining), can_enter=True, show_study=study_ok, next_url=nxt,
+                show_reflect=nshow, reflect_q=nq,
                 message=f"A small buffer, then closed till {NIGHT_END_HOUR} AM. No refill overnight — spend it wisely.")
         # wind-down
         if remaining <= 0:
@@ -981,8 +1017,10 @@ def budget_page():
                 countdown=secs_until_hour(NIGHT_START_HOUR), show_study=study_ok,
                 title="Paused for now",
                 message="Easing toward bedtime — back briefly at night mode, then closed. Time for something calmer.")
+        wshow, wq = reflect_decision()
         return render_gate(site, label, overline=f"{label} · Winding down", mood="wait",
             headline=clock(remaining), can_enter=True, show_study=study_ok, next_url=nxt,
+            show_reflect=wshow, reflect_q=wq,
             message="Your time is shrinking toward bedtime, and there's no refill now.")
 
     # Daytime.
@@ -1030,8 +1068,10 @@ def budget_page():
             message=f"You've used your {label} share of the bucket.{steer} It trickles back if you step away.")
 
     # Enter.
+    show_reflect, reflect_q = reflect_decision()
     return render_gate(site, label, overline=f"{label} · Time left", mood="go",
         headline=clock(remaining), can_enter=True, show_study=study_ok, next_url=nxt,
+        show_reflect=show_reflect, reflect_q=reflect_q,
         message="Foreground time only — the clock ticks while you're looking. Make it count.")
 
 @app.route('/reflect', methods=['POST'])
@@ -1051,6 +1091,9 @@ def enter():
         return redirect(f'/budget?site={site}')
 
     log_reflection(request.form.get("trigger", ""), "enter")
+    day = time.strftime("%Y-%m-%d")
+    r.incr(f"entries:{day}")          # drives "skip the prompt on your first session"
+    r.expire(f"entries:{day}", 7 * 86400)
 
     token = str(uuid.uuid4())
     r.setex(f"session:{token}", SESSION_IDLE_TTL, "active")

@@ -383,3 +383,36 @@ def test_reflect_endpoint_records_a_pass(client, rdb):
 def test_enter_without_a_trigger_records_nothing(client, rdb, day):
     client.post("/enter?site=reddit")               # entered without using the prompt
     assert rdb.lrange(f"reflect:{time.strftime('%Y-%m-%d')}", 0, -1) == []
+
+
+# ---------- the reflection prompt resists habituation ----------
+
+def test_reflect_never_on_first_entry_of_the_day(rdb):
+    show, _ = budget.reflect_decision()               # no entries logged yet
+    assert show is False
+
+def test_reflect_appears_on_later_entries(rdb):
+    day = time.strftime("%Y-%m-%d")
+    seen = set()
+    for n in range(1, 40):                            # across many entry counts
+        rdb.set(f"entries:{day}", n)
+        seen.add(budget.reflect_decision()[0])
+    assert seen == {True, False}                      # unpredictable, not always-on
+
+def test_reflect_decision_is_stable_across_reloads(rdb):
+    # Reloading the gate must not re-roll the prompt away.
+    rdb.set(f"entries:{time.strftime('%Y-%m-%d')}", 3)
+    assert len({budget.reflect_decision()[0] for _ in range(10)}) == 1
+
+def test_reflect_question_rotates(rdb):
+    day0 = time.time()
+    qs = {budget.reflect_decision(now=day0 + d * 86400)[1] for d in range(40)}
+    assert len(qs) > 1                                # wording varies, no fixed script
+    assert qs <= set(budget.REFLECT_QUESTIONS)
+
+def test_entering_counts_toward_the_days_entries(client, rdb, day):
+    key = f"entries:{time.strftime('%Y-%m-%d')}"
+    assert rdb.get(key) is None
+    client.post("/enter?site=reddit")
+    assert rdb.get(key) == "1"
+    assert rdb.ttl(key) > 0                           # self-prunes
