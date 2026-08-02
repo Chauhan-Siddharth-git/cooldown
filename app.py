@@ -8,6 +8,7 @@ import json
 import re
 import random
 import redis
+import secrets
 import time
 import uuid
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -359,13 +360,14 @@ BUDGET_PAGE = """
     {% raw %}
     <script>
     (function(){
+      var TOK=(document.querySelector('meta[name="cd-tok"]')||{}).content||"";
       var b=document.getElementById("bgInfoBtn"), p=document.getElementById("bgPanel"),
           x=document.getElementById("bgInfoClose");
       if(b&&p){
         var timer=null;
         function rate(n){ if(n<1024) return n+" B/s"; if(n<1048576) return (n/1024).toFixed(n<10240?1:0)+" KB/s"; return (n/1048576).toFixed(1)+" MB/s"; }
         function refresh(){
-          fetch("/budget/feed?_="+Date.now(),{cache:"no-store"}).then(function(r){return r.json();})
+          fetch("/budget/feed?t="+TOK+"&_="+Date.now(),{cache:"no-store"}).then(function(r){return r.json();})
             .then(function(d){
               var e=d.enc||0, u=d.unenc||0, tot=e+u;
               var g=document.getElementById("bgPctG"), rr=document.getElementById("bgPctR"),
@@ -389,6 +391,7 @@ BUDGET_PAGE = """
     </script>
     <script>
     (function(){
+      var TOK=(document.querySelector('meta[name="cd-tok"]')||{}).content||"";
       var c=document.getElementById("bp-bg"); if(!c||!c.getContext) return;
       var ctx=c.getContext("2d"), W=0, H=0, DPR=Math.min(2, window.devicePixelRatio||1);
       var reduce=window.matchMedia&&window.matchMedia("(prefers-reduced-motion:reduce)").matches;
@@ -440,7 +443,7 @@ BUDGET_PAGE = """
         if(!reduce) requestAnimationFrame(draw);
       }
       function poll(){
-        fetch("/budget/feed?_="+Date.now(),{cache:"no-store"}).then(function(r){return r.json();})
+        fetch("/budget/feed?t="+TOK+"&_="+Date.now(),{cache:"no-store"}).then(function(r){return r.json();})
           .then(function(d){ if(d){ var tot=(d.enc||0)+(d.unenc||0);
             tred=tot>0? Math.max(0.015, Math.min(0.7, d.unenc/tot)) : 0.02;  // red share = the REAL exposed ratio
             tintens=Math.max(0.12, Math.min(1, Math.log(1+tot/400)/Math.log(3000)));  // fills the screen when busy
@@ -1362,6 +1365,22 @@ _CPU_PREV = {}                  # {"v": /proc/stat snapshot} — CPU% is measure
 _HEALTH_CACHE = {}              # {"t": monotonic, "d": payload} — collapses concurrent pollers
 _FEED_PREV = {}                 # {"v": (monotonic_t, enc_bytes, unenc_bytes)} for the packet feed
 
+def ui_token():
+    """A secret the monitoring pages embed so their own polling can be told apart from a
+    script on a gated site. Any page on reddit.com can call /budget/* same-origin, and
+    Sec-Fetch headers can't distinguish our gate page from Reddit's own — but a foreign
+    script can't read this token, because the pages carrying it can only be fetched by a
+    real navigation (enforced in addon.py). Persisted so it survives a restart."""
+    tok = r.get("ui_token")
+    if not tok:
+        tok = secrets.token_urlsafe(24)
+        r.set("ui_token", tok)
+    return tok
+
+@app.context_processor
+def _inject_ui_token():
+    return {"ui_tok": _try(ui_token, "")}
+
 def _try(fn, default=None):
     try:
         return fn()
@@ -1725,6 +1744,7 @@ HEALTH_PAGE = """
 {% raw %}
 <script>
 (function(){
+    var TOK=(document.querySelector('meta[name="cd-tok"]')||{}).content||"";
     function $(id){ return document.getElementById(id); }
     function set(id,t){ var e=$(id); if(e) e.textContent=t; }
     function width(id,p){ var e=$(id); if(e) e.style.width=Math.max(0,Math.min(100,p))+"%"; }
@@ -1774,7 +1794,7 @@ HEALTH_PAGE = """
         var pwr=$("pwr"); if(pwr) pwr.setAttribute("class", d.power&&d.power.ok?"on":"bad");
         Object.keys(d.services||{}).forEach(function(s){ var el=$("svc_"+s); if(el) el.className="pill "+(d.services[s]==="active"?"ok":"bad"); });
     }
-    function poll(){ fetch("/budget/health?fmt=json&_="+Date.now(),{cache:"no-store"}).then(function(r){ return r.json(); }).then(update).catch(function(){}); }
+    function poll(){ fetch("/budget/health?fmt=json&t="+TOK+"&_="+Date.now(),{cache:"no-store"}).then(function(r){ return r.json(); }).then(update).catch(function(){}); }
     setInterval(poll, 4000);
     document.addEventListener("visibilitychange", function(){ if(!document.hidden) poll(); });
     poll();
@@ -2046,6 +2066,7 @@ DEVICES_PAGE = """
 {% raw %}
 <script>
 (function(){
+    var TOK=(document.querySelector('meta[name="cd-tok"]')||{}).content||"";
     function fmtBytes(n){ if(n==null) return "—"; if(n<1024) return n+" B"; if(n<1048576) return (n/1024).toFixed(0)+" KB"; if(n<1073741824) return (n/1048576).toFixed(1)+" MB"; return (n/1073741824).toFixed(2)+" GB"; }
     function fmtRate(b){ if(b==null) return "—"; if(b<1024) return b+" B/s"; if(b<1048576) return (b/1024).toFixed(b<10240?1:0)+" KB/s"; return (b/1048576).toFixed(1)+" MB/s"; }
     function node(id, sub, dev){
@@ -2078,7 +2099,7 @@ DEVICES_PAGE = """
         node("dev-laptop","sub-laptop",laptop); lanes("lp",laptop);
         devs.forEach(card);
     }
-    function poll(){ fetch("/budget/devices?fmt=json&_="+Date.now(),{cache:"no-store"}).then(function(r){return r.json();}).then(update).catch(function(){}); }
+    function poll(){ fetch("/budget/devices?fmt=json&t="+TOK+"&_="+Date.now(),{cache:"no-store"}).then(function(r){return r.json();}).then(update).catch(function(){}); }
     setInterval(poll, 4000);
     document.addEventListener("visibilitychange", function(){ if(!document.hidden) poll(); });
     poll();
@@ -2104,7 +2125,9 @@ BG_STYLE = ("html,body{background:#070b0e!important}"
             "-webkit-backdrop-filter:blur(5px);backdrop-filter:blur(5px)}")
 
 def _add_bg(page, full=True):
-    page = page.replace("</head>", '<meta name="theme-color" content="#070b0e"></head>', 1)  # dark iOS status/URL bars
+    page = page.replace("</head>",
+        '<meta name="theme-color" content="#070b0e">'
+        '<meta name="cd-tok" content="{{ ui_tok }}"></head>', 1)  # dark iOS bars + poll token
     page = page.replace("</style>", BG_STYLE + "</style>", 1)   # frost + canvas layer + z-index
     if full:                                                    # pages that don't already have the canvas
         page = page.replace("<body>", "<body>\n" + BG_CANVAS, 1)

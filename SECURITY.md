@@ -175,6 +175,16 @@ from that device — for any site, not only the gated ones.
    `*.pem`, `*.key`, `certs/`, `.mitmproxy/`. If exposed, regenerate and untrust the old one.
 3. **Gate your own devices only.** Cooldown is not a hosted service.
 
+**The monitoring pages are not readable by page scripts.** `/budget/stats`, `/health`,
+`/devices`, `/remaining` and `/feed` are served on the *gated site's* origin, which means
+any script on that site — including a malicious ad — is same-origin with them and could
+otherwise read your device names, tailnet addresses and usage history. They now require
+either a real navigation (`Sec-Fetch-Dest: document`; these are forbidden header names,
+so a script cannot forge them) or a token that only Cooldown's own pages carry, which a
+foreign script cannot obtain because the pages holding it can't be fetched by script
+either. The gate itself and `/heartbeat` stay open — the gate has to render in place of a
+site, and the injected heartbeat legitimately runs on the site's own pages.
+
 **Network exposure.**
 
 - Devices reach the box over **Tailscale** (a private WireGuard mesh), so the proxy isn't

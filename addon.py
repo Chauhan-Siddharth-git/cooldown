@@ -567,6 +567,23 @@ class BudgetAddon:
                 return
             parts = urlsplit(path)
             sub = parts.path[len("/budget"):]          # "" | "/heartbeat" | "/enter"
+            # The monitoring pages are served on the GATED site's own origin, so any
+            # script on reddit.com can reach them same-origin — which would hand a
+            # malicious ad your device names, tailnet IPs and usage history. Require
+            # either a real navigation (Sec-Fetch-* are forbidden header names, so a
+            # script cannot forge them) or the token our own pages carry. The gate and
+            # the heartbeat stay open: the gate must load in place of a site, and the
+            # injected heartbeat legitimately runs on the site's own pages.
+            if sub in ("/stats", "/health", "/devices", "/remaining", "/feed"):
+                fetch_dest = flow.request.headers.get("Sec-Fetch-Dest", "")
+                fetch_mode = flow.request.headers.get("Sec-Fetch-Mode", "")
+                navigation = fetch_dest == "document" or fetch_mode == "navigate"
+                token = parse_qs(parts.query).get("t", [""])[0]
+                if not navigation and token != (r.get("ui_token") or "\x00"):
+                    flow.response = http.Response.make(
+                        403, b"not available to page scripts",
+                        {"Content-Type": "text/plain; charset=utf-8"})
+                    return
             flask_path = sub if sub else "/budget"
             if parts.query:
                 flask_path += "?" + parts.query

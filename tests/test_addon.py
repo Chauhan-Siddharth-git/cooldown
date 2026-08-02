@@ -311,6 +311,48 @@ def test_cross_site_post_to_budget_is_rejected(rdb):
     assert f.response.status_code == 403
 
 
+# ---------- monitoring pages are not readable by page scripts ----------
+
+def _probe(path, headers, method="GET"):
+    f = mkflow("www.reddit.com", path, resp=False, headers=headers, method=method)
+    addon.BudgetAddon().request(f)
+    return f.response.status_code if f.response else None      # None = allowed through
+
+SCRIPT = {"Sec-Fetch-Dest": "empty", "Sec-Fetch-Mode": "cors"}   # what fetch() sends
+NAV = {"Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate"}
+
+@pytest.mark.parametrize("path", [
+    "/budget/devices?fmt=json", "/budget/stats", "/budget/health?fmt=json",
+    "/budget/remaining", "/budget/feed",
+])
+def test_page_scripts_cannot_read_monitoring_pages(rdb, path):
+    """A malicious ad on a gated site is same-origin with our pages. Without this it
+    could read device names, tailnet IPs and usage history."""
+    assert _probe(path, SCRIPT) == 403
+
+@pytest.mark.parametrize("path", ["/budget/devices", "/budget/stats", "/budget/health"])
+def test_real_navigation_is_allowed(rdb, path):
+    """Sec-Fetch-* are forbidden header names — a script cannot forge a navigation."""
+    assert _probe(path, NAV) != 403
+
+def test_our_own_pages_poll_with_the_token(rdb):
+    rdb.set("ui_token", "SEKRIT")
+    assert _probe("/budget/feed?t=SEKRIT", SCRIPT) != 403
+    assert _probe("/budget/feed?t=WRONG", SCRIPT) == 403
+    assert _probe("/budget/feed", SCRIPT) == 403
+
+def test_missing_token_does_not_open_the_door(rdb):
+    """If no token is set, an empty ?t= must still be rejected, not treated as a match."""
+    rdb.delete("ui_token")
+    assert _probe("/budget/feed?t=", SCRIPT) == 403
+
+def test_gate_and_heartbeat_stay_reachable(rdb):
+    """The gate must render in place of a site, and the injected heartbeat runs on the
+    site's own pages — neither is a navigation to a monitoring page."""
+    assert _probe("/budget?site=reddit", NAV) != 403
+    assert _probe("/budget/heartbeat?site=reddit", SCRIPT, method="POST") != 403
+
+
 # ---------- response hook: what gets injected ----------
 
 HTML = "<html><body>page</body></html>"
