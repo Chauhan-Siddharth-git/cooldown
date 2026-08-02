@@ -124,7 +124,10 @@ cellular, all day, without you having to remember anything.
 **There's an installer.** On the box, run:
 
 ```bash
-git clone https://github.com/<your-fork>/cooldown && cd cooldown
+# on the Pi itself (ssh in first), not on your laptop:
+sudo apt install -y git
+git clone https://github.com/Chauhan-Siddharth-git/cooldown.git
+cd cooldown
 ./install.sh --check      # optional: shows exactly what it would do, changes nothing
 ./install.sh
 ```
@@ -156,6 +159,8 @@ gate and the countdown for yourself. **It only gates a browser on that one compu
 your phone**, and it stops when you close it. It's a demo, not the real setup.
 
 ```bash
+git clone https://github.com/Chauhan-Siddharth-git/cooldown.git
+cd cooldown
 ./docker-install.sh --check     # optional dry run
 ./docker-install.sh             # build, start, and walk you through the rest
 ```
@@ -173,6 +178,8 @@ gated even on cellular. It needs a **privileged container** and only works while
 computer is awake and online — a stopgap, not the reliable answer.
 
 ```bash
+git clone https://github.com/Chauhan-Siddharth-git/cooldown.git   # if you haven't already
+cd cooldown
 ./docker-install.sh --phone
 ```
 

@@ -87,6 +87,16 @@ command -v sudo    >/dev/null || die "sudo is required."
 sudo -v || die "Could not get sudo. Run as a user with administrator rights."
 ok "Debian-based, sudo available"
 
+# Catch the "downloaded just this script" case with a useful message instead of a
+# confusing failure three steps later.
+for f in app.py addon.py requirements.txt deploy/cooldown-app.service; do
+  [ -e "$REPO/$f" ] || die "This doesn't look like a full Cooldown checkout ($f is missing).
+  Download the whole repository, then run the installer from inside it:
+    git clone https://github.com/Chauhan-Siddharth-git/cooldown.git
+    cd cooldown && ./install.sh"
+done
+ok "complete checkout"
+
 # Check the Python version BEFORE touching anything: too old and pip would fail partway
 # through, after apt had already run, leaving a half-finished install.
 if ! command -v python3 >/dev/null; then

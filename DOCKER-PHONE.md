@@ -31,7 +31,15 @@ That's why phone-gating works here even though `--network host` wouldn't.
 
 ---
 
-> **There's an installer:** `./docker-install.sh --phone` does all of this, including
+> **There's an installer.** Get the code, then run it:
+>
+> ```bash
+> git clone https://github.com/Chauhan-Siddharth-git/cooldown.git
+> cd cooldown
+> ./docker-install.sh --phone
+> ```
+>
+> It does all of this, including
 > walking you through the Tailscale auth key. This page explains what it does and why the
 > container needs elevated privileges — worth reading before you run it.
 

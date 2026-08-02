@@ -75,7 +75,15 @@ to run it; just the commands below.
 
 ## Quick start
 
-> **There's an installer:** `./docker-install.sh` does everything below and checks the
+> **There's an installer.** Get the code, then run it:
+>
+> ```bash
+> git clone https://github.com/Chauhan-Siddharth-git/cooldown.git
+> cd cooldown
+> ./docker-install.sh
+> ```
+>
+> It does everything below and checks the
 > common failure points first (Docker not running, missing compose plugin, permissions).
 > `--check` dry-runs it, `--down` removes it. The rest of this page is the manual version.
 

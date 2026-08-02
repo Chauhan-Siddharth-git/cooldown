@@ -69,7 +69,13 @@ EOF
   exit 1
 fi
 ok "compose available: ${DC[*]}"
-[ -f "$COMPOSE_FILE" ] || die "$COMPOSE_FILE not found — run this from the repo directory."
+for f in Dockerfile app.py addon.py "$COMPOSE_FILE"; do
+  [ -e "$f" ] || die "This doesn't look like a full Cooldown checkout ($f is missing).
+  Download the whole repository, then run this from inside it:
+    git clone https://github.com/Chauhan-Siddharth-git/cooldown.git
+    cd cooldown && ./docker-install.sh"
+done
+ok "complete checkout"
 
 # ---------------------------------------------------------------- down / logs
 if [ "$MODE" = down ]; then

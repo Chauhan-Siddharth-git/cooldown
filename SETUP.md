@@ -18,6 +18,20 @@ The reference deployment is a Raspberry Pi running the three services natively
 > `./install.sh --uninstall` reverses it. **This page is the manual version** — read it if
 > you'd rather do it yourself, or to understand what the installer is doing on your behalf.
 
+## 0. Get the code onto the box
+
+Everything below runs **on the box itself** (the Pi), not on your laptop — so SSH into it
+first, then download this repository there:
+
+```bash
+sudo apt update && sudo apt install -y git
+git clone https://github.com/Chauhan-Siddharth-git/cooldown.git
+cd cooldown
+```
+
+Everything after this assumes you're in that `cooldown` directory. *(If you plan to change
+the code, fork it on GitHub first and clone your fork instead.)*
+
 ## 1. The box
 
 - A Raspberry Pi (or any always-on Linux box), Debian-based.
@@ -31,9 +45,8 @@ The reference deployment is a Raspberry Pi running the three services natively
   sudo apt update
   sudo apt install -y redis-server python3-venv python3-pip iptables
   ```
-- Clone and set up the venv:
+- Set up the venv (you cloned the repo in step 0):
   ```bash
-  git clone <your-fork> ~/cooldown && cd ~/cooldown
   python3 -m venv venv
   venv/bin/pip install -r requirements.txt
   ```
