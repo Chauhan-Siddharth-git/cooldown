@@ -183,6 +183,8 @@ BUDGET_PAGE = """
         .blocked{background:#1c2028;color:var(--muted);cursor:default}
         .hint{font-size:12px;color:#5f6773;margin-top:2px}
         .foot{display:block;margin-top:18px;font-size:12px;color:#5f6773;text-decoration:none}
+        .foots{display:flex;gap:18px;justify-content:center;margin-top:18px}
+        .foots .foot{margin-top:0}
         /* Pre-entry reflection: a why-am-I-here pause with concrete alternatives. */
         .r-q{font-size:15px;color:var(--fg);font-weight:600;margin:2px 0 14px;line-height:1.45}
         .chips{display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
@@ -234,7 +236,7 @@ BUDGET_PAGE = """
             <div class="hint">{% if study_primary %}Turn the break into real progress — locked to the course, no scrolling.{% else %}Locked to the course playlist — no scrolling.{% endif %}</div>
             {% endif %}
         </div>
-        <a class="foot" href="/budget/stats">Usage stats</a>
+        <div class="foots"><a class="foot" href="/budget/stats">Usage stats</a><a class="foot" href="/budget/health">Pi health</a></div>
     </div>
     {% if countdown %}
     <script>
@@ -305,28 +307,47 @@ BUDGET_PAGE = """
       var ctx=c.getContext("2d"), W=0, H=0, DPR=Math.min(2, window.devicePixelRatio||1);
       var reduce=window.matchMedia&&window.matchMedia("(prefers-reduced-motion:reduce)").matches;
       var HEX="0123456789abcdef";
-      var lineH=18, buf=[], sub=0, speed=0.6, redP=0.05, tred=0.05, topFade, botFade;   // constant (uniform) scroll
+      // Scroll speed is CONSTANT and never varies — varying it made a lull look like lag.
+      // Traffic level drives DENSITY, packet length and brightness instead: a quiet link is
+      // sparse and dim, a busy one fills the screen. Same rhythm, obvious difference.
+      var lineH=18, buf=[], sub=0, speed=0.6, redP=0.05, tred=0.05, topFade, botFade;
+      var intens=0.25, tintens=0.25;              // eased traffic level, 0..1
+      var cols=1, colW=320, maxBytes=12;          // columns fill the full width (was one skinny column)
       function hx(n){ var s=""; for(var i=0;i<n;i++){ s+=HEX[(Math.random()*16)|0]; if(i&1) s+=" "; } return s.trim(); }
       // both are hex; colour is the only tell — green = encrypted (TLS), red = unencrypted (DNS/HTTP)
-      function greenRow(){ return { r:0, tag:"TLS", text:hx(4+((Math.random()*24)|0)) }; }
-      function redRow(){ return { r:1, tag:Math.random()<0.7?"DNS":"HTTP", text:hx(4+((Math.random()*24)|0)) }; }
-      function newRow(){ return Math.random()<redP ? redRow() : greenRow(); }
+      function cell(){
+        if(Math.random() > 0.20 + intens*0.80) return null;      // gaps when it's quiet
+        var red = Math.random() < redP;
+        var n = 3 + Math.round(Math.random() * (2 + intens * (maxBytes - 3)));
+        return { r: red?1:0, tag: red ? (Math.random()<0.7?"DNS":"HTTP") : "TLS",
+                 text: hx(n > maxBytes ? maxBytes : n) };
+      }
+      function newRow(){ var a=[]; for(var i=0;i<cols;i++) a.push(cell()); return a; }
       function resize(){
         W=c.clientWidth; H=c.clientHeight; c.width=W*DPR; c.height=H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0);
+        cols = Math.max(1, Math.round(W / 320));
+        colW = W / cols;
+        maxBytes = Math.max(4, Math.floor((colW - 64) / 10.8));   // 12px monospace, "aa " per byte
         var N=Math.ceil(H/lineH)+2;
+        buf = [];                                    // row shape depends on cols, so rebuild
         while(buf.length<N) buf.push(newRow());
-        if(buf.length>N) buf=buf.slice(buf.length-N);
         topFade=ctx.createLinearGradient(0,0,0,64); topFade.addColorStop(0,"#070b0e"); topFade.addColorStop(1,"rgba(7,11,14,0)");
         botFade=ctx.createLinearGradient(0,H-64,0,H); botFade.addColorStop(0,"rgba(7,11,14,0)"); botFade.addColorStop(1,"#070b0e");
       }
       function draw(){
-        if(!reduce){ redP+=(tred-redP)*0.05; sub+=speed;
+        if(!reduce){ redP+=(tred-redP)*0.05; intens+=(tintens-intens)*0.04; sub+=speed;
           while(sub>=lineH){ sub-=lineH; buf.shift(); buf.push(newRow()); } }
         ctx.fillStyle="#070b0e"; ctx.fillRect(0,0,W,H);
         ctx.font="600 12px ui-monospace,Menlo,monospace"; ctx.textBaseline="alphabetic";
+        var br = 0.55 + intens*0.85;                                  // busier = brighter
+        var tagA=(0.30*br).toFixed(3), redA=(0.52*br).toFixed(3), grnA=(0.42*br).toFixed(3);
         for(var i=0;i<buf.length;i++){ var row=buf[i], y=i*lineH - sub + lineH;
-          ctx.fillStyle="rgba(120,132,142,0.34)"; ctx.fillText(row.tag, 12, y);
-          ctx.fillStyle=row.r? "rgba(240,96,96,0.52)":"rgba(78,222,140,0.42)"; ctx.fillText(row.text, 56, y);
+          for(var k=0;k<row.length;k++){ var cl=row[k]; if(!cl) continue;
+            var x=k*colW;
+            ctx.fillStyle="rgba(120,132,142,"+tagA+")"; ctx.fillText(cl.tag, x+12, y);
+            ctx.fillStyle=cl.r? "rgba(240,96,96,"+redA+")":"rgba(78,222,140,"+grnA+")";
+            ctx.fillText(cl.text, x+52, y);
+          }
         }
         ctx.fillStyle=topFade; ctx.fillRect(0,0,W,64);
         ctx.fillStyle=botFade; ctx.fillRect(0,H-64,W,64);
@@ -336,6 +357,7 @@ BUDGET_PAGE = """
         fetch("/budget/feed?_="+Date.now(),{cache:"no-store"}).then(function(r){return r.json();})
           .then(function(d){ if(d){ var tot=(d.enc||0)+(d.unenc||0);
             tred=tot>0? Math.max(0.015, Math.min(0.7, d.unenc/tot)) : 0.02;  // red share = the REAL exposed ratio
+            tintens=Math.max(0.12, Math.min(1, Math.log(1+tot/400)/Math.log(3000)));  // fills the screen when busy
           } }).catch(function(){});
       }
       resize(); draw();
