@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 250" width="900" height="250" role="img"
+     aria-label="Reddit sends the real page; the box strips CSP, injects the heartbeat and removes Shorts, re-seals it with your certificate, and your phone renders it with a padlock.">
+  <style>
+    .bg{fill:#0b0d10}
+    .lbl{font:600 13px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#e6f2ea}
+    .sub{font:400 11px -apple-system,Segoe UI,Roboto,sans-serif;fill:#8b93a0}
+    .cap{font:700 10px -apple-system,Segoe UI,Roboto,sans-serif;fill:#5f6773;letter-spacing:.14em}
+    .num{font:700 12px ui-monospace,Menlo,monospace;fill:#3ecf7c}
+    .end{fill:#12161c;stroke:#3a4150;stroke-width:1.5}
+    .step{fill:#101d16;stroke:#3ecf7c;stroke-width:1.5}
+    .box{fill:none;stroke:#2f5d43;stroke-width:1.5;stroke-dasharray:6 5}
+    .wire{stroke:#3ecf7c;stroke-width:2;fill:none}
+  </style>
+  <rect class="bg" width="900" height="250" rx="10"/>
+
+  <!-- the site -->
+  <rect class="end" x="26" y="86" width="132" height="72" rx="9"/>
+  <circle cx="60" cy="116" r="12" fill="none" stroke="#8b93a0" stroke-width="1.3"/>
+  <path d="M48 116 h24 M60 104 c 6 7 6 17 0 24 c -6 -7 -6 -17 0 -24" fill="none" stroke="#8b93a0" stroke-width="1.1"/>
+  <text class="lbl" x="80" y="121">Reddit</text>
+  <text class="sub" x="42" y="146">sends the real page</text>
+
+  <!-- arrow in -->
+  <path class="wire" d="M158 122 h 52" marker-end="url(#a)"/>
+  <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M0 0 L10 5 L0 10 z" fill="#3ecf7c"/></marker></defs>
+
+  <!-- the box -->
+  <rect class="box" x="212" y="30" width="476" height="190" rx="14"/>
+  <text class="cap" x="232" y="56">THE BOX · REWRITING ON THE WAY BACK</text>
+  <rect class="step" x="234" y="68" width="432" height="42" rx="8"/>
+  <text class="num" x="250" y="94">1</text>
+  <text class="lbl" x="272" y="88">strip CSP</text>
+  <text class="sub" x="272" y="103">the page's own rule against outside scripts</text>
+  <rect class="step" x="234" y="118" width="432" height="42" rx="8"/>
+  <text class="num" x="250" y="144">2</text>
+  <text class="lbl" x="272" y="138">inject the stopwatch</text>
+  <text class="sub" x="272" y="153">and strip Shorts and the endless feed</text>
+  <rect class="step" x="234" y="168" width="432" height="42" rx="8"/>
+  <text class="num" x="250" y="194">3</text>
+  <text class="lbl" x="272" y="188">re-seal with your certificate</text>
+  <text class="sub" x="272" y="203">so the browser sees a page it trusts</text>
+
+  <!-- arrow out -->
+  <path class="wire" d="M688 122 h 52" marker-end="url(#a)"/>
+
+  <!-- the phone -->
+  <rect class="end" x="742" y="76" width="132" height="92" rx="9"/>
+  <rect x="772" y="90" width="26" height="46" rx="4" fill="none" stroke="#8b93a0" stroke-width="1.4"/>
+  <text class="lbl" x="808" y="112">phone</text>
+  <text class="sub" x="756" y="156">renders it · padlock shown</text>
+</svg>

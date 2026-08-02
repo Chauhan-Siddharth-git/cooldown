@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 300" width="900" height="300" role="img"
+     aria-label="Your phone and laptop route through the box, which runs mitmproxy, Flask and Redis, and fetches the real internet on your behalf.">
+  <style>
+    .bg{fill:#0b0d10}
+    .lbl{font:600 13px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#e6f2ea}
+    .sub{font:400 11px -apple-system,Segoe UI,Roboto,sans-serif;fill:#8b93a0}
+    .cap{font:700 10px -apple-system,Segoe UI,Roboto,sans-serif;fill:#5f6773;letter-spacing:.14em}
+    .dev{fill:#12161c;stroke:#3a4150;stroke-width:1.5}
+    .svc{fill:#101d16;stroke:#3ecf7c;stroke-width:1.5}
+    .box{fill:none;stroke:#2f5d43;stroke-width:1.5;stroke-dasharray:6 5}
+    .net{fill:#101725;stroke:#7aa2ff;stroke-width:1.5}
+    .wire{stroke:#3ecf7c;stroke-width:2;fill:none}
+    .wired{stroke:#4a5361;stroke-width:2;fill:none}
+    .flow{font:600 10px -apple-system,Segoe UI,Roboto,sans-serif;fill:#8b93a0}
+  </style>
+  <rect class="bg" width="900" height="300" rx="10"/>
+
+  <!-- your devices -->
+  <text class="cap" x="30" y="42">YOUR DEVICES</text>
+  <rect class="dev" x="30" y="58" width="118" height="62" rx="9"/>
+  <rect x="52" y="70" width="22" height="38" rx="3.5" fill="none" stroke="#8b93a0" stroke-width="1.4"/>
+  <text class="lbl" x="86" y="94">phone</text>
+  <rect class="dev" x="30" y="140" width="118" height="62" rx="9"/>
+  <rect x="48" y="152" width="30" height="20" rx="2" fill="none" stroke="#8b93a0" stroke-width="1.4"/>
+  <path d="M44 176 h38 l4 6 h-46 z" fill="none" stroke="#8b93a0" stroke-width="1.4"/>
+  <text class="lbl" x="92" y="176">laptop</text>
+
+  <!-- wires in -->
+  <path class="wire" d="M148 89 C 190 89 190 130 232 130"/>
+  <path class="wire" d="M148 171 C 190 171 190 130 232 130"/>
+  <text class="flow" x="226" y="78" text-anchor="end">private tunnel</text>
+  <text class="flow" x="226" y="198" text-anchor="end">browser proxy</text>
+
+  <!-- the box -->
+  <rect class="box" x="232" y="40" width="392" height="220" rx="14"/>
+  <text class="cap" x="252" y="66">THE BOX · A RASPBERRY PI YOU OWN</text>
+  <rect class="svc" x="256" y="82" width="344" height="48" rx="8"/>
+  <text class="lbl" x="272" y="103">mitmproxy</text><text class="sub" x="272" y="120">the interceptor — reads and rewrites</text>
+  <rect class="svc" x="256" y="140" width="344" height="48" rx="8"/>
+  <text class="lbl" x="272" y="161">Flask</text><text class="sub" x="272" y="178">the brain — decides if you have time</text>
+  <rect class="svc" x="256" y="198" width="344" height="48" rx="8"/>
+  <text class="lbl" x="272" y="219">Redis</text><text class="sub" x="272" y="236">the memory — minutes spent, cooldowns</text>
+  <path class="wire" d="M614 106 v 34" stroke-dasharray="3 4"/>
+  <path class="wire" d="M614 164 v 34" stroke-dasharray="3 4"/>
+
+  <!-- out to the internet -->
+  <path class="wired" d="M624 130 h 96"/>
+  <text class="flow" x="672" y="118" text-anchor="middle">fetches the</text><text class="flow" x="672" y="152" text-anchor="middle">real page</text>
+  <rect class="net" x="720" y="98" width="150" height="64" rx="9"/>
+  <circle cx="752" cy="130" r="13" fill="none" stroke="#7aa2ff" stroke-width="1.4"/>
+  <path d="M739 130 h26 M752 117 c 7 8 7 18 0 26 c -7 -8 -7 -18 0 -26" fill="none" stroke="#7aa2ff" stroke-width="1.2"/>
+  <text class="lbl" x="774" y="126" fill="#dbe4ff">Reddit</text>
+  <text class="lbl" x="774" y="144" fill="#dbe4ff">YouTube</text>
+  <text class="cap" x="720" y="182">THE REAL INTERNET</text>
+</svg>

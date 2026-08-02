@@ -35,30 +35,7 @@ makes you take a break. **The pause is the whole point.**
 Everything routes through one small computer you own, between your devices and the
 internet:
 
-```mermaid
-flowchart LR
-    P["📱 Your phone"]
-    L["💻 Your laptop"]
-    subgraph box["The box · a Raspberry Pi you own"]
-        direction LR
-        M["mitmproxy<br/>the interceptor<br/>reads and rewrites"]
-        F["Flask<br/>the brain<br/>budget rules"]
-        R[("Redis<br/>the memory<br/>time spent")]
-        M --> F
-        F --> R
-    end
-    W["🌐 Reddit · YouTube<br/>the real internet"]
-    P -->|private tunnel| M
-    L -->|browser proxy| M
-    M -->|fetches the real page| W
-
-    classDef dev fill:#12161c,stroke:#3a4150,color:#c9d1d9
-    classDef svc fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
-    classDef net fill:#141a2e,stroke:#7aa2ff,color:#dbe4ff
-    class P,L dev
-    class M,F,R svc
-    class W net
-```
+<img src="docs/diagrams/big-picture.svg" alt="Your phone and laptop route through the box, which runs mitmproxy, Flask and Redis and fetches the real internet on your behalf." width="100%">
 
 Three small programs run on the box, easiest to remember by their **jobs**:
 
@@ -131,25 +108,7 @@ Step by step:
 Reaching the site was only half the round trip — the most interesting rewriting
 happens on the way **back** to you.
 
-```mermaid
-flowchart LR
-    S["🌐 Reddit<br/>sends the real page"]
-    subgraph rew["The box · rewriting on the way back"]
-        direction TB
-        A["1 · strip CSP<br/>the page's rule against outside scripts"]
-        B["2 · inject the heartbeat<br/>and remove Shorts and the feed"]
-        C["3 · re-seal with your certificate"]
-        A --> B --> C
-    end
-    D["📱 Your phone<br/>renders it, runs the script,<br/>shows a padlock"]
-    S --> A
-    C --> D
-
-    classDef step fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
-    classDef ends fill:#12161c,stroke:#3a4150,color:#c9d1d9
-    class A,B,C step
-    class S,D ends
-```
+<img src="docs/diagrams/trip-back.svg" alt="Reddit sends the real page; the box strips CSP, injects the stopwatch and strips Shorts, then re-seals it with your certificate before your phone renders it." width="100%">
 
 The page your phone shows is **not quite** the one the site sent — de-clawed (Shorts
 and the endless feed removed) and wired with the timer, all invisibly. Your browser
@@ -324,18 +283,16 @@ tap → DNS (red, readable) → sealed bytes → box → firewall redirect → m
 
 Everything lives on one Raspberry Pi, in layers — the anatomy of the box:
 
-```mermaid
-flowchart TB
-    T["Tailscale<br/>the private tunnel your devices arrive through"]
-    I["iptables<br/>shoves web traffic into the interceptor, blocks QUIC"]
-    MM["mitmproxy + addon.py<br/>decrypt · strip CSP · inject the stopwatch · serve the gate"]
-    FF["Flask + app.py<br/>the time rules, and every page you see"]
-    RR[("Redis<br/>spent · cooldowns · sessions · history")]
-    T --> I --> MM --> FF --> RR
+| Layer | What it is | What it does |
+|---|---|---|
+| **Tailscale** | private mesh network | the tunnel your devices arrive through |
+| **iptables** | firewall rules | shoves web traffic into the interceptor, blocks QUIC |
+| **mitmproxy** + `addon.py` | the interceptor | decrypt · strip CSP · inject the stopwatch · serve the gate |
+| **Flask** + `app.py` | the brain | the time rules, and every page you see |
+| **Redis** | the memory | spent · cooldowns · sessions · history |
 
-    classDef svc fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
-    class T,I,MM,FF,RR svc
-```
+Each sits on the one below it: traffic enters through Tailscale, gets diverted by
+iptables into mitmproxy, which asks Flask, which reads and writes Redis.
 
 **Who talks to whom** — everything but the proxy is localhost-only:
 
@@ -364,22 +321,11 @@ Everything above describes the reference box, a Raspberry Pi. But the **same cod
 runs in three shapes. The only thing that changes is *how your traffic reaches the
 interceptor* — and that one choice decides what can be gated.
 
-```mermaid
-flowchart LR
-    subgraph on["👁️ Tab on screen"]
-        direction TB
-        O1["heartbeat every 10s"] --> O2["the box subtracts the time"] --> O3["budget goes down"]
-    end
-    subgraph off["🌙 Tab hidden · phone locked"]
-        direction TB
-        F1["heartbeat stops"] --> F2["nothing reaches the box"] --> F3["budget untouched — it is free"]
-    end
+**Tab on screen:** the injected script pings the box every 10 seconds, and each ping
+spends a little budget.
 
-    classDef live fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
-    classDef idle fill:#12161c,stroke:#3a4150,color:#c9d1d9
-    class O1,O2,O3 live
-    class F1,F2,F3 idle
-```
+**Tab hidden, or phone locked:** the pings stop, nothing reaches the box, and the
+budget is untouched. A forgotten tab costs you nothing.
 
 - **1 · The Raspberry Pi** — the always-on reference. The phone routes through it over
   Tailscale and its traffic is transparently redirected into mitmproxy. Gates phone +
@@ -407,21 +353,13 @@ flowchart LR
 
 ### 1 · Charging only the time you're actually looking
 
-```mermaid
-flowchart LR
-    D["☀️ DAY<br/>7am → 10pm<br/>full budget, refills while you are away"]
-    W["🌇 WIND-DOWN<br/>10pm → 11pm<br/>the cap shrinks toward the night floor"]
-    N["🌙 NIGHT<br/>11pm → 7am<br/>one small buffer, then closed"]
-    D --> W --> N
-    N -->|7am reset — a fresh day| D
+| | Hours | What the budget does |
+|---|---|---|
+| ☀️ **Day** | 7am → 10pm | full budget; refills slowly while you're away |
+| 🌇 **Wind-down** | 10pm → 11pm | the cap shrinks on a ramp toward the night floor |
+| 🌙 **Night** | 11pm → 7am | one small buffer, then closed |
 
-    classDef day fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
-    classDef wind fill:#2a2412,stroke:#f0a63a,color:#f4e4c4
-    classDef night fill:#141a2e,stroke:#7aa2ff,color:#dbe4ff
-    class D day
-    class W wind
-    class N night
-```
+At 7am everything resets and the day starts over.
 
 This is what makes the budget honest. A crude tool charges you for *traffic*;
 Cooldown charges you for **attention**, using the browser's own "is this tab
@@ -440,16 +378,11 @@ visible?" signal.
 
 ### 3 · A day that winds down to bedtime
 
-```mermaid
-flowchart LR
-    B["💻 Browser"] -->|you set its proxy setting| I1["Interceptor"]
-    P["📱 Phone"] -->|routing + iptables, silently| I2["Interceptor"]
+**Explicit** — the traffic volunteers. You set the browser's proxy setting, so it
+knowingly sends everything to the interceptor. Gates that browser only.
 
-    classDef vol fill:#12161c,stroke:#3a4150,color:#c9d1d9
-    classDef div fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
-    class B,I1 vol
-    class P,I2 div
-```
+**Transparent** — the traffic is diverted. Routing plus iptables send it to the
+interceptor without the device being asked. Gates the whole device, including apps.
 
 Deliberately **soft** — a wind-down and a small (independent, non-refilling) night
 buffer rather than a hard lockout, so it never tempts you to switch the whole thing
