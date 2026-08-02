@@ -149,8 +149,16 @@ scripts. Worth being precise about the cost:
   that one origin.
 - Your largest surface is the **news list** — dozens of domains, many with far weaker
   security than Reddit or YouTube. Keep it as short as you'll actually use.
-- A stricter design is possible: rather than deleting the header, add a nonce to
-  `script-src` and keep the rest of the policy. That's the better fix and isn't done yet.
+- **The policy is amended, not deleted.** Cooldown adds a one-time `nonce` to
+  `script-src` and leaves everything else in place, so `default-src`, `frame-ancestors`,
+  `connect-src` and `form-action` all stay enforced. On live Reddit, whose policy is
+  `default-src 'none'`, the page arrives with that intact and both nonces present —
+  Reddit's own and ours.
+- One case is deliberately left alone: if a policy allows `'unsafe-inline'` with no nonce
+  or hash, adding a nonce would switch `'unsafe-inline'` **off** and break the site's own
+  inline scripts. Our script is already permitted there, so the header is untouched.
+- `Content-Security-Policy-Report-Only` is still dropped. It blocks nothing, but it would
+  post a violation report about our injected script back to the site.
 
 **What it does to your traffic.** Traffic routes through the box, where **mitmproxy**
 terminates TLS, injects a script, and can serve a gate page in place of a budgeted site.

@@ -1,6 +1,7 @@
 from mitmproxy import http
 from urllib.parse import urlsplit, parse_qs, quote
 import json
+import secrets
 import os
 import sys
 import redis
@@ -460,6 +461,55 @@ def study_url_allowed(path):
     return any(l in STUDY_PLAYLISTS for l in lists)
 
 class BudgetAddon:
+    @staticmethod
+    def _csp_with_nonce(policy: str, nonce: str) -> str:
+        """Return `policy` amended so our nonced script may run — or unchanged if it
+        already could. Everything else in the policy is preserved.
+
+        The subtlety: a browser IGNORES 'unsafe-inline' as soon as a nonce or hash is
+        present. So blindly adding one to a policy that relies on 'unsafe-inline' would
+        switch off the site's OWN inline scripts and break the page. Hence:
+
+          · no script-src and no default-src -> scripts are unrestricted already; untouched
+          · effective directive allows 'unsafe-inline' with no nonce/hash -> our inline
+            script is already permitted; untouched (and adding a nonce would break theirs)
+          · otherwise -> add 'nonce-...' to script-src, synthesising script-src from
+            default-src first if the policy only had the fallback
+        """
+        directives = []
+        for part in policy.split(";"):
+            part = part.strip()
+            if part:
+                bits = part.split()
+                directives.append([bits[0].lower(), bits[1:]])
+        names = [d[0] for d in directives]
+
+        target = "script-src" if "script-src" in names else (
+                 "default-src" if "default-src" in names else None)
+        if target is None:
+            return policy                                   # nothing constrains scripts
+        values = directives[names.index(target)][1]
+        lowered = [v.lower() for v in values]
+        already = any(v.startswith("'nonce-") or v.startswith("'sha") for v in lowered)
+        if "'unsafe-inline'" in lowered and not already:
+            return policy                                   # our script already runs
+
+        src = f"'nonce-{nonce}'"
+        if target == "script-src":
+            directives[names.index("script-src")][1].append(src)
+        else:
+            # Only default-src existed: give scripts their own directive so we don't
+            # loosen styles, images or anything else that was falling back to it.
+            directives.append(["script-src", values + [src]])
+        return "; ".join(" ".join([name] + vals) for name, vals in directives)
+
+    def _csp_nonce(self, flow: http.HTTPFlow) -> str:
+        nonce = flow.metadata.get("cooldown_nonce")
+        if not nonce:
+            nonce = secrets.token_urlsafe(16)
+            flow.metadata["cooldown_nonce"] = nonce
+        return nonce
+
     def _strip_csp(self, flow: http.HTTPFlow):
         """Drop the site's Content-Security-Policy — but ONLY on the HTML documents we
         actually inject into.
@@ -473,9 +523,15 @@ class BudgetAddon:
         """
         if "text/html" not in flow.response.headers.get("content-type", ""):
             return
-        for header in ("content-security-policy", "content-security-policy-report-only"):
-            if header in flow.response.headers:
-                del flow.response.headers[header]
+        policies = flow.response.headers.get_all("content-security-policy")
+        if policies:
+            nonce = self._csp_nonce(flow)
+            amended = [self._csp_with_nonce(p, nonce) for p in policies]
+            flow.response.headers.set_all("content-security-policy", amended)
+        # Report-only doesn't block anything, but it WOULD post a violation report about
+        # our injected script back to the site. Drop it rather than tell them.
+        if "content-security-policy-report-only" in flow.response.headers:
+            del flow.response.headers["content-security-policy-report-only"]
 
     def responseheaders(self, flow: http.HTTPFlow):
         host = flow.request.pretty_host
@@ -644,6 +700,14 @@ class BudgetAddon:
                 injection += YOUTUBE_DECLUTTER
                 if mode == "study":
                     injection += STUDY_LOCK.replace("__PLAYLISTS__", json.dumps(STUDY_PLAYLISTS))
+        # Carry the nonce we added to the page's CSP, so the browser will run these
+        # scripts under the site's own (still-enforced) policy. No nonce means either the
+        # page had no CSP or its policy already allowed inline scripts — either way the
+        # attribute is harmless.
+        nonce = flow.metadata.get("cooldown_nonce")
+        if nonce:
+            injection = injection.replace("<script>", f'<script nonce="{nonce}">')
+
         # Inject before </body> when present; mobile YouTube ships NO </body>, so fall
         # back to </html> (which it does have), then to appending at the very end.
         if "</body>" in body:

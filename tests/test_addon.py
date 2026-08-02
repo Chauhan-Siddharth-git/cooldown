@@ -132,13 +132,15 @@ def test_session_mode_reads_redis(rdb, session):
 
 # ---------- responseheaders: CSP stripping + streaming ----------
 
-def test_gated_site_is_buffered_and_csp_stripped():
+def test_gated_site_is_buffered_and_csp_amended():
     f = mkflow("www.reddit.com")
     f.response.headers["content-security-policy"] = "default-src 'self'"
     f.response.headers["content-security-policy-report-only"] = "default-src 'self'"
     addon.BudgetAddon().responseheaders(f)
     assert f.response.stream is False                      # must buffer to inject
-    assert "content-security-policy" not in f.response.headers
+    # The policy stays — amended so our script may run, not thrown away.
+    assert "default-src 'self'" in f.response.headers["content-security-policy"]
+    assert "'nonce-" in f.response.headers["content-security-policy"]
     assert "content-security-policy-report-only" not in f.response.headers
 
 
@@ -148,11 +150,61 @@ def test_facebook_html_buffered_but_realtime_streams():
     doc.response.headers["content-security-policy"] = "default-src 'self'"
     addon.BudgetAddon().responseheaders(doc)
     assert doc.response.stream is False
-    assert "content-security-policy" not in doc.response.headers
+    assert "'nonce-" in doc.response.headers["content-security-policy"]   # amended, not dropped
 
     rt = mkflow("www.facebook.com", ctype="application/json")
     addon.BudgetAddon().responseheaders(rt)
     assert rt.response.stream is True
+
+
+# ---------- CSP is amended, not deleted ----------
+
+CSP = "content-security-policy"
+
+@pytest.mark.parametrize("policy,expect_change,why", [
+    ("script-src 'self'", True, "nonce added to script-src"),
+    ("default-src 'self'", True, "script-src synthesised from default-src"),
+    ("frame-ancestors 'none'; script-src 'self'", True, "other directives survive"),
+    ("script-src 'strict-dynamic' 'nonce-xyz'", True, "strict-dynamic works with a nonce"),
+    ("script-src 'self' 'unsafe-inline' 'nonce-abc'", True, "a nonce is already in play"),
+    # The dangerous one: adding a nonce here would switch OFF 'unsafe-inline' and break
+    # the site's own inline scripts. Our script is already allowed, so leave it be.
+    ("script-src 'self' 'unsafe-inline'", False, "unsafe-inline already permits us"),
+    ("img-src 'self'", False, "nothing constrains scripts"),
+])
+def test_csp_amendment_rules(policy, expect_change, why):
+    out = addon.BudgetAddon._csp_with_nonce(policy, "TESTNONCE")
+    assert (out != policy) is expect_change, why
+    if expect_change:
+        assert "'nonce-TESTNONCE'" in out
+        # everything the site asked for is still there
+        for directive in policy.split(";"):
+            head = directive.strip().split()[0]
+            assert head in out, f"lost {head}"
+
+
+def test_csp_survives_with_a_nonce_end_to_end(rdb, session):
+    """The policy stays enforced, and the injected script carries the matching nonce."""
+    session("reddit", "active")
+    f = mkflow("www.reddit.com", "/r/x", body="<html><body>hi</body></html>")
+    f.response.headers[CSP] = "default-src 'self'; frame-ancestors 'none'"
+    a = addon.BudgetAddon()
+    a.responseheaders(f)
+    assert CSP in f.response.headers                       # NOT deleted any more
+    policy = f.response.headers[CSP]
+    assert "frame-ancestors 'none'" in policy              # protection preserved
+    nonce = f.metadata["cooldown_nonce"]
+    assert f"'nonce-{nonce}'" in policy
+    a.response(f)
+    assert f'<script nonce="{nonce}">' in f.response.text  # the browser will run it
+
+
+def test_report_only_csp_is_dropped(rdb):
+    """It blocks nothing, but would report our injection back to the site."""
+    f = mkflow("www.reddit.com", ctype="text/html")
+    f.response.headers["content-security-policy-report-only"] = "default-src 'self'"
+    addon.BudgetAddon().responseheaders(f)
+    assert "content-security-policy-report-only" not in f.response.headers
 
 
 def test_gated_site_keeps_csp_on_non_html():
@@ -165,8 +217,8 @@ def test_gated_site_keeps_csp_on_non_html():
         assert f.response.headers["content-security-policy"] == "default-src 'self'", ctype
 
 
-def test_only_csp_is_ever_removed():
-    """Other security headers must survive — we are not weakening transport or framing."""
+def test_other_security_headers_are_never_touched():
+    """Only CSP is ever modified — transport and framing protections pass through."""
     f = mkflow("www.reddit.com", ctype="text/html")
     keep = {"strict-transport-security": "max-age=63072000",
             "x-frame-options": "SAMEORIGIN",
@@ -176,7 +228,7 @@ def test_only_csp_is_ever_removed():
         f.response.headers[k] = v
     f.response.headers["content-security-policy"] = "default-src 'self'"
     addon.BudgetAddon().responseheaders(f)
-    assert "content-security-policy" not in f.response.headers   # the one we must remove
+    assert "'nonce-" in f.response.headers["content-security-policy"]  # amended in place
     for k, v in keep.items():
         assert f.response.headers[k] == v, k                     # everything else intact
 
