@@ -129,6 +129,30 @@ browsing on your phone through the exit node still works.
 
 ---
 
+## 🔎 Would you even know?
+
+You **cannot** detect the SD card being pulled. The card is the root filesystem — the
+moment it leaves, the code that would raise an alarm is unreadable. Anything claiming
+otherwise on a Pi is wishful thinking.
+
+But nobody yanks a card from a running Pi. They **power it down, copy it, and put it
+back** — and that leaves a trace. Cooldown watches `/proc/sys/kernel/random/boot_id`,
+which changes on every boot, and if the box restarts for a reason you haven't
+acknowledged, the Pi health page shows a red banner until you dismiss it:
+
+> ⚠️ **This box restarted on Sun 2 Aug, 12:53 PM** — if that wasn't you, someone had
+> physical access.
+
+A power cut will trigger it too. That's the right trade: you'd rather dismiss the odd
+false alarm than miss the real one.
+
+**Its limits, stated plainly:**
+- Someone holding the card can edit this check or clear the flag. It is tamper-**evidence**
+  against the careless, not tamper-proofing against the determined.
+- It tells you the box restarted, not what was done to it.
+- **A sticker or tamper tape across the SD slot is a better detector than any of this**,
+  and costs nothing. Physical problems want physical answers.
+
 ## Sanity checks, any time
 
 ```bash

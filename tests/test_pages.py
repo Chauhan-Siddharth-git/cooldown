@@ -298,3 +298,31 @@ def test_active_peer_reads_as_online():
     assert dev["online"] is True
     assert dev["direct"] is True
     assert dev["kind"] == "computer"
+
+
+# ---------- tamper-evidence: an unexplained reboot ----------
+
+def test_boot_watch_is_quiet_on_first_run(rdb):
+    """Nothing to compare against yet — must not cry wolf."""
+    assert budget.boot_watch() is None
+    assert rdb.get("last_boot_id") is not None      # but it does start watching
+
+def test_boot_watch_flags_a_reboot(rdb):
+    budget.boot_watch()                              # establish a baseline
+    rdb.set("last_boot_id", "some-earlier-boot")     # the box rebooted
+    assert budget.boot_watch() is not None
+    assert len(rdb.lrange("boot_events", 0, -1)) == 1
+
+def test_health_page_warns_and_can_be_dismissed(client, rdb):
+    budget.boot_watch()
+    rdb.set("last_boot_id", "some-earlier-boot")
+    assert "This box restarted" in client.get("/health").data.decode()
+    client.post("/boot-ack")
+    assert rdb.get("unacked_boot") is None
+    assert "This box restarted" not in client.get("/health").data.decode()
+
+def test_service_restart_alone_is_not_a_reboot(rdb):
+    """Restarting the app must not look like tampering — boot_id only changes on boot."""
+    budget.boot_watch()
+    for _ in range(3):
+        assert budget.boot_watch() is None

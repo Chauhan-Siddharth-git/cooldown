@@ -1520,6 +1520,39 @@ def _spark_points(hist, w=100, h=32, lo=30, hi=85):
         out.append(f"{x:.1f},{y:.1f}")
     return " ".join(out)
 
+def boot_watch():
+    """Notice that the box has rebooted, and remember it until you say it was you.
+
+    You cannot detect the SD card being pulled: the card IS the root filesystem, so the
+    moment it leaves, the code that would raise the alarm is unreadable. But nobody yanks
+    a card from a running Pi — they power it down, copy it, and put it back. That leaves a
+    trace: a boot this box can't account for.
+
+    /proc/sys/kernel/random/boot_id is regenerated on every boot, so a change means the
+    machine restarted — not merely that a service was restarted.
+
+    Honest limit: anyone who takes the card can also edit this, or clear the flag. It's
+    tamper-EVIDENCE for the careless, not tamper-proofing. A sticker across the SD slot is
+    a better detector, and costs nothing.
+    """
+    bid = _try(lambda: _first_line("/proc/sys/kernel/random/boot_id"))
+    if not bid:
+        return None
+    if r.get("last_boot_id") != bid:
+        first_ever = r.get("last_boot_id") is None
+        r.set("last_boot_id", bid)
+        if not first_ever:                       # don't cry wolf on the very first run
+            now = time.time()
+            r.rpush("boot_events", f"{now:.0f}")
+            r.ltrim("boot_events", -50, -1)
+            r.set("unacked_boot", f"{now:.0f}")
+    return r.get("unacked_boot")
+
+@app.route('/boot-ack', methods=['POST'])
+def boot_ack():
+    r.delete("unacked_boot")
+    return redirect('/health')
+
 def collect_health(max_age=2.0):
     """Snapshot of the box. Cached briefly: the page polls every 4s and several tabs (or a
     hostile same-origin script) would otherwise each spawn ~5 `systemctl` subprocesses per
@@ -1639,6 +1672,12 @@ HEALTH_PAGE = """
         .pill::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--faint)}
         .pill.ok{color:#cfe9d8}.pill.ok::before{background:var(--go)}
         .pill.bad{color:#f0c9c9;border-color:#3a2222}.pill.bad::before{background:var(--bad)}
+        .bootwarn{background:rgba(46,20,20,.86);border:1px solid var(--bad);border-radius:14px;
+            padding:15px 16px;margin-bottom:12px}
+        .bw-t{font-size:14.5px;font-weight:700;color:#ffd9d9}
+        .bw-p{font-size:12.5px;line-height:1.5;color:#e0b9b9;margin-top:6px}
+        .bw-b{margin-top:11px;width:100%;padding:10px;border-radius:9px;border:1px solid #5c2c2c;
+            background:transparent;color:#e0b9b9;font-size:13px;cursor:pointer}
         .foot{display:flex;gap:16px;justify-content:center;margin-top:20px}
         .foot a{font-size:12.5px;color:var(--faint);text-decoration:none}
     </style>
@@ -1646,6 +1685,17 @@ HEALTH_PAGE = """
 <body>
 <div class="wrap">
     <div class="kicker"><span class="dot"></span>{{ d.model }}</div>
+    {% if boot_alert %}
+    <div class="bootwarn">
+        <div class="bw-t">⚠️ This box restarted on {{ boot_alert }}</div>
+        <div class="bw-p">If that wasn't you — no power cut, no reboot you asked for — then
+            someone had physical access, and the SD card holds the certificate your devices
+            trust. See <b>RECOVERY.md</b>.</div>
+        <form action="/budget/boot-ack" method="post">
+            <button class="bw-b" type="submit">That was me — dismiss</button>
+        </form>
+    </div>
+    {% endif %}
 
     <div class="board">
       <svg viewBox="0 0 380 250" role="img" aria-label="Raspberry Pi board">
@@ -1815,8 +1865,10 @@ def health():
     mem_pct, disk_pct = d["mem"].get("pct", 0), d["disk"].get("pct", 0)
     # Cards stay neutral until high, then warn — but the RAM chip always glows (cool too).
     card = lambda p: "" if p < 70 else ("warm" if p < 85 else "hot")
+    ts = _try(boot_watch)
+    boot_alert = time.strftime("%a %-d %b, %-I:%M %p", time.localtime(float(ts))) if ts else None
     return render_template_string(
-        HEALTH_PAGE, d=d,
+        HEALTH_PAGE, d=d, boot_alert=boot_alert,
         tclass=_temp_class(d["temp_c"]),
         eth_state=eth_state,
         ram_class=_pct_class(mem_pct),
