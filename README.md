@@ -155,12 +155,16 @@ Runs the whole thing in a container on the computer you're sitting at, so you ca
 gate and the countdown for yourself. **It only gates a browser on that one computer — not
 your phone**, and it stops when you close it. It's a demo, not the real setup.
 
-Step-by-step, with troubleshooting: **[DOCKER.md](DOCKER.md)**.
-
 ```bash
-TZ=America/New_York docker compose up -d --build
-# then point your browser's proxy at 127.0.0.1:8080 and install the CA from http://mitm.it
+./docker-install.sh --check     # optional dry run
+./docker-install.sh             # build, start, and walk you through the rest
 ```
+
+It checks Docker is actually usable (and tells you exactly how to fix it if not), starts
+everything, then points you at the two manual steps: your browser's proxy setting and
+trusting the certificate. `./docker-install.sh --down` removes it all again.
+
+Step-by-step details and troubleshooting: **[DOCKER.md](DOCKER.md)**.
 
 ### 📱 No Pi yet, but want your phone gated too? (advanced)
 
@@ -168,6 +172,11 @@ The same Docker setup plus Tailscale, so your phone routes through the container
 gated even on cellular. It needs a **privileged container** and only works while your
 computer is awake and online — a stopgap, not the reliable answer.
 
+```bash
+./docker-install.sh --phone
+```
+
+It walks you through generating a Tailscale auth key and stores it safely for you.
 Walkthrough and warnings: **[DOCKER-PHONE.md](DOCKER-PHONE.md)**.
 
 ## Configure

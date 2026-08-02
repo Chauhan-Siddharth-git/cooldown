@@ -138,6 +138,7 @@ cat <<EOF
   ${DIM}Full explanation: SECURITY.md${N}
 EOF
 if [ "$ASSUME_YES" != 1 ] && [ "$DRY" != 1 ]; then
+  consent=""
   read -r -p "  ${B}Type 'yes' to continue:${N} " consent </dev/tty || true
   [ "$consent" = yes ] || die "Cancelled — nothing was changed."
 fi
@@ -277,8 +278,8 @@ ${B}1 · Route your devices through this box${N}
    exit node on your phone. ${DIM}(Traffic only flows through Cooldown once you do.)${N}
 
 ${B}2 · Trust the certificate on each device${N}
-   With the device routed through the box, open ${C}http://mitm.it${N} and install the
-   certificate for your platform.
+   On each device you want Cooldown to apply to — once it's routed through this box
+   (step 1 above) — open ${C}http://mitm.it${N} and install the certificate for your platform.
 
    ${Y}iOS needs a second step people always miss:${N}
      Settings → General → About → Certificate Trust Settings → turn it on.

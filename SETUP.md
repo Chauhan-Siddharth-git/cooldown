@@ -50,8 +50,9 @@ reference). At minimum, make sure `redis-server` is running and reachable on
   ```bash
   venv/bin/mitmdump   # Ctrl-C after it starts; the CA is now generated
   ```
-- With a device routed through the proxy, browse to **http://mitm.it** and install
-  the certificate for your platform.
+- On a **routed device** (a phone or laptop you've pointed through the box — i.e. one you
+  want Cooldown to apply to), browse to **http://mitm.it** and install the certificate for
+  your platform.
 - **iOS:** installing the profile is not enough — you must also enable full trust:
   **Settings → General → About → Certificate Trust Settings → toggle it on.**
   Without this, Safari silently fails all HTTPS.
@@ -123,7 +124,8 @@ Skip it and everything still works — the background just shows less red. See
 ## 7. Verify
 
 - `systemctl is-active cooldown-app cooldown-proxy cooldown-redirect redis-server` → all `active`.
-- On a routed device, open a gated site in the browser → you should see the gate.
+- On a routed device (one you've pointed through the box), open a budgeted site → you
+  should see the gate.
 - `curl http://127.0.0.1:5000/remaining` on the box → JSON with per-site budgets.
 - Visit `/budget/stats` for the usage dashboard.
 

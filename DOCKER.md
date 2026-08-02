@@ -75,6 +75,11 @@ to run it; just the commands below.
 
 ## Quick start
 
+> **There's an installer:** `./docker-install.sh` does everything below and checks the
+> common failure points first (Docker not running, missing compose plugin, permissions).
+> `--check` dry-runs it, `--down` removes it. The rest of this page is the manual version.
+
+
 **1. Get the code and enter the folder.** `docker compose` builds the image from the
 files in this repo, so you need them locally first:
 
