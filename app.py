@@ -119,7 +119,11 @@ WINDDOWN_SECONDS = 60 * 60
 # search / home feed / Shorts / other channels bounce back to the course. To add a
 # course: open its playlist on YouTube and copy the value after "list=" in the URL.
 # Keep this list in sync with STUDY_PLAYLISTS in addon.py.
-STUDY_PLAYLISTS = ["REPLACE_WITH_YOUR_PLAYLIST_ID"]  # allow-listed YouTube playlist IDs for Study mode; [] disables it
+# Study mode: a free, always-open escape hatch locked to an allow-listed YouTube playlist.
+# OFF by default — put one or more playlist IDs here AND in addon.py (both lists must match)
+# to switch it on. Ships off because a placeholder ID renders a study button that goes
+# nowhere, and because the feature only earns its keep if you'll genuinely use it.
+STUDY_PLAYLISTS = []
 
 BUDGET_PAGE = """
 <!DOCTYPE html>
@@ -519,7 +523,6 @@ STATS_PAGE = """
         .cd-row{color:var(--muted);font-size:13px}
         .cd-sub{color:var(--faint);font-size:12.5px;margin-top:6px}
         .cd-warn{color:var(--warn)}
-        .study-card{border-color:var(--sleep)}
         .why-row{display:flex;align-items:center;gap:10px;margin-top:9px;font-size:13px}
         .why-lab{width:9.5em;flex:none;color:var(--fg)}
         .why-bar{flex:1;height:9px;background:#0e1116;border-radius:5px;overflow:hidden}
@@ -528,9 +531,6 @@ STATS_PAGE = """
         .why-foot{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}
         .why-foot b{color:var(--good);font-size:15px}
         .why-empty{color:var(--faint);font-size:12.5px;margin-top:8px;line-height:1.5}
-        .study-row{display:flex;gap:28px;align-items:baseline}
-        .study-n{font-size:26px;font-weight:700;color:var(--sleep);font-variant-numeric:tabular-nums}
-        .study-k{font-size:12px;color:var(--faint);margin-left:7px;text-transform:uppercase;letter-spacing:.04em}
     </style>
 </head>
 <body>
@@ -561,17 +561,6 @@ STATS_PAGE = """
         <div class="why-empty">Nothing yet. When the gate asks why you're reaching for a site, the
             answer you pick is recorded here &mdash; along with whether naming it was enough to stop you.
             It never leaves this box.</div>
-        {% endif %}
-    </div>
-
-    <div class="card study-card">
-        <h2>Study mode — the point of all this</h2>
-        <div class="study-row">
-            <div><span class="study-n">{{ study_today_min }}m</span><span class="study-k">today</span></div>
-            <div><span class="study-n">{{ study_week_min }}m</span><span class="study-k">last 7 days</span></div>
-        </div>
-        {% if study_week_min == 0 %}
-        <div class="cd-sub">No study-mode time logged this week. The course playlist is one tap from any gate — and free.</div>
         {% endif %}
     </div>
 
@@ -1259,11 +1248,6 @@ def stats():
     # Study mode (free, unbudgeted) is logged separately — this is the one metric the
     # whole thing is FOR, so surface it. Today + this-week's foreground study minutes.
     today_key = time.strftime("%Y-%m-%d", time.localtime(now))
-    study_today_min = int(float(r.get(f"study_usage:{today_key}") or 0) // 60)
-    study_week_min = 0
-    for i in range(7):
-        dk = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
-        study_week_min += int(float(r.get(f"study_usage:{dk}") or 0) // 60)
 
     today_ts = sorted(t for t in cd_events
                       if time.strftime("%Y-%m-%d", time.localtime(t)) == today_key)
@@ -1297,8 +1281,7 @@ def stats():
     why = reflection_summary()
     return render_template_string(STATS_PAGE, why=why,
         days=days, today_min=today_min, week_avg=week_avg,
-        trend=trend, trend_cls=trend_cls, live_line=live_line, stale=stale, cd=cd,
-        study_today_min=study_today_min, study_week_min=study_week_min)
+        trend=trend, trend_cls=trend_cls, live_line=live_line, stale=stale, cd=cd)
 
 def daily_reset():
     pools = set()
@@ -2074,7 +2057,7 @@ BG_SCRIPT = next(b for b in re.findall(r"\{% raw %\}\s*<script>.*?</script>\s*\{
 BG_STYLE = ("html,body{background:#070b0e!important}"
             "#bp-bg{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:block}"
             ".wrap{position:relative;z-index:1}"
-            ".card,.tile,.board,.metric,.dcard,.study-card{background:rgba(18,21,27,0.4)!important;"
+            ".card,.tile,.board,.metric,.dcard{background:rgba(18,21,27,0.4)!important;"
             "-webkit-backdrop-filter:blur(5px);backdrop-filter:blur(5px)}")
 
 def _add_bg(page, full=True):

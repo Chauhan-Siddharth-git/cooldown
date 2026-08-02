@@ -13,6 +13,14 @@ from mitmproxy.test import tflow
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import addon  # noqa: E402
 
+# Study mode ships OFF (STUDY_PLAYLISTS empty), but the lock still exists for anyone who
+# enables it — so these tests configure a playlist rather than depend on the shipped default.
+STUDY_PL = "PLtest0000study0000playlist"
+
+@pytest.fixture()
+def study_on(monkeypatch):
+    monkeypatch.setattr(addon, "STUDY_PLAYLISTS", [STUDY_PL])
+
 
 @pytest.fixture()
 def rdb(monkeypatch):
@@ -100,9 +108,9 @@ def test_facebook_is_overlay_only_never_budgeted():
 # ---------- study mode is locked to the course ----------
 
 @pytest.mark.parametrize("path,allowed", [
-    (f"/watch?list={addon.STUDY_PLAYLISTS[0]}", True),
-    (f"/playlist?list={addon.STUDY_PLAYLISTS[0]}", True),
-    (f"/watch?v=abc&list={addon.STUDY_PLAYLISTS[0]}&index=2", True),
+    (f"/watch?list={STUDY_PL}", True),
+    (f"/playlist?list={STUDY_PL}", True),
+    (f"/watch?v=abc&list={STUDY_PL}&index=2", True),
     ("/watch?v=abc", False),                       # a video with no playlist
     ("/watch?list=PLsomeotherplaylist", False),    # someone else's playlist
     ("/feed/subscriptions", False),
@@ -110,7 +118,7 @@ def test_facebook_is_overlay_only_never_budgeted():
     ("/", False),
     ("/shorts/abc", False),
 ])
-def test_study_url_allowed(path, allowed):
+def test_study_url_allowed(study_on, path, allowed):
     assert addon.study_url_allowed(path) is allowed
 
 
@@ -188,18 +196,18 @@ def test_active_session_passes_through(rdb, session):
     assert f.response is None                 # untouched -> goes to the real site
 
 
-def test_study_mode_bounces_off_course_navigation(rdb, session):
+def test_study_mode_bounces_off_course_navigation(rdb, session, study_on):
     session("youtube", "study")
     f = mkflow("www.youtube.com", "/feed/subscriptions", resp=False,
                headers={"Sec-Fetch-Mode": "navigate"})
     addon.BudgetAddon().request(f)
     assert f.response.status_code == 302
-    assert addon.STUDY_PLAYLISTS[0] in f.response.headers["Location"]
+    assert STUDY_PL in f.response.headers["Location"]
 
 
-def test_study_mode_allows_the_course_and_its_subrequests(rdb, session):
+def test_study_mode_allows_the_course_and_its_subrequests(rdb, session, study_on):
     session("youtube", "study")
-    ok = mkflow("www.youtube.com", f"/watch?list={addon.STUDY_PLAYLISTS[0]}",
+    ok = mkflow("www.youtube.com", f"/watch?list={STUDY_PL}",
                 resp=False, headers={"Sec-Fetch-Mode": "navigate"})
     addon.BudgetAddon().request(ok)
     assert ok.response is None
@@ -246,7 +254,7 @@ def test_no_injection_without_session(rdb):
     assert f.response.text == HTML            # untouched
 
 
-def test_youtube_gets_declutter_and_study_lock(rdb, session):
+def test_youtube_gets_declutter_and_study_lock(rdb, session, study_on):
     session("youtube", "active")
     f = mkflow("www.youtube.com", "/", body=HTML)
     addon.BudgetAddon().response(f)
@@ -256,7 +264,7 @@ def test_youtube_gets_declutter_and_study_lock(rdb, session):
     session("youtube", "study")
     s = mkflow("www.youtube.com", "/", body=HTML)
     addon.BudgetAddon().response(s)
-    assert addon.STUDY_PLAYLISTS[0] in s.response.text   # STUDY_LOCK carries the allowlist
+    assert STUDY_PL in s.response.text   # STUDY_LOCK carries the allowlist
 
 
 def test_facebook_gets_overlay_but_never_the_heartbeat(rdb):

@@ -59,8 +59,9 @@ of blocking, it:
 - **Does surgery, not just blocking.** On YouTube it strips Shorts, the home feed,
   and autoplay while leaving Search and Subscriptions — so the tool removes the
   slot machine without removing the utility.
-- **Has a Study mode:** a free, always-open escape hatch locked to an
-  allow-listed course playlist.
+- **Has an optional Study mode:** a free, always-open escape hatch locked to a course
+  playlist you allow-list. Ships **off**; add a playlist ID to `STUDY_PLAYLISTS` in
+  `app.py` *and* `addon.py` to enable it.
 - **Winds down at night:** a soft bedtime curfew (with a small, independent night
   buffer) instead of a hard shutoff.
 - **Is yours.** No subscription, no account, no telemetry. All state is local.

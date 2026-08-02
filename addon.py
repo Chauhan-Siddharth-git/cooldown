@@ -41,7 +41,7 @@ IGNORED_HOSTS = [
 # session is free but LOCKED to these playlists: only /watch and /playlist URLs
 # carrying an allowlisted list= are permitted; everything else (search, home feed,
 # Shorts, other channels) bounces back to the course.
-STUDY_PLAYLISTS = ["REPLACE_WITH_YOUR_PLAYLIST_ID"]  # keep in sync with app.py STUDY_PLAYLISTS
+STUDY_PLAYLISTS = []   # OFF by default; must match app.py. See the note there.
 
 r = redis.Redis(host=os.environ.get("REDIS_HOST", "localhost"),
                 port=int(os.environ.get("REDIS_PORT", "6379")), decode_responses=True)

@@ -1,8 +1,17 @@
 """Gate + stats rendering per state, and the enter/study routes."""
 import time
+
+import pytest
 from urllib.parse import quote
 
 import app as budget
+
+STUDY_PL = "PLtest0000study0000playlist"
+
+@pytest.fixture()
+def study_on(monkeypatch):
+    """Study mode ships OFF; switch it on for the tests that exercise it."""
+    monkeypatch.setattr(budget, "STUDY_PLAYLISTS", [STUDY_PL])
 
 
 def gate(client, site="reddit"):
@@ -15,7 +24,7 @@ def test_day_enter_page(client, rdb, day):
     html = gate(client, "youtube")
     assert "Enter YouTube" in html
     assert "15:00" in html                       # full budget as the headline
-    assert "Study mode" in html
+    assert "Study mode" not in html         # study ships off
     assert "/budget/stats" in html               # footer link
     assert "Budget" not in html                  # renamed to Countdown
 
@@ -49,7 +58,6 @@ def test_night_bedtime_closed(client, rdb, night):
     rdb.set("night_spent:main", budget.NIGHT_BUDGET_SECONDS)   # night buffer used up
     html = gate(client, "youtube")
     assert "Bedtime" in html
-    assert "Study mode" in html                  # study stays reachable at night
     assert rdb.get("cooldown:main") is None      # closing != cooldown
 
 
@@ -162,7 +170,7 @@ def test_gate_enter_form_carries_next(client, rdb, day):
     assert "next=" in html                           # Enter form threads it through
 
 
-def test_study_locked_to_playlist_and_always_open(client, rdb, night):
+def test_study_locked_to_playlist_and_always_open(client, rdb, night, study_on):
     rdb.set("spent:main", 900)                   # everything drained, at night
     resp = client.post("/study?site=youtube")
     assert "playlist?list=" in resp.headers["Location"]
@@ -188,7 +196,7 @@ def test_news_enter_returns_to_the_article(client, rdb, day):
     assert "cnn.com/2026/07/20/politics" in resp.headers["Location"]   # not the home fallback
 
 
-def test_cooldown_screen_promotes_study(client, rdb, day):
+def test_cooldown_screen_promotes_study(client, rdb, day, study_on):
     rdb.set("cooldown:main", time.time() - 100)      # YouTube in cooldown
     html = gate(client, "youtube")
     assert "Study while you wait" in html            # promoted CTA copy
@@ -235,23 +243,6 @@ def test_stats_shows_cooldown_clustering(client, rdb):
     assert "binge clustering" in html
     assert 'class="cd-n">2<' in html                 # two cooldowns today
     assert "1 rapid repeat" in html                  # within the 3h window
-
-
-def test_stats_shows_study_minutes(client, rdb):
-    today = time.strftime("%Y-%m-%d")
-    rdb.set(f"study_usage:{today}", 1800)            # 30 min of study today
-    rdb.set("last_charge", time.time())
-    html = client.get("/stats").data.decode()
-    assert "Study mode — the point of all this" in html
-    assert "30m" in html                             # today's study readout
-
-
-def test_stats_study_zero_nudges(client, rdb):
-    rdb.set("last_charge", time.time())
-    html = client.get("/stats").data.decode()
-    assert "No study-mode time logged this week" in html
-
-
 def test_stats_no_cooldowns_yet(client, rdb):
     rdb.set("last_charge", time.time())
     html = client.get("/stats").data.decode()
