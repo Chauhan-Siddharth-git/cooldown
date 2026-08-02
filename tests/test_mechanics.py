@@ -341,3 +341,45 @@ def test_cluster_ignores_stale_cluster(rdb):
         _sp(rdb, now, "reddit", ago)
     _sp(rdb, now, "reddit", 0)        # one fresh -> only 1 counts in window
     assert budget.maybe_cluster_cooldown("reddit", now) is False
+
+
+# ---------- reflection prompt: why you reached, and whether naming it helped ----------
+
+def test_log_reflection_ignores_junk(rdb):
+    budget.log_reflection("tired", "pass")
+    budget.log_reflection("nonsense", "pass")      # not a real trigger
+    budget.log_reflection("tired", "sideways")     # not a real outcome
+    events = rdb.lrange(f"reflect:{time.strftime('%Y-%m-%d')}", 0, -1)
+    assert len(events) == 1
+    assert events[0].endswith(" tired pass")
+
+def test_reflection_summary_counts_and_rate(rdb):
+    now = time.time()
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    for t, a in [("tired","pass"),("tired","pass"),("tired","enter"),
+                 ("bored","enter"),("bored","enter"),("stressed","pass")]:
+        rdb.rpush(f"reflect:{day}", f"{now:.0f} {t} {a}")
+    w = budget.reflection_summary()
+    assert w["total"] == 6 and w["passes"] == 3 and w["rate"] == 50
+    assert w["rows"][0]["key"] == "tired"          # most frequent first
+    assert w["rows"][0]["n"] == 3 and w["rows"][0]["passed"] == 2
+
+def test_reflection_summary_window_excludes_old(rdb):
+    now = time.time()
+    old_day = time.strftime("%Y-%m-%d", time.localtime(now - 40 * 86400))
+    rdb.rpush(f"reflect:{old_day}", f"{now - 40*86400:.0f} tired pass")
+    assert budget.reflection_summary(days=30)["total"] == 0
+
+def test_enter_records_the_trigger_you_pushed_past(client, rdb, day):
+    client.post("/enter?site=reddit", data={"trigger": "bored"})
+    events = rdb.lrange(f"reflect:{time.strftime('%Y-%m-%d')}", 0, -1)
+    assert len(events) == 1 and events[0].endswith(" bored enter")
+
+def test_reflect_endpoint_records_a_pass(client, rdb):
+    assert client.post("/reflect", data={"trigger": "habit"}).status_code == 200
+    events = rdb.lrange(f"reflect:{time.strftime('%Y-%m-%d')}", 0, -1)
+    assert events[0].endswith(" habit pass")
+
+def test_enter_without_a_trigger_records_nothing(client, rdb, day):
+    client.post("/enter?site=reddit")               # entered without using the prompt
+    assert rdb.lrange(f"reflect:{time.strftime('%Y-%m-%d')}", 0, -1) == []

@@ -246,6 +246,7 @@ BUDGET_PAGE = """
                 <div class="actions" id="ractions" hidden>
                     <button class="pass" type="button" id="passBtn">I'll pass — I'm good</button>
                     <form action="/budget/enter?site={{ site }}{% if next_url %}&next={{ next_url|urlencode }}{% endif %}" method="post">
+                        <input type="hidden" name="trigger" id="trigField" value="">
                         <button class="cont" type="submit">Continue to {{ label }} anyway</button>
                     </form>
                 </div>
@@ -301,20 +302,21 @@ BUDGET_PAGE = """
     <script>
     (function(){
         var TRIGGERS = [
-          { label:"\\uD83D\\uDE34 Tired", lead:"Rest \\u2014 scrolling won't recharge you.",
+          { key:"tired", label:"\\uD83D\\uDE34 Tired", lead:"Rest \\u2014 scrolling won't recharge you.",
             items:["Put the phone down, eyes closed for 10 min","Drink a glass of water","If it's late, just go to bed","Step outside for 2 min of air"] },
-          { label:"\\uD83D\\uDE10 Bored", lead:"Boredom is a nudge, not an emergency.",
+          { key:"bored", label:"\\uD83D\\uDE10 Bored", lead:"Boredom is a nudge, not an emergency.",
             items:["Text someone you've meant to","5 minutes on one to-do","Open that book or a saved article","Sit with it for 60s \\u2014 it passes"] },
-          { label:"\\uD83D\\uDE30 Stressed", lead:"A feed won't settle this.",
+          { key:"stressed", label:"\\uD83D\\uDE30 Stressed", lead:"A feed won't settle this.",
             items:["5 slow breaths \\u2014 in 4, out 6","Write down what's on your mind","Short walk, even around the room","Do one small thing you can control"] },
-          { label:"\\uD83D\\uDE2C Avoiding something", lead:"What are you putting off?",
+          { key:"avoiding", label:"\\uD83D\\uDE2C Avoiding something", lead:"What are you putting off?",
             items:["Name the thing you're dodging","Do just its first 2 minutes","Shrink it to one tiny step","Set a 10-min timer and start"] },
-          { label:"\\uD83D\\uDD01 Just habit", lead:"You reached without deciding.",
+          { key:"habit", label:"\\uD83D\\uDD01 Just habit", lead:"You reached without deciding.",
             items:["Did I actually mean to open this?","Put the phone in another room","One slow breath, then choose","Do what you picked it up to avoid"] },
-          { label:"\\u2705 I actually need it", lead:"Fair enough \\u2014 be deliberate.",
+          { key:"need", label:"\\u2705 I actually need it", lead:"Fair enough \\u2014 be deliberate.",
             items:["Get in, get what you need, get out","Hold a rough time limit in mind","Then back to the real thing"] }
         ];
         var reflect=document.getElementById("reflect"); if(!reflect) return;
+        var picked="";
         var begin=document.getElementById("beginBtn"), chips=document.getElementById("chips"),
             list=document.getElementById("rlist"), lead=document.getElementById("rlead"),
             items=document.getElementById("ritems"), actions=document.getElementById("ractions"),
@@ -324,13 +326,17 @@ BUDGET_PAGE = """
             var b=document.createElement("button"); b.type="button"; b.className="chip"; b.textContent=t.label;
             b.addEventListener("click",function(){
                 [].forEach.call(chips.children,function(c){ c.classList.remove("sel"); });
-                b.classList.add("sel"); lead.textContent=t.lead; items.innerHTML="";
+                b.classList.add("sel"); picked=t.key;
+                var hid=document.getElementById("trigField"); if(hid) hid.value=t.key;
+                lead.textContent=t.lead; items.innerHTML="";
                 t.items.forEach(function(it){ var li=document.createElement("li"); li.textContent=it; items.appendChild(li); });
                 list.hidden=false; actions.hidden=false;
             });
             chips.appendChild(b);
         });
         pass.addEventListener("click",function(){
+            if(picked){ var fd=new FormData(); fd.append("trigger",picked);
+              fetch("/budget/reflect",{method:"POST",body:fd,keepalive:true}).catch(function(){}); }
             document.querySelector(".card").innerHTML =
               '<div class="kicker"><span class="dot"></span>Good call</div>'+
               '<h1>Put it down.</h1>'+
@@ -514,6 +520,14 @@ STATS_PAGE = """
         .cd-sub{color:var(--faint);font-size:12.5px;margin-top:6px}
         .cd-warn{color:var(--warn)}
         .study-card{border-color:var(--sleep)}
+        .why-row{display:flex;align-items:center;gap:10px;margin-top:9px;font-size:13px}
+        .why-lab{width:9.5em;flex:none;color:var(--fg)}
+        .why-bar{flex:1;height:9px;background:#0e1116;border-radius:5px;overflow:hidden}
+        .why-bar i{display:block;height:100%;background:var(--s1);border-radius:5px}
+        .why-n{width:5.5em;text-align:right;color:var(--muted);font-variant-numeric:tabular-nums;font-size:12.5px}
+        .why-foot{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}
+        .why-foot b{color:var(--good);font-size:15px}
+        .why-empty{color:var(--faint);font-size:12.5px;margin-top:8px;line-height:1.5}
         .study-row{display:flex;gap:28px;align-items:baseline}
         .study-n{font-size:26px;font-weight:700;color:var(--sleep);font-variant-numeric:tabular-nums}
         .study-k{font-size:12px;color:var(--faint);margin-left:7px;text-transform:uppercase;letter-spacing:.04em}
@@ -529,6 +543,25 @@ STATS_PAGE = """
         <div class="tile">
             <div class="v {{ trend_cls }}">{{ trend }}</div><div class="k">vs prior week</div>
         </div>
+    </div>
+
+    <div class="card" style="margin-bottom:12px">
+        <h2>Why you reach for it &mdash; last {{ why.days }} days</h2>
+        {% if why.total %}
+        {% for row in why.rows %}
+        <div class="why-row">
+            <span class="why-lab">{{ row.label }}</span>
+            <span class="why-bar"><i style="width:{{ row.bar }}%"></i></span>
+            <span class="why-n">{{ row.n }}&times; &middot; {{ row.pct }}%</span>
+        </div>
+        {% endfor %}
+        <div class="why-foot">Naming it was enough to stop you <b>{{ why.passes }}</b> of {{ why.total }} times
+            ({{ why.rate }}%).</div>
+        {% else %}
+        <div class="why-empty">Nothing yet. When the gate asks why you're reaching for a site, the
+            answer you pick is recorded here &mdash; along with whether naming it was enough to stop you.
+            It never leaves this box.</div>
+        {% endif %}
     </div>
 
     <div class="card study-card">
@@ -786,6 +819,52 @@ def start_cooldown(p, site, now=None):
     r.rpush(f"cooldown_events:{day}", f"{now:.0f} {site}")
     r.expire(f"cooldown_events:{day}", 100 * 86400)
 
+# The reflection prompt asks *why* you're reaching for the feed. That answer — and
+# whether naming it actually stopped you — is the most interesting thing this system can
+# know, and it used to live only in the browser and vanish. Recorded per-day, same shape
+# as the other logs: "<epoch> <trigger> <action>", self-pruning after ~100 days.
+REFLECT_TRIGGERS = {
+    "tired":    "Tired",
+    "bored":    "Bored",
+    "stressed": "Stressed",
+    "avoiding": "Avoiding something",
+    "habit":    "Just habit",
+    "need":     "Actually needed it",
+}
+
+def log_reflection(trigger, action, now=None):
+    if trigger not in REFLECT_TRIGGERS or action not in ("pass", "enter"):
+        return
+    now = now if now is not None else time.time()
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    r.rpush(f"reflect:{day}", f"{now:.0f} {trigger} {action}")
+    r.expire(f"reflect:{day}", 100 * 86400)
+
+def reflection_summary(days=30, now=None):
+    """Per-trigger counts and how often naming it was enough to stop you."""
+    now = now if now is not None else time.time()
+    rows, passes, total = {}, 0, 0
+    for i in range(days):
+        day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+        for raw in r.lrange(f"reflect:{day}", 0, -1):
+            parts = raw.split()
+            if len(parts) < 3 or parts[1] not in REFLECT_TRIGGERS:
+                continue
+            t, a = parts[1], parts[2]
+            d = rows.setdefault(t, {"key": t, "label": REFLECT_TRIGGERS[t], "n": 0, "passed": 0})
+            d["n"] += 1
+            total += 1
+            if a == "pass":
+                d["passed"] += 1
+                passes += 1
+    out = sorted(rows.values(), key=lambda d: -d["n"])
+    top = out[0]["n"] if out else 0
+    for d in out:
+        d["pct"] = round(100 * d["n"] / total) if total else 0
+        d["bar"] = round(100 * d["n"] / top) if top else 0
+    return {"rows": out, "total": total, "passes": passes,
+            "rate": round(100 * passes / total) if total else 0, "days": days}
+
 def log_soft_pause(site, now=None):
     """Log a per-site SOFT pause: a site hit its own cap while the shared bucket still had
     room, so the session ended with NO hard cooldown. Feeds the cluster brake below
@@ -966,6 +1045,13 @@ def budget_page():
         headline=clock(remaining), can_enter=True, show_study=study_ok, next_url=nxt,
         message="Foreground time only — the clock ticks while you're looking. Make it count.")
 
+@app.route('/reflect', methods=['POST'])
+def reflect():
+    # Fired when the reflection prompt talks you out of it. (The other outcome is
+    # recorded by /enter, which the "continue anyway" button posts to.)
+    log_reflection(request.form.get("trigger", ""), "pass")
+    return jsonify({"status": "ok"})
+
 @app.route('/enter', methods=['POST'])
 def enter():
     site = resolve_site(request.args.get("site"))
@@ -974,6 +1060,8 @@ def enter():
 
     if remaining <= 0 or cooldown > 0 or get_soft_cd_remaining(site) > 0:
         return redirect(f'/budget?site={site}')
+
+    log_reflection(request.form.get("trigger", ""), "enter")
 
     token = str(uuid.uuid4())
     r.setex(f"session:{token}", SESSION_IDLE_TTL, "active")
@@ -1206,7 +1294,8 @@ def stats():
         else:
             live_line = f"Heartbeat alive — last charged {ago}."
 
-    return render_template_string(STATS_PAGE,
+    why = reflection_summary()
+    return render_template_string(STATS_PAGE, why=why,
         days=days, today_min=today_min, week_avg=week_avg,
         trend=trend, trend_cls=trend_cls, live_line=live_line, stale=stale, cd=cd,
         study_today_min=study_today_min, study_week_min=study_week_min)
