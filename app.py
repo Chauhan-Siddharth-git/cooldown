@@ -191,15 +191,22 @@ BUDGET_PAGE = """
         /* Explains the live traffic feed behind the page. Sits inside the card (which clips
            overflow), so it covers the content rather than escaping the rounded corners. */
         .bgpanel{position:absolute;inset:0;z-index:3;display:none;flex-direction:column;
-            justify-content:center;gap:10px;padding:26px 24px;text-align:left;
+            justify-content:flex-start;gap:9px;padding:20px 22px;text-align:left;
+            overflow-y:auto;-webkit-overflow-scrolling:touch;
             background:rgba(14,17,22,.93);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
         .bgpanel.on{display:flex}
-        .bgpanel h2{margin:0;font-size:15px;font-weight:700;letter-spacing:-.2px;text-align:center}
-        .bgpanel p{margin:0;font-size:12.5px;line-height:1.5;color:var(--muted);max-width:none}
+        .bgpanel h2{margin:0 0 1px;font-size:14.5px;font-weight:700;letter-spacing:-.2px;text-align:center}
+        .bgpanel p{margin:0;font-size:12px;line-height:1.45;color:var(--muted);max-width:none}
         .bgpanel .key{display:flex;gap:9px;align-items:flex-start;font-size:12.5px;line-height:1.45;color:var(--fg)}
         .bgpanel .sw{width:9px;height:9px;border-radius:2px;flex:none;margin-top:4px}
         .bgpanel .sw.g{background:#4ede8c} .bgpanel .sw.r{background:#f06060}
-        .bgpanel .dismiss{margin-top:4px;background:transparent;border:1px solid var(--line);
+        .bgpanel .pct{margin-left:auto;padding-left:8px;font-variant-numeric:tabular-nums;
+            font-weight:700;font-size:12.5px;color:var(--fg)}
+        .bgbar{display:flex;height:9px;border-radius:5px;overflow:hidden;background:#0e1116;margin:2px 0 4px}
+        .bgbar i{display:block;height:100%;width:0;transition:width .4s}
+        #bgBarG{background:#4ede8c} #bgBarR{background:#f06060}
+        .bgpanel .fine{font-size:11px;line-height:1.4;color:var(--faint,#5f6773)}
+        .bgpanel .dismiss{margin-top:auto;flex:none;background:transparent;border:1px solid var(--line);
             color:var(--muted);border-radius:9px;padding:9px;font-size:13px;width:100%;cursor:pointer}
         .foots .foot{margin-top:0}
         /* Pre-entry reflection: a why-am-I-here pause with concrete alternatives. */
@@ -256,10 +263,17 @@ BUDGET_PAGE = """
         <div class="foots"><a class="foot" href="/budget/stats">Usage stats</a><a class="foot" href="/budget/health">Pi health</a><button class="infobtn" id="bgInfoBtn" type="button" aria-label="What is the moving background?">i</button></div>
         <div class="bgpanel" id="bgPanel">
             <h2>The moving background</h2>
-            <p>It's your household's real network traffic, live from this box — one line per packet.</p>
-            <div class="key"><span class="sw g"></span><span><b>Green</b> — encrypted (HTTPS). Unreadable gibberish, which is exactly what it should look like.</span></div>
-            <div class="key"><span class="sw r"></span><span><b>Red</b> — DNS lookups and plain HTTP. These travel in the clear, so anyone in between can read them.</span></div>
-            <p>Busier connection = denser and brighter, never faster. Nothing here is recorded or sent anywhere.</p>
+            <p>A live picture of the web traffic passing through this box right now.</p>
+            <div class="bgbar"><i id="bgBarG"></i><i id="bgBarR"></i></div>
+            <div class="key"><span class="sw g"></span><span><b>Encrypted</b> (HTTPS) — scrambled, unreadable. Exactly what you want.</span><span class="pct" id="bgPctG">—</span></div>
+            <div class="key"><span class="sw r"></span><span><b>In the clear</b> (DNS + plain HTTP) — readable by anyone in between.</span><span class="pct" id="bgPctR">—</span></div>
+            <p class="fine" id="bgRate">measuring…</p>
+            <p class="fine"><b>What's counted:</b> web traffic through this box — HTTPS (:443), HTTP (:80)
+               and DNS (:53). Not other protocols, and not devices that aren't routed through the box.
+               So it's your web browsing, not literally everything.</p>
+            <p class="fine">The scrolling lines are a stand-in, not your actual packets — the
+               <b>proportions and the volume are real</b>, the hex digits are not. Nothing is recorded
+               or sent anywhere.</p>
             <button class="dismiss" id="bgInfoClose" type="button">Got it</button>
         </div>
     </div>
@@ -331,9 +345,28 @@ BUDGET_PAGE = """
       var b=document.getElementById("bgInfoBtn"), p=document.getElementById("bgPanel"),
           x=document.getElementById("bgInfoClose");
       if(b&&p){
-        b.addEventListener("click", function(){ p.classList.toggle("on"); });
-        if(x) x.addEventListener("click", function(){ p.classList.remove("on"); });
-        document.addEventListener("keydown", function(e){ if(e.key==="Escape") p.classList.remove("on"); });
+        var timer=null;
+        function rate(n){ if(n<1024) return n+" B/s"; if(n<1048576) return (n/1024).toFixed(n<10240?1:0)+" KB/s"; return (n/1048576).toFixed(1)+" MB/s"; }
+        function refresh(){
+          fetch("/budget/feed?_="+Date.now(),{cache:"no-store"}).then(function(r){return r.json();})
+            .then(function(d){
+              var e=d.enc||0, u=d.unenc||0, tot=e+u;
+              var g=document.getElementById("bgPctG"), rr=document.getElementById("bgPctR"),
+                  bg=document.getElementById("bgBarG"), br=document.getElementById("bgBarR"),
+                  rt=document.getElementById("bgRate");
+              if(!tot){ g.textContent="—"; rr.textContent="—"; bg.style.width="0"; br.style.width="0";
+                        rt.textContent="Quiet right now — nothing measurable flowing through."; return; }
+              var pg=Math.round(e/tot*100);
+              g.textContent=pg+"%"; rr.textContent=(100-pg)+"%";
+              bg.style.width=pg+"%"; br.style.width=(100-pg)+"%";
+              rt.textContent="Right now: "+rate(e)+" encrypted, "+rate(u)+" in the clear.";
+            }).catch(function(){});
+        }
+        function open_(){ p.classList.add("on"); refresh(); clearInterval(timer); timer=setInterval(refresh,2000); }
+        function close_(){ p.classList.remove("on"); clearInterval(timer); timer=null; }
+        b.addEventListener("click", function(){ p.classList.contains("on") ? close_() : open_(); });
+        if(x) x.addEventListener("click", close_);
+        document.addEventListener("keydown", function(e){ if(e.key==="Escape") close_(); });
       }
     })();
     </script>
