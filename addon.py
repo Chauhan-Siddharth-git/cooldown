@@ -460,24 +460,35 @@ def study_url_allowed(path):
     return any(l in STUDY_PLAYLISTS for l in lists)
 
 class BudgetAddon:
+    def _strip_csp(self, flow: http.HTTPFlow):
+        """Drop the site's Content-Security-Policy — but ONLY on the HTML documents we
+        actually inject into.
+
+        CSP is what would normally stop our heartbeat script running, so on those
+        documents it has to go. Everywhere else (JSON, JS, CSS, images) it is left alone:
+        stripping it there bought nothing, because we never inject into those responses,
+        and it needlessly widened the window in which an XSS bug *on the site* could
+        matter. Note this only ever removes CSP — HSTS, X-Frame-Options,
+        X-Content-Type-Options and Referrer-Policy are never touched.
+        """
+        if "text/html" not in flow.response.headers.get("content-type", ""):
+            return
+        for header in ("content-security-policy", "content-security-policy-report-only"):
+            if header in flow.response.headers:
+                del flow.response.headers[header]
+
     def responseheaders(self, flow: http.HTTPFlow):
         host = flow.request.pretty_host
         if site_for_host(host):
             flow.response.stream = False
-            if "content-security-policy" in flow.response.headers:
-                del flow.response.headers["content-security-policy"]
-            if "content-security-policy-report-only" in flow.response.headers:
-                del flow.response.headers["content-security-policy-report-only"]
+            self._strip_csp(flow)
         elif overlay_for_host(host):
-            # Facebook: buffer + CSP-strip ONLY the HTML document we inject into; STREAM
-            # everything else (its realtime / long-poll / WebSocket traffic) so buffering
-            # a never-ending response can't hang the page.
+            # Facebook: buffer ONLY the HTML document we inject into; STREAM everything
+            # else (its realtime / long-poll / WebSocket traffic) so buffering a
+            # never-ending response can't hang the page.
             if "text/html" in flow.response.headers.get("content-type", ""):
                 flow.response.stream = False
-                if "content-security-policy" in flow.response.headers:
-                    del flow.response.headers["content-security-policy"]
-                if "content-security-policy-report-only" in flow.response.headers:
-                    del flow.response.headers["content-security-policy-report-only"]
+                self._strip_csp(flow)
             else:
                 flow.response.stream = True
 

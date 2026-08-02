@@ -133,6 +133,25 @@ Genuinely — that's the honest recommendation, no hard feelings.
 
 Everything above, stated precisely.
 
+**About stripping CSP.** To run its stopwatch on a page, Cooldown removes that page's
+`Content-Security-Policy`, which is the rule telling the browser not to run outside
+scripts. Worth being precise about the cost:
+
+- It only happens on **HTML documents of the sites you gate** — not on their JSON/JS/CSS,
+  and never on any site outside the allow-list. Your bank and email keep their CSP.
+- **Only CSP is removed.** HSTS, `X-Frame-Options`, `X-Content-Type-Options` and
+  `Referrer-Policy` pass through untouched, and cookie flags (`HttpOnly`, `SameSite`)
+  are unaffected.
+- CSP is a *mitigation*, not a fix: removing it doesn't create a hole, it removes a net
+  that would have caught one. The real exposure is that **if a gated site ships an XSS
+  bug, it is more exploitable for you than for other visitors** — the injected script
+  runs, and CSP's `connect-src` is no longer limiting where it can send data. Scope is
+  that one origin.
+- Your largest surface is the **news list** — dozens of domains, many with far weaker
+  security than Reddit or YouTube. Keep it as short as you'll actually use.
+- A stricter design is possible: rather than deleting the header, add a nonce to
+  `script-src` and keep the rest of the policy. That's the better fix and isn't done yet.
+
 **What it does to your traffic.** Traffic routes through the box, where **mitmproxy**
 terminates TLS, injects a script, and can serve a gate page in place of a budgeted site.
 To do that it generates a **root Certificate Authority**, and you install that CA as

@@ -155,6 +155,32 @@ def test_facebook_html_buffered_but_realtime_streams():
     assert rt.response.stream is True
 
 
+def test_gated_site_keeps_csp_on_non_html():
+    """We only inject into HTML, so everything else keeps its policy — stripping CSP
+    from JSON/JS bought nothing and only widened the blast radius of a site-side XSS."""
+    for ctype in ("application/json", "application/javascript", "text/css", "image/png"):
+        f = mkflow("www.reddit.com", "/api/thing", ctype=ctype)
+        f.response.headers["content-security-policy"] = "default-src 'self'"
+        addon.BudgetAddon().responseheaders(f)
+        assert f.response.headers["content-security-policy"] == "default-src 'self'", ctype
+
+
+def test_only_csp_is_ever_removed():
+    """Other security headers must survive — we are not weakening transport or framing."""
+    f = mkflow("www.reddit.com", ctype="text/html")
+    keep = {"strict-transport-security": "max-age=63072000",
+            "x-frame-options": "SAMEORIGIN",
+            "x-content-type-options": "nosniff",
+            "referrer-policy": "no-referrer"}
+    for k, v in keep.items():
+        f.response.headers[k] = v
+    f.response.headers["content-security-policy"] = "default-src 'self'"
+    addon.BudgetAddon().responseheaders(f)
+    assert "content-security-policy" not in f.response.headers   # the one we must remove
+    for k, v in keep.items():
+        assert f.response.headers[k] == v, k                     # everything else intact
+
+
 def test_unrelated_host_is_untouched():
     f = mkflow("example.com")
     f.response.headers["content-security-policy"] = "default-src 'self'"
