@@ -23,6 +23,9 @@ is spent, shows a calm "Countdown" page instead of the feed.
 >
 > The short version: you create your own "master key" on your box and nowhere else. This
 > repo ships none, and **you should never install one that anybody hands you.**
+>
+> If the box is ever lost, stolen or retired, [**RECOVERY.md**](RECOVERY.md) is the
+> two-minute checklist that makes that key worthless.
 
 **New to any of this?** [**CONCEPTS.md**](CONCEPTS.md) explains every term the docs use —
 proxy, certificate, exit node, DNS — in plain English, with no assumed background.

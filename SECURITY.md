@@ -65,9 +65,10 @@ This is the risk you accept in exchange for the tool.
 - The key lives only on your box, readable by one locked-down account and nothing else.
 - It is never uploaded, never emailed, never committed to Git (the `.gitignore` here
   blocks it, and **this repository ships no key of its own**).
-- If you ever suspect it leaked: **make a new one and stop trusting the old one.** Delete
-  the key directory, restart, install the fresh key on your devices. Ten minutes of
-  annoyance, problem gone.
+- If you ever suspect it leaked: **make a new one and stop trusting the old one.** Run
+  `./rotate-ca.sh` on the box, then reinstall on your devices. Ten minutes of annoyance,
+  problem gone. Full checklist — including lost/stolen/retired — in
+  [RECOVERY.md](RECOVERY.md).
 
 ### 2. You install *somebody else's* master key ⚠️ the big one
 
