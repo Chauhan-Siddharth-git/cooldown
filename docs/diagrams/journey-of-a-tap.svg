@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 746" width="640" height="746" role="img"
+     aria-label="A tap travels from your phone into the box, which unlocks the page, asks Flask and Redis whether time is left, then either fetches the real page from Reddit and returns it carrying an invisible stopwatch that pings every ten seconds while you look, or serves the Countdown gate without ever contacting Reddit.">
+  <style>
+    .bg{fill:#0b0d10}
+    .lbl{font:600 13px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#e6f2ea}
+    .sub{font:400 11px -apple-system,Segoe UI,Roboto,sans-serif;fill:#8b93a0}
+    .cap{font:700 10px -apple-system,Segoe UI,Roboto,sans-serif;fill:#5f6773;letter-spacing:.14em}
+    .end{fill:#12161c;stroke:#3a4150;stroke-width:1.5}
+    .note{fill:#101d16;stroke:#2f5d43;stroke-width:1.3}
+    .frame{fill:none;stroke:#2f5d43;stroke-width:1.3;stroke-dasharray:6 5}
+    .tab{fill:#12161c;stroke:#2f5d43;stroke-width:1.3}
+    .life{stroke:#2a3038;stroke-width:1.5;stroke-dasharray:4 6}
+    .div{stroke:#2f5d43;stroke-width:1.3;stroke-dasharray:6 5}
+    .wire{stroke:#3ecf7c;stroke-width:2;fill:none}
+    .back{stroke:#8b93a0}
+    .gate{stroke:#e5674b;stroke-width:2;fill:none}
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#3ecf7c"/></marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#e5674b"/></marker>
+    <marker id="c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#8b93a0"/></marker>
+  </defs>
+  <rect class="bg" width="640" height="746" rx="10"/>
+  <path class="life" d="M96 74 V732"/>
+  <path class="life" d="M320 74 V732"/>
+  <path class="life" d="M556 74 V732"/>
+  <rect class="end" x="26" y="22" width="140" height="40" rx="9"/>
+  <text class="lbl" x="96" y="47" text-anchor="middle">📱 Your phone</text>
+  <rect class="end" x="222" y="22" width="196" height="48" rx="9"/>
+  <text class="lbl" x="320" y="48" text-anchor="middle">The box</text>
+  <text class="sub" x="320" y="63" text-anchor="middle">mitmproxy · Flask · Redis</text>
+  <rect class="end" x="486" y="22" width="140" height="40" rx="9"/>
+  <text class="lbl" x="556" y="47" text-anchor="middle">🌐 Reddit</text>
+  <rect class="frame" x="64" y="540" width="512" height="78" rx="6"/>
+  <path class="tab" d="M64 540 h226 l10 0 v18 h-236 z"/>
+  <text class="cap" x="74" y="553">EVERY 10s — ONLY WHILE LOOKING</text>
+  <path class="div" d="M46 640 H594"/>
+  <text class="cap" x="58" y="657">NO TIME / COOLING DOWN</text>
+  <rect class="frame" x="46" y="358" width="548" height="370" rx="6"/>
+  <path class="tab" d="M46 358 h96 l10 0 v18 h-106 z"/>
+  <text class="cap" x="56" y="371">TIME LEFT</text>
+  <text class="lbl" x="208" y="93" text-anchor="middle">tap a link</text>
+  <text class="sub" x="208" y="106" text-anchor="middle">routes through the box first</text>
+  <path class="wire" marker-end="url(#a)" d="M96 112 H320"/>
+  <rect class="note" x="170" y="150" width="300" height="44" rx="8"/>
+  <text class="sub" x="320" y="169" text-anchor="middle">a firewall rule pulls web traffic in —</text>
+  <text class="sub" x="320" y="184" text-anchor="middle">QUIC is blocked so it can be read</text>
+  <path class="wire" marker-end="url(#a)" d="M320 224 h34 v26 h-30"/>
+  <text class="lbl" x="366" y="228">unlock the page</text>
+  <text class="sub" x="366" y="244">your phone trusts the</text>
+  <text class="sub" x="366" y="257">box's certificate</text>
+  <rect class="note" x="170" y="288" width="300" height="44" rx="8"/>
+  <text class="sub" x="320" y="307" text-anchor="middle">Flask asks Redis: any time left?</text>
+  <text class="sub" x="320" y="322" text-anchor="middle">→ 8 of 10 minutes used</text>
+  <text class="lbl" x="438" y="391" text-anchor="middle">fetch the real page</text>
+  <path class="wire" marker-end="url(#a)" d="M320 410 H556"/>
+  <text class="lbl" x="438" y="445" text-anchor="middle">the real page</text>
+  <path class="wire back" marker-end="url(#c)" d="M556 464 H320"/>
+  <text class="lbl" x="208" y="499" text-anchor="middle">page + invisible stopwatch</text>
+  <path class="wire" marker-end="url(#a)" d="M320 518 H96"/>
+  <text class="lbl" x="208" y="579" text-anchor="middle">still here</text>
+  <text class="sub" x="208" y="592" text-anchor="middle">each ping spends a little budget</text>
+  <path class="wire" marker-end="url(#a)" d="M96 598 H320"/>
+  <text class="lbl" x="208" y="687" text-anchor="middle">the Countdown gate</text>
+  <text class="sub" x="208" y="700" text-anchor="middle">Reddit is never contacted</text>
+  <path class="gate" marker-end="url(#b)" d="M320 706 H96"/>
+</svg>

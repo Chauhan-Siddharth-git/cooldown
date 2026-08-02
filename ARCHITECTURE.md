@@ -49,35 +49,7 @@ Three small programs run on the box, easiest to remember by their **jobs**:
 
 What actually happens, start to finish, when you open a Reddit link — the heart of it:
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant P as 📱 Your phone
-    participant M as mitmproxy<br/>(interceptor)
-    participant F as Flask<br/>(brain)
-    participant R as Redis<br/>(memory)
-    participant S as 🌐 Reddit
-
-    P->>M: tap a link — traffic routes<br/>through the box first
-    Note over M: a firewall rule pulls web traffic in —<br/>QUIC is blocked so it can be read
-    M->>M: unlock the page<br/>(your phone trusts the box's certificate)
-    M->>F: any time left on reddit?
-    F->>R: look up session + minutes spent
-    R-->>F: 8 of 10 minutes used
-    alt time left
-        F-->>M: let them in
-        M->>S: fetch the real page
-        S-->>M: the page
-        M-->>P: page + an invisible stopwatch
-        loop every 10s, only while you're looking
-            P->>F: still here
-            F->>R: charge the time
-        end
-    else no time / cooling down
-        F-->>M: serve the Countdown page
-        M-->>P: 🚫 the gate — Reddit is never contacted
-    end
-```
+<img src="docs/diagrams/journey-of-a-tap.svg" alt="A tap travels from your phone into the box, which unlocks the page and asks Flask and Redis whether time is left; if so it fetches the real page from Reddit and returns it carrying an invisible stopwatch that pings every ten seconds while you look, otherwise it serves the Countdown gate without ever contacting Reddit." width="100%">
 
 Step by step:
 
