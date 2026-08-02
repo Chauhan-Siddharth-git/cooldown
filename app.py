@@ -1360,9 +1360,12 @@ def _power():
             "under_voltage_ever": bool(val & 0x10000)}
 
 def _temp_class(t):
+    # Bands set against what a Pi 4 actually does, not what feels hot to a person:
+    # it soft-throttles at 80C and hard-throttles at 85C, and 40-60C is ordinary idle.
+    # The old 55/70 split painted a perfectly healthy board amber, which is a false alarm.
     if t is None:
         return "off"
-    return "cool" if t <= 55 else ("warm" if t <= 70 else "hot")
+    return "cool" if t <= 65 else ("warm" if t <= 78 else "hot")
 
 def _pct_class(p):
     # Shared green/amber/red for utilisation gauges (memory, and the RAM chip glow).
@@ -1568,7 +1571,7 @@ HEALTH_PAGE = """
       <div class="metric {{ tclass }}" id="tempCard">
         <div class="mtop"><span class="mk">Temp</span><span class="mv" id="temp">{% if d.temp_c is not none %}{{ d.temp_c }}&deg;C{% else %}&mdash;{% endif %}</span></div>
         <svg class="spark" viewBox="0 0 100 32" preserveAspectRatio="none"><polyline id="tempLine" points="{{ spark_points }}"/></svg>
-        <div class="msub">throttling <span id="throt">{{ 'none' if d.power.ok else 'ACTIVE' }}</span></div>
+        <div class="msub">throttling <span id="throt">{{ 'none' if d.power.ok else 'ACTIVE' }}</span> &middot; limit 80&deg;C</div>
       </div>
       <div class="metric {{ mcard }}" id="memCard">
         <div class="mtop"><span class="mk">Memory</span><span class="mv" id="memPct">{{ d.mem.pct }}%</span></div>
@@ -1610,7 +1613,7 @@ HEALTH_PAGE = """
     function $(id){ return document.getElementById(id); }
     function set(id,t){ var e=$(id); if(e) e.textContent=t; }
     function width(id,p){ var e=$(id); if(e) e.style.width=Math.max(0,Math.min(100,p))+"%"; }
-    function tclass(t){ return t==null?"off":(t<=55?"cool":(t<=70?"warm":"hot")); }
+    function tclass(t){ return t==null?"off":(t<=65?"cool":(t<=78?"warm":"hot")); }   // 80C = throttle
     function net(o){ if(!o) return "n/a"; if(!o.up) return "Down"; return o.speed?("Up · "+o.speed+"M"):"Up"; }
     function dot(id,on){ var e=$(id); if(e) e.className="ndot "+(on?"on":"off"); }
 
