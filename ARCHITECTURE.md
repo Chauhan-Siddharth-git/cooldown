@@ -37,29 +37,27 @@ internet:
 
 ```mermaid
 flowchart LR
-    subgraph you [" "]
-        P["📱 Your phone"]
-        L["💻 Your laptop"]
-    end
-    subgraph box ["The box · a Raspberry Pi you own"]
+    P["📱 Your phone"]
+    L["💻 Your laptop"]
+    subgraph box["The box · a Raspberry Pi you own"]
         direction LR
-        M["mitmproxy<br/><i>the interceptor</i><br/>reads &amp; rewrites"]
-        F["Flask<br/><i>the brain</i><br/>budget rules"]
-        R[("Redis<br/><i>the memory</i><br/>time spent")]
-        M <--> F
-        F <--> R
+        M["mitmproxy<br/>the interceptor<br/>reads and rewrites"]
+        F["Flask<br/>the brain<br/>budget rules"]
+        R[("Redis<br/>the memory<br/>time spent")]
+        M --> F
+        F --> R
     end
     W["🌐 Reddit · YouTube<br/>the real internet"]
+    P -->|private tunnel| M
+    L -->|browser proxy| M
+    M -->|fetches the real page| W
 
-    P -- "private tunnel" --> M
-    L -- "browser proxy" --> M
-    M <-- "fetches the real page" --> W
-
-    style box fill:#0d1b12,stroke:#2f5d43,color:#e6f2ea
-    style M fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
-    style F fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
-    style R fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
-    style you fill:transparent,stroke:transparent
+    classDef dev fill:#12161c,stroke:#3a4150,color:#c9d1d9
+    classDef svc fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
+    classDef net fill:#141a2e,stroke:#7aa2ff,color:#dbe4ff
+    class P,L dev
+    class M,F,R svc
+    class W net
 ```
 
 Three small programs run on the box, easiest to remember by their **jobs**:
@@ -136,10 +134,10 @@ happens on the way **back** to you.
 ```mermaid
 flowchart LR
     S["🌐 Reddit<br/>sends the real page"]
-    subgraph rew ["The box · rewriting on the way back"]
+    subgraph rew["The box · rewriting on the way back"]
         direction TB
-        A["1 · strip CSP<br/><i>the page's rule against outside scripts</i>"]
-        B["2 · inject the heartbeat<br/><i>+ remove Shorts &amp; the feed</i>"]
+        A["1 · strip CSP<br/>the page's rule against outside scripts"]
+        B["2 · inject the heartbeat<br/>and remove Shorts and the feed"]
         C["3 · re-seal with your certificate"]
         A --> B --> C
     end
@@ -147,10 +145,10 @@ flowchart LR
     S --> A
     C --> D
 
-    style rew fill:#0d1b12,stroke:#2f5d43,color:#e6f2ea
-    style A fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
-    style B fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
-    style C fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
+    classDef step fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
+    classDef ends fill:#12161c,stroke:#3a4150,color:#c9d1d9
+    class A,B,C step
+    class S,D ends
 ```
 
 The page your phone shows is **not quite** the one the site sent — de-clawed (Shorts
@@ -328,21 +326,15 @@ Everything lives on one Raspberry Pi, in layers — the anatomy of the box:
 
 ```mermaid
 flowchart TB
-    subgraph pi ["🍓 Raspberry Pi · Debian Linux · always on"]
-        direction TB
-        T["Tailscale<br/><i>the private tunnel your devices arrive through</i>"]
-        I["iptables<br/><i>shoves web traffic into the interceptor, blocks QUIC</i>"]
-        MM["mitmproxy + addon.py<br/><i>decrypt · strip CSP · inject the stopwatch · serve the gate</i>"]
-        FF["Flask + app.py<br/><i>the time rules, and every page you see</i>"]
-        RR[("Redis<br/><i>spent · cooldowns · sessions · history</i>")]
-        T --> I --> MM --> FF --> RR
-    end
-    style pi fill:#0d1b12,stroke:#2f5d43,color:#e6f2ea
-    style T fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
-    style I fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
-    style MM fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
-    style FF fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
-    style RR fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
+    T["Tailscale<br/>the private tunnel your devices arrive through"]
+    I["iptables<br/>shoves web traffic into the interceptor, blocks QUIC"]
+    MM["mitmproxy + addon.py<br/>decrypt · strip CSP · inject the stopwatch · serve the gate"]
+    FF["Flask + app.py<br/>the time rules, and every page you see"]
+    RR[("Redis<br/>spent · cooldowns · sessions · history")]
+    T --> I --> MM --> FF --> RR
+
+    classDef svc fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
+    class T,I,MM,FF,RR svc
 ```
 
 **Who talks to whom** — everything but the proxy is localhost-only:
@@ -374,16 +366,19 @@ interceptor* — and that one choice decides what can be gated.
 
 ```mermaid
 flowchart LR
-    subgraph e ["Explicit — the traffic volunteers"]
-        direction LR
-        B["💻 Browser"] -- "you set its proxy setting" --> I1["Interceptor"]
+    subgraph on["👁️ Tab on screen"]
+        direction TB
+        O1["heartbeat every 10s"] --> O2["the box subtracts the time"] --> O3["budget goes down"]
     end
-    subgraph t ["Transparent — the traffic is diverted"]
-        direction LR
-        P["📱 Phone"] -. "routing + iptables, silently" .-> I2["Interceptor"]
+    subgraph off["🌙 Tab hidden · phone locked"]
+        direction TB
+        F1["heartbeat stops"] --> F2["nothing reaches the box"] --> F3["budget untouched — it is free"]
     end
-    style e fill:#12161c,stroke:#3a4150,color:#c9d1d9
-    style t fill:#0d1b12,stroke:#3ecf7c,color:#e6f2ea
+
+    classDef live fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
+    classDef idle fill:#12161c,stroke:#3a4150,color:#c9d1d9
+    class O1,O2,O3 live
+    class F1,F2,F3 idle
 ```
 
 - **1 · The Raspberry Pi** — the always-on reference. The phone routes through it over
@@ -414,16 +409,18 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    subgraph on ["👁️ Tab on screen"]
-        direction TB
-        O1["heartbeat every 10s"] --> O2["box subtracts the time"] --> O3["budget goes down"]
-    end
-    subgraph off ["🌙 Tab hidden · phone locked"]
-        direction TB
-        F1["heartbeat stops"] --> F2["nothing reaches the box"] --> F3["budget untouched — it's free"]
-    end
-    style on fill:#0d1b12,stroke:#3ecf7c,color:#e6f2ea
-    style off fill:#12161c,stroke:#3a4150,color:#c9d1d9
+    D["☀️ DAY<br/>7am → 10pm<br/>full budget, refills while you are away"]
+    W["🌇 WIND-DOWN<br/>10pm → 11pm<br/>the cap shrinks toward the night floor"]
+    N["🌙 NIGHT<br/>11pm → 7am<br/>one small buffer, then closed"]
+    D --> W --> N
+    N -->|7am reset — a fresh day| D
+
+    classDef day fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
+    classDef wind fill:#2a2412,stroke:#f0a63a,color:#f4e4c4
+    classDef night fill:#141a2e,stroke:#7aa2ff,color:#dbe4ff
+    class D day
+    class W wind
+    class N night
 ```
 
 This is what makes the budget honest. A crude tool charges you for *traffic*;
@@ -445,14 +442,13 @@ visible?" signal.
 
 ```mermaid
 flowchart LR
-    D["☀️ <b>DAY</b><br/>7am → 10pm<br/><br/>full budget<br/>refills while you're away"]
-    W["🌇 <b>WIND-DOWN</b><br/>10pm → 11pm<br/><br/>the cap shrinks<br/>toward the night floor"]
-    N["🌙 <b>NIGHT</b><br/>11pm → 7am<br/><br/>one small buffer,<br/>then closed"]
-    D --> W --> N
-    N -. "7am reset — a fresh day" .-> D
-    style D fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
-    style W fill:#2a2412,stroke:#f0a63a,color:#f4e4c4
-    style N fill:#141a2e,stroke:#7aa2ff,color:#dbe4ff
+    B["💻 Browser"] -->|you set its proxy setting| I1["Interceptor"]
+    P["📱 Phone"] -->|routing + iptables, silently| I2["Interceptor"]
+
+    classDef vol fill:#12161c,stroke:#3a4150,color:#c9d1d9
+    classDef div fill:#12241a,stroke:#3ecf7c,color:#e6f2ea
+    class B,I1 vol
+    class P,I2 div
 ```
 
 Deliberately **soft** — a wind-down and a small (independent, non-refilling) night
