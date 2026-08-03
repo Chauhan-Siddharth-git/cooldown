@@ -224,8 +224,48 @@ Miss #3 and the site tunnels through un-intercepted. After editing, rebuild:
 **Start fresh** if things get weird: `docker compose down -v` (wipes data **and** the
 CA — you'll re-trust a new one), then `docker compose up -d --build`.
 
-**Uninstall completely:** `docker compose down -v`, then untrust/remove the Cooldown
-CA from your browser/OS certificate store.
+**Uninstall completely:** see [Removing it](#removing-it) below — the order matters.
+
+---
+
+## Removing it
+
+**Undo the routing before you remove the proxy.** If you delete the container while your
+browser is still pointed at `127.0.0.1:8080`, the browser is aimed at a port with nothing
+behind it and stops loading anything at all. That's the one way to make this annoying, and
+it's easy to avoid.
+
+**1 · Unset the browser proxy** — back to "no proxy" / "use system settings". Do this first.
+
+**2 · Untrust the certificate.** The step people skip, and the one that matters: a trusted
+CA you no longer control is exactly the risk [SECURITY.md](SECURITY.md) is about.
+
+- **Firefox** keeps its *own* store, separate from the OS: Settings → Privacy & Security →
+  Certificates → View Certificates → Authorities → `mitmproxy` → **Delete**.
+- **macOS:** Keychain Access → System → `mitmproxy` → delete.
+- **Windows:** `certmgr.msc` → Trusted Root Certification Authorities → delete `mitmproxy`.
+- **Linux (system store):** remove from `/usr/local/share/ca-certificates/`, then
+  `sudo update-ca-certificates --fresh`.
+
+**3 · Remove the containers and their data.**
+
+```bash
+./docker-install.sh --down     # containers only — your CA and usage data survive
+docker compose down -v         # containers AND volumes: wipes the CA and all data
+```
+
+Use the second if you're done for good. `--down` is the one to use if you might come back,
+since keeping the volume means you won't have to re-trust a new certificate.
+
+**4 · Delete the checkout**, if you want it gone entirely: `cd .. && rm -rf cooldown`.
+Optionally reclaim the build image with `docker image ls | grep cooldown` and
+`docker image rm <id>`.
+
+**What this does *not* leave behind:** Cooldown never installed anything system-wide. The
+installer only *checks* for Docker and prints what you'd need to run — no services, no
+firewall rules, no files outside the project folder and Docker's own storage. If you
+installed Docker or added yourself to the `docker` group for this, those are yours to undo
+(`sudo gpasswd -d $USER docker`) and nothing here depends on them.
 
 ---
 

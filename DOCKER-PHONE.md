@@ -100,6 +100,8 @@ for the phone's transparent interception, so the laptop uses `8081`.
 
 **Stop:** `docker compose -f docker-compose.tailscale.yml down`
 (add `-v` to also wipe data, the CA, and the Tailscale identity).
+**Removing it for good** — including the certificate on your phone — is
+[a few more steps](#removing-it).
 
 ---
 
@@ -155,6 +157,47 @@ If a layer fails, the one below it is fine — so you only ever debug one thing.
 | YouTube slips through | QUIC — should be blocked by the container's rules; confirm the `FORWARD ... udp --dport 443` lines appear in the logs. |
 | Gate vanishes randomly | Your computer slept / dropped off wifi. This is the always-on problem — the reason a Pi is better. |
 | `/dev/net/tun` errors on build/run | Your Docker can't pass the tun device (rare on Docker Desktop; more common on locked-down hosts). |
+
+---
+
+## Removing it
+
+**Take the phone off the exit node first.** If the container disappears while the phone is
+still routing through it, the phone loses internet and it won't be obvious why.
+
+**1 · Phone → Tailscale app → Exit Node → None.**
+
+**2 · Remove the certificate from the phone.** If you do only one step, do this one — a
+trusted CA left on a phone is precisely the risk [SECURITY.md](SECURITY.md) exists to warn
+about, and it outlives the container by years.
+
+- **iPhone:** Settings → General → VPN & Device Management → the profile → **Remove
+  Profile**. Then Settings → General → About → Certificate Trust Settings and confirm the
+  toggle is **off**.
+- **Android:** Settings → Security → Encryption & credentials → Trusted credentials →
+  **User** tab → `mitmproxy` → Remove.
+
+**3 · If you also gated this computer's browser** (step 7): unset the proxy
+`127.0.0.1:8081` and remove the CA from the browser/OS store — the full list is in
+[DOCKER.md](DOCKER.md#removing-it).
+
+**4 · Remove the node from your tailnet.** [Admin console](https://login.tailscale.com/admin/machines)
+→ Machines → `cooldown-docker` → **Remove**. Then Settings → Keys → **revoke the auth key**
+you generated, so nothing can rejoin the tailnet with it.
+
+**5 · Remove the containers, data and Tailscale identity.**
+
+```bash
+docker compose -f docker-compose.tailscale.yml down -v
+```
+
+The `-v` also wipes the CA and the container's tailnet identity — appropriate here, since
+you've just removed that node anyway.
+
+**6 · Delete `.env`.** It still holds your auth key in plain text. Revoking the key in
+step 4 makes it useless, but delete it regardless.
+
+Nothing was installed system-wide, so there's nothing else to undo on the computer.
 
 ---
 
