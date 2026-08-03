@@ -748,8 +748,12 @@ STATS_PAGE = """
             <tr class="sh-tot"><td>All</td><td>{{ shadow.hb }}m</td><td>{{ shadow.sh }}m</td>
                 <td>{% if shadow.ratio %}{{ shadow.ratio }}&times;{% else %}&mdash;{% endif %}</td></tr>
         </table>
-        <div class="sh-note">Last {{ shadow.days }} days &middot; running {{ shadow.running_days }}
-            day{{ '' if shadow.running_days == 1 else 's' }}. Passive is <b>expected to read high</b>:
+        <div class="sh-note">
+            {%- if not shadow.settled %}<b>Running {{ shadow.running }} &mdash; too early to draw conclusions.</b>
+            Give it a few days.{% else %}Comparing the
+            {{ shadow.days }} day{{ '' if shadow.days == 1 else 's' }} the meter has been running
+            ({{ shadow.running }}).{% endif %}
+            Passive is <b>expected to read high</b>:
             background tabs, autoplaying video and prefetching all keep making requests while you
             aren't looking, which is exactly what the injected timer excludes. A steady, boring
             multiplier is the good outcome &mdash; it means passive plus a correction could replace
@@ -1783,25 +1787,33 @@ def shadow_comparison(days=7, now=None):
     heartbeat excludes. The ratio is the finding, not the raw number.
     """
     now = now if now is not None else time.time()
+    started = _try(lambda: r.get("shadow_started"))
+    # Only compare days the meter was actually running. Otherwise the heartbeat's week of
+    # history is divided by a meter that started this morning, and the ratio reads as a
+    # catastrophic under-count on day one — a number that looks like a bug and isn't.
+    since = float(started) if started else now
+    window = [i for i in range(days) if now - i * 86400 >= since - 86400]
     rows, hb_tot, sh_tot = [], 0.0, 0.0
     for site in SITES:
         hb = sh = 0.0
-        for i in range(days):
+        for i in window:
             key_day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
             hb += float(_try(lambda k=key_day, s=site: r.get(f"usage:{k}:{s}"), 0) or 0)
             sh += float(_try(lambda k=key_day, s=site: r.get(f"shadow_usage:{k}:{s}"), 0) or 0)
         hb_tot += hb
         sh_tot += sh
-        if hb or sh:
+        if hb >= 60 or sh >= 60:
             rows.append({"label": SITES[site]["label"],
                          "hb": int(hb // 60), "sh": int(sh // 60),
-                         "ratio": round(sh / hb, 1) if hb >= 60 else None})
+                         "ratio": round(sh / hb, 1) if hb >= 300 else None})
     rows.sort(key=lambda x: -max(x["hb"], x["sh"]))
-    started = _try(lambda: r.get("shadow_started"))
+    hours = (now - since) / 3600 if started else 0
     return {"rows": rows, "hb": int(hb_tot // 60), "sh": int(sh_tot // 60),
-            "ratio": round(sh_tot / hb_tot, 1) if hb_tot >= 60 else None,
-            "days": days, "any": bool(sh_tot),
-            "running_days": int((now - float(started)) // 86400) if started else 0}
+            "ratio": round(sh_tot / hb_tot, 1) if hb_tot >= 300 else None,
+            "days": len(window), "any": bool(started),
+            "settled": hours >= 24,          # under a day, the ratio is noise
+            "running": (f"{hours:.0f} hour{'' if 0.5 <= hours < 1.5 else 's'}" if hours < 48
+                        else f"{hours/24:.0f} days")}
 
 def daily_reset(now=None):
     pools = set()

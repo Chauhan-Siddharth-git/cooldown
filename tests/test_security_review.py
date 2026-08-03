@@ -710,12 +710,32 @@ def test_shadow_writes_are_batched_not_per_request(rdb, monkeypatch):
     assert len(calls) <= 12, f"{len(calls)} redis writes for 100 requests"
 
 
-def test_stats_shows_the_comparison_only_once_there_is_data(rdb, client):
-    html = client.get("/stats").get_data(as_text=True)
-    assert "measuring the same time two ways" not in html
-    day = time.strftime("%Y-%m-%d")
+def test_stats_hides_the_comparison_until_the_meter_has_run(rdb, client):
+    assert "measuring the same time two ways" not in client.get("/stats").get_data(as_text=True)
+
+
+def test_comparison_only_counts_days_the_meter_was_running(rdb, client):
+    """The heartbeat has months of history; the meter starts today. Dividing one by the
+    other would show a terrifying ratio on day one that means nothing at all."""
+    now = time.time()
+    today = time.strftime("%Y-%m-%d", time.localtime(now))
+    old_day = time.strftime("%Y-%m-%d", time.localtime(now - 5 * 86400))
+    rdb.set(f"usage:{old_day}:reddit", 9999)          # long before the meter existed
+    rdb.set(f"usage:{today}:reddit", 600)
+    rdb.set(f"shadow_usage:{today}:reddit", 1200)
+    rdb.set("shadow_started", f"{now - 3 * 86400:.0f}")
+    c = budget.shadow_comparison()
+    assert c["hb"] == 10 and c["sh"] == 20, c        # the 9999 is outside the window
+    assert c["ratio"] == 2.0
+    assert c["settled"] is True
+    assert "2.0&times;" in client.get("/stats").get_data(as_text=True)
+
+
+def test_comparison_says_it_is_too_early_on_day_one(rdb, client):
+    now = time.time()
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
     rdb.set(f"usage:{day}:reddit", 600)
     rdb.set(f"shadow_usage:{day}:reddit", 1200)
-    html = client.get("/stats").get_data(as_text=True)
-    assert "measuring the same time two ways" in html
-    assert "2.0&times;" in html or "2.0×" in html     # 20m passive vs 10m injected
+    rdb.set("shadow_started", f"{now - 3600:.0f}")   # one hour old
+    assert budget.shadow_comparison()["settled"] is False
+    assert "too early to draw conclusions" in client.get("/stats").get_data(as_text=True)
