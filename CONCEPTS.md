@@ -109,9 +109,11 @@ browser treats it as a fence.
 
 **Same-origin** — the rule that code from one origin can read anything else on that origin
 and almost nothing on another. It's the reason a random open tab can't rifle through your
-email. Worth understanding here because Cooldown **adds its own pages to a site's origin** —
-`/budget/stats` is served on Reddit's — so Reddit's scripts start out on the inside of that
-fence with them. Rebuilding that boundary by hand is finding F9.
+email. Worth understanding here because Cooldown **adds its own pages to a site's origin**:
+the gate is served on Reddit's, so Reddit's scripts start out *inside* that fence with it.
+The dashboard used to be there too, and finding F9 is the story of trying to rebuild the
+boundary by hand — twice — before giving up and moving those pages to the box's own
+address, where the browser's own rule does the work.
 
 **Content-Security-Policy (CSP)** — a header in which a site lists what its own pages are
 allowed to load and run: which scripts, where data may be sent, who may embed it. It is a
@@ -155,8 +157,10 @@ escalation** is an attacker turning a small foothold into that.
 
 **Forbidden header name** — a header the browser flatly refuses to let page code set, no
 matter what. `Sec-Fetch-Dest` is one: the browser fills it in with *how* a request was
-made, and a script cannot lie about it. That unforgeability is what makes it usable as a
-lock (F9).
+made, and a script cannot lie about it. That unforgeability makes it usable as a lock —
+Cooldown still uses it to reject cross-site requests to the gate. But F9 is the cautionary
+half of the story: the header was never forged, it was *misread*. A script can't lie about
+how a request was made; it can still choose a way that happens to satisfy your check.
 
 **Tamper-evidence** — not stopping someone interfering, just making it impossible for them
 to do it *unnoticed*. Weaker than prevention, and often the only honest option — the reboot

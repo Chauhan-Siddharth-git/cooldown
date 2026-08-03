@@ -1,6 +1,11 @@
 [Unit]
 Description=Cooldown Flask app
-After=network.target redis-server.service
+# tailscaled too: the app adds the tailscale0 address as a second listener so the
+# dashboard is reachable from your phone. It waits for the interface at startup and
+# falls back to loopback-only, so this ordering is an optimisation, not a dependency —
+# the gate itself never needs the tailnet.
+After=network.target redis-server.service tailscaled.service
+Wants=tailscaled.service
 Requires=redis-server.service
 [Service]
 User=cooldownapp

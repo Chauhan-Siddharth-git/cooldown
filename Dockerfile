@@ -23,6 +23,8 @@ RUN chmod +x docker-entrypoint.sh \
     && chown -R app:app /app "$MITM_CONFDIR"
 
 USER app
-# Explicit HTTP proxy port. Flask (:5000) stays inside the container — never exposed.
-EXPOSE 8080
+# 8080 = the explicit HTTP proxy. 5000 = the dashboard, which is served on the box's own
+# origin rather than the gated site's (see the note in app.py); docker-compose publishes
+# it to host loopback only.
+EXPOSE 8080 5000
 ENTRYPOINT ["./docker-entrypoint.sh"]

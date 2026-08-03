@@ -213,7 +213,11 @@ elif [ "$DRY" = 1 ]; then
 else
   echo "  ${DIM}Generating your own certificate authority (nothing is downloaded)…${N}"
   TMPCA="$(mktemp -d)"
-  timeout 25 "$REPO/venv/bin/mitmdump" --set confdir="$TMPCA" -p 0 >/dev/null 2>&1 || true
+  # hook-exempt: no-allow-hosts — this starts mitmdump only to make it GENERATE a CA,
+  # then kills it. It never proxies anything, so a decrypt allowlist is meaningless here.
+  # Still bound to loopback: it is a listener, briefly, and F1 was about listeners.
+  timeout 25 "$REPO/venv/bin/mitmdump" --set confdir="$TMPCA" \
+      --listen-host 127.0.0.1 -p 0 >/dev/null 2>&1 || true
   [ -f "$TMPCA/mitmproxy-ca.pem" ] || die "mitmproxy did not generate a CA (is the venv complete?)"
   sudo mkdir -p "$(dirname "$CA_DIR")"
   sudo cp -a "$TMPCA" "$CA_DIR"                    # cp -a keeps the 600 key modes
@@ -297,7 +301,12 @@ ${B}2 · Trust the certificate on each device${N}
 
 ${B}Then${N}
    Open a budgeted site on that device — you should see the Cooldown gate.
-   Usage dashboard: ${C}http://<this-box>:5000/stats${N}
+
+   ${B}Usage dashboard:${N} ${C}http://<this-box's tailscale IP>:5000/stats${N}
+   ${DIM}Deliberately served on this box's own address rather than inside the gated site:
+   that makes it a different origin, so a script on Reddit can't read your device list.
+   Reachable over Tailscale only — the firewall drops :5000 on every other interface.
+   The gate page links to it, so you don't have to remember the address.${N}
    Change sites and time limits at the top of ${C}app.py${N}, then:
      ${C}sudo systemctl restart cooldown-app cooldown-proxy${N}
 

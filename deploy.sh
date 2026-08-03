@@ -28,13 +28,20 @@ case "${1:-code}" in
   status) status ;;
 
   units)
+    # Staged in a private mktemp dir, NOT /tmp directly. /tmp is world-writable, so
+    # anything landing there under a predictable name can be swapped between the scp
+    # and the install — and these files are installed as root into
+    # /etc/systemd/system, which makes that swap a root shell. mktemp -d gives a
+    # 0700 directory with an unguessable name.
     echo "Pushing systemd units + redirect script..."
-    scp -o BatchMode=yes deploy/cooldown-*.service "$PI:/tmp/"
-    scp -o BatchMode=yes deploy/cooldown-redirect.sh "$PI:/tmp/"
-    "${SSH[@]}" 'sudo install -m644 /tmp/cooldown-*.service /etc/systemd/system/ &&
-                 sudo install -m755 /tmp/cooldown-redirect.sh /usr/local/sbin/cooldown-redirect.sh &&
-                 rm -f /tmp/cooldown-*.service /tmp/cooldown-redirect.sh &&
-                 sudo systemctl daemon-reload && echo "units installed + daemon-reloaded"'
+    STAGE="$("${SSH[@]}" 'mktemp -d /tmp/cooldown-deploy.XXXXXXXX')"
+    [ -n "$STAGE" ] || { echo "could not create a staging dir on $PI" >&2; exit 1; }
+    trap '"${SSH[@]}" "rm -rf $STAGE" >/dev/null 2>&1 || true' EXIT
+    scp -o BatchMode=yes deploy/cooldown-*.service deploy/cooldown-redirect.sh "$PI:$STAGE/"
+    "${SSH[@]}" "sudo install -m644 $STAGE/cooldown-*.service /etc/systemd/system/ &&
+                 sudo install -m755 $STAGE/cooldown-redirect.sh /usr/local/sbin/cooldown-redirect.sh &&
+                 rm -rf $STAGE &&
+                 sudo systemctl daemon-reload && echo 'units installed + daemon-reloaded'"
     echo "NOTE: restart services yourself if a unit changed (sudo systemctl restart <svc>)."
     ;;
 

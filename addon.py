@@ -30,6 +30,10 @@ SITES = {
 
 # Hosts that belong to a gated site but only serve static assets / media. We let
 # these through untouched so we don't choke on (or gate) images and video streams.
+# Matched by SUFFIX, not substring — see host_matches(). A substring test here was the
+# same bug F4 fixed in site_for_host, left behind in the exemption list: "redd.it" is
+# contained in "redd.it.evil.example", and an exemption that over-matches un-gates a
+# site rather than over-gating one, which is the direction that actually costs you.
 IGNORED_HOSTS = [
     "redditmedia.com", "redditstatic.com", "redd.it",
     "ytimg.com", "ggpht.com", "googlevideo.com",
@@ -426,11 +430,16 @@ OVERLAY_SITES = {
     },
 }
 
+def host_matches(host, patterns):
+    """True if `host` is one of `patterns` or a subdomain of one. The single place
+    host matching is defined, so no caller can quietly reintroduce a substring test."""
+    host = (host or "").rsplit(":", 1)[0].lower()          # drop any :port
+    return any(host == m or host.endswith("." + m) for m in patterns)
+
 def overlay_for_host(host):
     """An overlay-inject site (Facebook) for this host, else None."""
-    host = (host or "").rsplit(":", 1)[0].lower()
     for cfg in OVERLAY_SITES.values():
-        if any(host == m or host.endswith("." + m) for m in cfg["match"]):
+        if host_matches(host, cfg["match"]):
             return cfg
     return None
 
@@ -438,9 +447,8 @@ def site_for_host(host):
     # Suffix match on the registrable domain, NOT a substring: "reddit.com" must
     # match reddit.com and *.reddit.com, but never evil-reddit.com or
     # reddit.com.attacker.io (which a substring check would gate — and decrypt).
-    host = (host or "").rsplit(":", 1)[0].lower()   # drop any :port
     for site, cfg in SITES.items():
-        if any(host == m or host.endswith("." + m) for m in cfg["match"]):
+        if host_matches(host, cfg["match"]):
             return site
     return None
 
@@ -452,6 +460,31 @@ def session_mode(site):
         return None
     return r.get(f"session:{token}")  # None if the session key has expired
 
+# Every Flask route the proxy is willing to forward to, as it appears under /budget.
+# A closed set, because the alternative is string-concatenating an attacker-controlled
+# path onto "http://127.0.0.1:5000" — see the userinfo note in request().
+#
+# These are the endpoints that have to live on the GATED site's origin, and only those:
+# the gate replaces the site's own page, the session endpoints are driven from it, and
+# /feed backs the gate's animated background. Everything data-rich has moved off.
+STATE_CHANGING = ("/enter", "/study", "/exit", "/heartbeat", "/reflect")
+BUDGET_ENDPOINTS = frozenset(("", "/feed") + STATE_CHANGING)
+
+# Moved to the box's own origin — see the long note in app.py. A script on a gated site
+# is now cross-origin with these, so the browser refuses to hand it the response; that
+# replaces the header checks that could never quite cover window.open. Listed here only
+# so an old bookmark gets a redirect instead of a bare 404.
+MOVED_TO_BOX = ("/stats", "/health", "/devices", "/remaining", "/boot-ack")
+
+
+def _forwarded_headers(flow):
+    """The few request headers Flask actually needs. The body is forwarded so form
+    fields (the reflection prompt's `trigger`) reach the app; everything else is
+    deliberately dropped so nothing from the page can influence the internal call."""
+    ct = flow.request.headers.get("Content-Type")
+    return {"Content-Type": ct} if ct else {}
+
+
 def study_url_allowed(path):
     """True only for /watch and /playlist URLs carrying an allowlisted playlist."""
     parts = urlsplit(path)
@@ -462,6 +495,22 @@ def study_url_allowed(path):
 
 class BudgetAddon:
     @staticmethod
+    def _feed_token_ok(token: str) -> bool:
+        """/feed is the one endpoint still served on the gated origin that returns
+        anything at all, so it keeps a token check.
+
+        The gate carries `feed_token` and a script on the gated site can read the gate,
+        so this is a speed bump rather than a secret — which is fine, because /feed is
+        two aggregate bytes-per-second numbers and nothing else. Everything that was
+        worth protecting now lives on the box's origin, where the browser does the
+        enforcing. `ui_token` is still accepted so the dashboard's own poller works.
+        """
+        if not token:
+            return False
+        return any(v and secrets.compare_digest(token, v)
+                   for v in (r.get("feed_token"), r.get("ui_token")))
+
+    @staticmethod
     def _csp_with_nonce(policy: str, nonce: str) -> str:
         """Return `policy` amended so our nonced script may run — or unchanged if it
         already could. Everything else in the policy is preserved.
@@ -470,11 +519,19 @@ class BudgetAddon:
         present. So blindly adding one to a policy that relies on 'unsafe-inline' would
         switch off the site's OWN inline scripts and break the page. Hence:
 
-          · no script-src and no default-src -> scripts are unrestricted already; untouched
+          · nothing constrains script elements at all -> untouched
           · effective directive allows 'unsafe-inline' with no nonce/hash -> our inline
             script is already permitted; untouched (and adding a nonce would break theirs)
-          · otherwise -> add 'nonce-...' to script-src, synthesising script-src from
-            default-src first if the policy only had the fallback
+          · otherwise -> add 'nonce-...' to the effective directive, synthesising
+            script-src from default-src if the policy only had the fallback
+
+        Which directive is "effective" matters. A browser resolves an inline <script>
+        ELEMENT against script-src-elem first, then script-src, then default-src — so a
+        site that sets `script-src-elem 'self'` alongside `script-src 'unsafe-inline'`
+        blocks our script while this function, looking only at script-src, concludes it
+        is already allowed and leaves the policy alone. The failure is silent and it
+        fails OPEN: no heartbeat means no time charged, while browsing continues. Same
+        class as F12, reached a different way.
         """
         directives = []
         for part in policy.split(";"):
@@ -484,8 +541,8 @@ class BudgetAddon:
                 directives.append([bits[0].lower(), bits[1:]])
         names = [d[0] for d in directives]
 
-        target = "script-src" if "script-src" in names else (
-                 "default-src" if "default-src" in names else None)
+        target = next((n for n in ("script-src-elem", "script-src", "default-src")
+                       if n in names), None)
         if target is None:
             return policy                                   # nothing constrains scripts
         values = directives[names.index(target)][1]
@@ -495,12 +552,14 @@ class BudgetAddon:
             return policy                                   # our script already runs
 
         src = f"'nonce-{nonce}'"
-        if target == "script-src":
-            directives[names.index("script-src")][1].append(src)
-        else:
+        if target == "default-src":
             # Only default-src existed: give scripts their own directive so we don't
             # loosen styles, images or anything else that was falling back to it.
             directives.append(["script-src", values + [src]])
+        else:
+            # script-src-elem or script-src — amend whichever the browser will actually
+            # consult for our <script> element.
+            directives[names.index(target)][1].append(src)
         return "; ".join(" ".join([name] + vals) for name, vals in directives)
 
     def _csp_nonce(self, flow: http.HTTPFlow) -> str:
@@ -513,7 +572,6 @@ class BudgetAddon:
     def _strip_csp(self, flow: http.HTTPFlow):
         """Drop the site's Content-Security-Policy — but ONLY on the HTML documents we
         actually inject into.
-
         CSP is what would normally stop our heartbeat script running, so on those
         documents it has to go. Everywhere else (JSON, JS, CSS, images) it is left alone:
         stripping it there bought nothing, because we never inject into those responses,
@@ -554,43 +612,74 @@ class BudgetAddon:
 
         # Serve budget pages from any gated host under its /budget path. The query
         # string (which carries ?site=) is preserved so Flask charges the right site.
-        if path.startswith("/budget") and site_for_host(host):
-            # CSRF: the mutating endpoints (/enter, /study, /exit, /heartbeat) are
-            # POSTed same-origin from the gate page / injected script. A forged POST
+        # Match the path EXACTLY (not startswith): "/budgeting" is the site's own page
+        # and must fall through to the normal gate logic, not into this handler.
+        parts = urlsplit(path)
+        if (parts.path == "/budget" or parts.path.startswith("/budget/")) and site_for_host(host):
+            sub = parts.path[len("/budget"):]          # "" | "/heartbeat" | "/enter"
+            # The dashboard moved to the box's own origin. Redirect rather than 404 so a
+            # bookmark still works — and note the redirect leaks nothing: following it
+            # lands the browser cross-origin, where no CORS headers means a script gets
+            # an unreadable response and a window it cannot look into.
+            if sub in MOVED_TO_BOX:
+                origin = r.get("monitor_origin") or ""
+                flow.response = (
+                    http.Response.make(302, b"", {"Location": f"{origin}{sub}",
+                                                  "Cache-Control": "no-store"})
+                    if origin else
+                    http.Response.make(404, b"the dashboard now lives on the box itself",
+                                       {"Content-Type": "text/plain; charset=utf-8"}))
+                return
+            # Only ever forward to a known endpoint. Anything else is refused HERE rather
+            # than concatenated onto the base URL: "/budget@evil.com/" would otherwise
+            # build "http://127.0.0.1:5000@evil.com/", where "127.0.0.1:5000" is parsed as
+            # USERINFO and the fetch goes to evil.com — whose HTML we would then hand back
+            # on the gated site's own origin (script execution as reddit.com), and which
+            # also turns this into an SSRF probe of the box's own network.
+            if sub not in BUDGET_ENDPOINTS:
+                flow.response = http.Response.make(
+                    404, b"no such budget endpoint",
+                    {"Content-Type": "text/plain; charset=utf-8"})
+                return
+
+            # CSRF: the mutating endpoints (/enter, /study, /exit, /heartbeat, ...) are
+            # driven same-origin from the gate page / injected script. A forged request
             # from another site the user is visiting is "cross-site" — reject it so a
             # malicious page can't drive the budget state (or the return redirect).
-            if flow.request.method == "POST" and \
+            # Covers GET too: /exit is reachable by GET (the study-mode exit button is a
+            # plain navigation), so a cross-site <img src=".../budget/exit"> would
+            # otherwise end the session.
+            if (flow.request.method != "GET" or sub in STATE_CHANGING) and \
                flow.request.headers.get("Sec-Fetch-Site") == "cross-site":
                 flow.response = http.Response.make(
                     403, b"cross-site request blocked",
                     {"Content-Type": "text/plain; charset=utf-8"})
                 return
-            parts = urlsplit(path)
-            sub = parts.path[len("/budget"):]          # "" | "/heartbeat" | "/enter"
-            # The monitoring pages are served on the GATED site's own origin, so any
-            # script on reddit.com can reach them same-origin — which would hand a
-            # malicious ad your device names, tailnet IPs and usage history. Require
-            # either a real navigation (Sec-Fetch-* are forbidden header names, so a
-            # script cannot forge them) or the token our own pages carry. The gate and
-            # the heartbeat stay open: the gate must load in place of a site, and the
-            # injected heartbeat legitimately runs on the site's own pages.
-            if sub in ("/stats", "/health", "/devices", "/remaining", "/feed"):
-                fetch_dest = flow.request.headers.get("Sec-Fetch-Dest", "")
-                fetch_mode = flow.request.headers.get("Sec-Fetch-Mode", "")
-                navigation = fetch_dest == "document" or fetch_mode == "navigate"
+
+            # /feed is polled by a script (the gate's background), so it can't require a
+            # navigation — it takes the token instead. A real top-level navigation is
+            # also allowed so you can eyeball it by hand; "navigation" means
+            # Sec-Fetch-Dest: document and ONLY that, because a same-origin <iframe>
+            # sends Mode: navigate too and its parent can read contentDocument.
+            if sub == "/feed":
+                navigation = flow.request.headers.get("Sec-Fetch-Dest", "") == "document"
                 token = parse_qs(parts.query).get("t", [""])[0]
-                if not navigation and token != (r.get("ui_token") or "\x00"):
+                if not navigation and not self._feed_token_ok(token):
                     flow.response = http.Response.make(
                         403, b"not available to page scripts",
                         {"Content-Type": "text/plain; charset=utf-8"})
                     return
+
             flask_path = sub if sub else "/budget"
             if parts.query:
                 flask_path += "?" + parts.query
 
             try:
                 if flow.request.method == "POST":
-                    resp = req.post(f"http://127.0.0.1:5000{flask_path}", timeout=2, allow_redirects=False)
+                    resp = req.post(f"http://127.0.0.1:5000{flask_path}",
+                                    data=flow.request.get_content() or None,
+                                    headers=_forwarded_headers(flow),
+                                    timeout=2, allow_redirects=False)
                 else:
                     resp = req.get(f"http://127.0.0.1:5000{flask_path}", timeout=2, allow_redirects=False)
 
@@ -601,17 +690,26 @@ class BudgetAddon:
                     location = location.replace("http://127.0.0.1:5000", f"https://{host}")
                     flow.response = http.Response.make(302, b"", {"Location": location})
                 else:
+                    # Keep Flask's own content type (jsonify says application/json) and
+                    # forbid sniffing/framing: these pages must never be rendered as HTML
+                    # by mistake, nor read out of an iframe by the gated site's scripts.
                     flow.response = http.Response.make(
                         resp.status_code,
                         resp.content,
-                        {"Content-Type": "text/html; charset=utf-8"}
+                        {"Content-Type": resp.headers.get("Content-Type",
+                                                          "text/html; charset=utf-8"),
+                         "X-Content-Type-Options": "nosniff",
+                         "X-Frame-Options": "DENY",
+                         "Content-Security-Policy": "frame-ancestors 'none'",
+                         "Referrer-Policy": "no-referrer",
+                         "Cache-Control": "no-store"}
                     )
             except Exception as e:
                 print(f"[DEBUG] Budget handler error: {e}")
                 flow.response = http.Response.make(500, b"Budget server error")
             return
 
-        if any(ignored in host for ignored in IGNORED_HOSTS):
+        if host_matches(host, IGNORED_HOSTS):
             return
 
         site = site_for_host(host)

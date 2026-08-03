@@ -14,15 +14,67 @@ import uuid
 from apscheduler.schedulers.background import BackgroundScheduler
 from news_domains import NEWS_DOMAINS
 
-# No CORS: every endpoint is same-origin (the gate pages and the injected heartbeat
-# both live on the gated host). A wildcard Access-Control-Allow-Origin only widened
-# the attack surface. CSRF on the mutating POSTs is enforced at the proxy boundary
-# (addon.py rejects cross-site requests to /budget/*).
+# No CORS: the gate and the injected heartbeat are same-origin with the gated host,
+# and the monitoring pages are same-origin with the box. A wildcard
+# Access-Control-Allow-Origin only widened the attack surface, and its absence is now
+# load-bearing: it is what stops a script on reddit.com reading the monitoring pages
+# cross-origin now that they live somewhere else. CSRF on the mutating endpoints is
+# enforced at the proxy boundary (addon.py rejects cross-site requests to /budget/*).
 app = Flask(__name__)
 # Redis lives on localhost for the native/Pi deploy; in Docker it's a separate
 # service, so honor REDIS_HOST/REDIS_PORT (defaults preserve native behaviour).
 r = redis.Redis(host=os.environ.get("REDIS_HOST", "localhost"),
                 port=int(os.environ.get("REDIS_PORT", "6379")), decode_responses=True)
+
+# ---------------------------------------------------------------------------
+# Where the monitoring pages live.
+#
+# /stats, /health and /devices used to be served under /budget/* on the GATED site's
+# origin, which meant every script on that site was same-origin with them. Two rounds
+# of header checks narrowed that (see F9) but could never close it: a script that gets
+# one click can window.open a same-origin page and read it, and no header distinguishes
+# that from the user opening it themselves.
+#
+# So they moved. They are now served ONLY on the box's own origin — reachable over the
+# tailnet, never through the proxy — which makes a gated site's scripts cross-origin
+# with them. With no CORS headers the browser will not hand over a response, and a
+# cross-origin window is not readable. That is a boundary the browser enforces for us
+# instead of one we assert with headers.
+#
+# LISTEN_HOST stays loopback-only for the gate itself (the addon talks to it there), and
+# the tailnet address is added as a second listener so your phone can reach the
+# dashboard. Bound narrowly rather than 0.0.0.0 so a missing firewall rule is not the
+# only thing standing between /devices and the LAN.
+# ---------------------------------------------------------------------------
+MONITOR_PORT = int(os.environ.get("COOLDOWN_MONITOR_PORT", "5000"))
+TAILNET_IFACE = os.environ.get("COOLDOWN_TAILNET_IFACE", "tailscale0")
+
+def _iface_ipv4(name):
+    """The interface's IPv4 address, or None. ioctl rather than a subprocess so this
+    is cheap enough to call in a startup retry loop and works before tailscaled has
+    finished coming up."""
+    import fcntl
+    import socket
+    import struct
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        return socket.inet_ntoa(fcntl.ioctl(
+            s.fileno(), 0x8915,                                  # SIOCGIFADDR
+            struct.pack("256s", name[:15].encode()))[20:24])
+    except OSError:
+        return None                                              # no such iface / no address yet
+    finally:
+        s.close()
+
+def monitor_origin(ip=None):
+    """The absolute base URL the gate should link to for the dashboard, or "" if the
+    box has no tailnet address (in which case the gate omits the links rather than
+    pointing at something unreachable)."""
+    override = os.environ.get("COOLDOWN_MONITOR_ORIGIN")
+    if override:
+        return override.rstrip("/")
+    ip = ip or _iface_ipv4(TAILNET_IFACE)
+    return f"http://{ip}:{MONITOR_PORT}" if ip else ""
 
 # Per-site config. Add a site here and the proxy + budget logic pick it up.
 #
@@ -271,7 +323,9 @@ BUDGET_PAGE = """
             <div class="hint">{% if study_primary %}Turn the break into real progress — locked to the course, no scrolling.{% else %}Locked to the course playlist — no scrolling.{% endif %}</div>
             {% endif %}
         </div>
-        <div class="foots"><a class="foot" href="/budget/stats">Usage stats</a><a class="foot" href="/budget/health">Pi health</a><button class="infobtn" id="bgInfoBtn" type="button" aria-label="What is the moving background?">i</button></div>
+        <!-- Absolute links to the BOX, not relative ones onto the gated site: the
+             dashboard deliberately no longer exists on this origin. -->
+        <div class="foots">{% if mon %}<a class="foot" href="{{ mon }}/stats">Usage stats</a><a class="foot" href="{{ mon }}/health">Pi health</a>{% endif %}<button class="infobtn" id="bgInfoBtn" type="button" aria-label="What is the moving background?">i</button></div>
         <div class="bgpanel" id="bgPanel">
             <h2>The moving background</h2>
             <p>A live picture of the web traffic passing through this box right now.</p>
@@ -361,13 +415,14 @@ BUDGET_PAGE = """
     <script>
     (function(){
       var TOK=(document.querySelector('meta[name="cd-tok"]')||{}).content||"";
+      var FEED=(document.querySelector('meta[name="cd-feed"]')||{}).content||"/budget/feed";
       var b=document.getElementById("bgInfoBtn"), p=document.getElementById("bgPanel"),
           x=document.getElementById("bgInfoClose");
       if(b&&p){
         var timer=null;
         function rate(n){ if(n<1024) return n+" B/s"; if(n<1048576) return (n/1024).toFixed(n<10240?1:0)+" KB/s"; return (n/1048576).toFixed(1)+" MB/s"; }
         function refresh(){
-          fetch("/budget/feed?t="+TOK+"&_="+Date.now(),{cache:"no-store"}).then(function(r){return r.json();})
+          fetch(FEED+"?t="+TOK+"&_="+Date.now(),{cache:"no-store"}).then(function(r){return r.json();})
             .then(function(d){
               var e=d.enc||0, u=d.unenc||0, tot=e+u;
               var g=document.getElementById("bgPctG"), rr=document.getElementById("bgPctR"),
@@ -392,6 +447,7 @@ BUDGET_PAGE = """
     <script>
     (function(){
       var TOK=(document.querySelector('meta[name="cd-tok"]')||{}).content||"";
+      var FEED=(document.querySelector('meta[name="cd-feed"]')||{}).content||"/budget/feed";
       var c=document.getElementById("bp-bg"); if(!c||!c.getContext) return;
       var ctx=c.getContext("2d"), W=0, H=0, DPR=Math.min(2, window.devicePixelRatio||1);
       var reduce=window.matchMedia&&window.matchMedia("(prefers-reduced-motion:reduce)").matches;
@@ -443,7 +499,7 @@ BUDGET_PAGE = """
         if(!reduce) requestAnimationFrame(draw);
       }
       function poll(){
-        fetch("/budget/feed?t="+TOK+"&_="+Date.now(),{cache:"no-store"}).then(function(r){return r.json();})
+        fetch(FEED+"?t="+TOK+"&_="+Date.now(),{cache:"no-store"}).then(function(r){return r.json();})
           .then(function(d){ if(d){ var tot=(d.enc||0)+(d.unenc||0);
             tred=tot>0? Math.max(0.015, Math.min(0.7, d.unenc/tot)) : 0.02;  // red share = the REAL exposed ratio
             tintens=Math.max(0.12, Math.min(1, Math.log(1+tot/400)/Math.log(3000)));  // fills the screen when busy
@@ -628,8 +684,8 @@ STATS_PAGE = """
     </div>
 
     <div class="live {{ 'stale' if stale else '' }}">{{ live_line }}</div>
-    <a class="back" href="/budget/health">Raspberry Pi health &rarr;</a>
-    <a class="back" href="/budget">← Back to the gate</a>
+    <a class="back" href="/health">Raspberry Pi health &rarr;</a>
+    <a class="back" href="/devices">Devices &rarr;</a>
 </div>
 </body>
 </html>
@@ -1365,21 +1421,38 @@ _CPU_PREV = {}                  # {"v": /proc/stat snapshot} — CPU% is measure
 _HEALTH_CACHE = {}              # {"t": monotonic, "d": payload} — collapses concurrent pollers
 _FEED_PREV = {}                 # {"v": (monotonic_t, enc_bytes, unenc_bytes)} for the packet feed
 
+def _persistent_token(key):
+    tok = r.get(key)
+    if not tok:
+        tok = secrets.token_urlsafe(24)
+        r.set(key, tok)
+    return tok
+
 def ui_token():
     """A secret the monitoring pages embed so their own polling can be told apart from a
     script on a gated site. Any page on reddit.com can call /budget/* same-origin, and
     Sec-Fetch headers can't distinguish our gate page from Reddit's own — but a foreign
     script can't read this token, because the pages carrying it can only be fetched by a
     real navigation (enforced in addon.py). Persisted so it survives a restart."""
-    tok = r.get("ui_token")
-    if not tok:
-        tok = secrets.token_urlsafe(24)
-        r.set("ui_token", tok)
-    return tok
+    return _persistent_token("ui_token")
+
+def feed_token():
+    """The GATE page's token — and deliberately NOT ui_token.
+
+    The gate renders in place of a gated site, so any script on that site can
+    `fetch('/budget')` and read every byte of it, including this. That is unavoidable
+    while the gate shares the site's origin, so the gate must not carry a secret worth
+    stealing: this one unlocks /feed alone (two aggregate bytes-per-second numbers) and
+    gives no access to /devices, /health, /stats or /remaining.
+    """
+    return _persistent_token("feed_token")
 
 @app.context_processor
 def _inject_ui_token():
-    return {"ui_tok": _try(ui_token, "")}
+    # `mon` is the dashboard's absolute base URL. It is empty when the box has no
+    # tailnet address, and the gate then hides the links rather than offering a dead one.
+    return {"ui_tok": _try(ui_token, ""), "feed_tok": _try(feed_token, ""),
+            "mon": _try(monitor_origin, "")}
 
 def _try(fn, default=None):
     try:
@@ -1691,7 +1764,7 @@ HEALTH_PAGE = """
         <div class="bw-p">If that wasn't you — no power cut, no reboot you asked for — then
             someone had physical access, and the SD card holds the certificate your devices
             trust. See <b>RECOVERY.md</b>.</div>
-        <form action="/budget/boot-ack" method="post">
+        <form action="/boot-ack" method="post">
             <button class="bw-b" type="submit">That was me — dismiss</button>
         </form>
     </div>
@@ -1789,12 +1862,13 @@ HEALTH_PAGE = """
       {% endfor %}
     </div>
 
-    <div class="foot"><a href="/budget/stats">&larr; Usage stats</a><a href="/budget/devices">Devices</a><a href="/budget/health">Refresh</a></div>
+    <div class="foot"><a href="/stats">&larr; Usage stats</a><a href="/devices">Devices</a><a href="/health">Refresh</a></div>
 </div>
 {% raw %}
 <script>
 (function(){
     var TOK=(document.querySelector('meta[name="cd-tok"]')||{}).content||"";
+      var FEED=(document.querySelector('meta[name="cd-feed"]')||{}).content||"/budget/feed";
     function $(id){ return document.getElementById(id); }
     function set(id,t){ var e=$(id); if(e) e.textContent=t; }
     function width(id,p){ var e=$(id); if(e) e.style.width=Math.max(0,Math.min(100,p))+"%"; }
@@ -1844,7 +1918,7 @@ HEALTH_PAGE = """
         var pwr=$("pwr"); if(pwr) pwr.setAttribute("class", d.power&&d.power.ok?"on":"bad");
         Object.keys(d.services||{}).forEach(function(s){ var el=$("svc_"+s); if(el) el.className="pill "+(d.services[s]==="active"?"ok":"bad"); });
     }
-    function poll(){ fetch("/budget/health?fmt=json&t="+TOK+"&_="+Date.now(),{cache:"no-store"}).then(function(r){ return r.json(); }).then(update).catch(function(){}); }
+    function poll(){ fetch("/health?fmt=json&t="+TOK+"&_="+Date.now(),{cache:"no-store"}).then(function(r){ return r.json(); }).then(update).catch(function(){}); }
     setInterval(poll, 4000);
     document.addEventListener("visibilitychange", function(){ if(!document.hidden) poll(); });
     poll();
@@ -1883,7 +1957,7 @@ def _acct_counters():
     STRICTLY READ-ONLY. The chain is created by the root-run redirect script at boot, not
     here: an earlier version rebuilt it inline, which meant an unauthenticated GET could
     trigger privileged firewall *writes* and spawn ~10 sudo processes per request. The app
-    now only ever runs this one read, which is all `sudoers.d/budget-proxy` permits."""
+    now only ever runs this one read, which is all `sudoers.d/cooldown` permits."""
     out = subprocess.run(["sudo", "-n", "iptables", "-t", "mangle", "-nvxL", "TRAFFIC_ACCT"],
                          capture_output=True, text=True, timeout=3).stdout
     enc = unenc = 0
@@ -2113,12 +2187,13 @@ DEVICES_PAGE = """
       {% endfor %}
     </div>
 
-    <div class="foot"><a href="/budget/health">&larr; Pi health</a><a href="/budget/stats">Usage stats</a><a href="/budget/devices">Refresh</a></div>
+    <div class="foot"><a href="/health">&larr; Pi health</a><a href="/stats">Usage stats</a><a href="/devices">Refresh</a></div>
 </div>
 {% raw %}
 <script>
 (function(){
     var TOK=(document.querySelector('meta[name="cd-tok"]')||{}).content||"";
+      var FEED=(document.querySelector('meta[name="cd-feed"]')||{}).content||"/budget/feed";
     function fmtBytes(n){ if(n==null) return "—"; if(n<1024) return n+" B"; if(n<1048576) return (n/1024).toFixed(0)+" KB"; if(n<1073741824) return (n/1048576).toFixed(1)+" MB"; return (n/1073741824).toFixed(2)+" GB"; }
     function fmtRate(b){ if(b==null) return "—"; if(b<1024) return b+" B/s"; if(b<1048576) return (b/1024).toFixed(b<10240?1:0)+" KB/s"; return (b/1048576).toFixed(1)+" MB/s"; }
     function node(id, sub, dev){
@@ -2151,7 +2226,7 @@ DEVICES_PAGE = """
         node("dev-laptop","sub-laptop",laptop); lanes("lp",laptop);
         devs.forEach(card);
     }
-    function poll(){ fetch("/budget/devices?fmt=json&t="+TOK+"&_="+Date.now(),{cache:"no-store"}).then(function(r){return r.json();}).then(update).catch(function(){}); }
+    function poll(){ fetch("/devices?fmt=json&t="+TOK+"&_="+Date.now(),{cache:"no-store"}).then(function(r){return r.json();}).then(update).catch(function(){}); }
     setInterval(poll, 4000);
     document.addEventListener("visibilitychange", function(){ if(!document.hidden) poll(); });
     poll();
@@ -2176,10 +2251,15 @@ BG_STYLE = ("html,body{background:#070b0e!important}"
             ".card,.tile,.board,.metric,.dcard{background:rgba(18,21,27,0.4)!important;"
             "-webkit-backdrop-filter:blur(5px);backdrop-filter:blur(5px)}")
 
-def _add_bg(page, full=True):
+def _add_bg(page, full=True, token="{{ ui_tok }}", feed="/feed"):
+    # `feed` differs by origin: the gate lives on the gated site and reaches the app
+    # through the proxy at /budget/feed; the dashboard is served by the box itself, where
+    # the route is just /feed. The background script reads it from the meta tag so one
+    # copy of that script works on both.
     page = page.replace("</head>",
         '<meta name="theme-color" content="#070b0e">'
-        '<meta name="cd-tok" content="{{ ui_tok }}"></head>', 1)  # dark iOS bars + poll token
+        f'<meta name="cd-feed" content="{feed}">'
+        f'<meta name="cd-tok" content="{token}"></head>', 1)    # dark iOS bars + poll token
     page = page.replace("</style>", BG_STYLE + "</style>", 1)   # frost + canvas layer + z-index
     if full:                                                    # pages that don't already have the canvas
         page = page.replace("<body>", "<body>\n" + BG_CANVAS, 1)
@@ -2189,7 +2269,9 @@ def _add_bg(page, full=True):
 STATS_PAGE = _add_bg(STATS_PAGE)
 HEALTH_PAGE = _add_bg(HEALTH_PAGE)
 DEVICES_PAGE = _add_bg(DEVICES_PAGE)
-BUDGET_PAGE = _add_bg(BUDGET_PAGE, full=False)   # already carries the canvas + script; just frost it
+# The gate is script-readable from the gated site (it replaces that site's page), so it
+# gets the narrow feed-only token — never ui_tok. See feed_token().
+BUDGET_PAGE = _add_bg(BUDGET_PAGE, full=False, token="{{ feed_tok }}", feed="/budget/feed")
 
 @app.route('/devices')
 def devices():
@@ -2202,7 +2284,41 @@ def devices():
 
 if __name__ == '__main__':
     # Production WSGI server (waitress) instead of the Werkzeug dev server: more
-    # robust for 24/7 operation, no dev-server warning. Localhost-only — it's only
-    # ever reached via the mitmproxy addon over loopback.
+    # robust for 24/7 operation, no dev-server warning.
     from waitress import serve
-    serve(app, host='127.0.0.1', port=5000, threads=12)
+
+    # Loopback is the critical listener — the addon reaches the gate there, so the
+    # gate must never depend on the tailnet being up. The tailnet address is added as
+    # a SECOND listener purely so the dashboard is reachable from your phone.
+    #
+    # tailscaled may still be coming up when this starts, so wait briefly for the
+    # interface to get an address. If it never does we serve loopback only: the gate
+    # keeps working and the gate page simply omits the dashboard links.
+    # COOLDOWN_LISTEN overrides the whole calculation, for environments with no
+    # tailscale0 to find. In Docker that's "0.0.0.0:5000" — safe there only because the
+    # compose file publishes it as 127.0.0.1:5000:5000, so the container boundary plays
+    # the part the firewall plays on the Pi. Don't set it on a bare host.
+    override = os.environ.get("COOLDOWN_LISTEN")
+    ts_ip = None
+    if not override:
+        for _ in range(20):
+            ts_ip = _iface_ipv4(TAILNET_IFACE)
+            if ts_ip:
+                break
+            time.sleep(1)
+
+    listen = [override] if override else [f"127.0.0.1:{MONITOR_PORT}"]
+    if override:
+        print(f"[MONITOR] listening on {override} (COOLDOWN_LISTEN)")
+    elif ts_ip:
+        listen.append(f"{ts_ip}:{MONITOR_PORT}")
+        print(f"[MONITOR] dashboard on http://{ts_ip}:{MONITOR_PORT} ({TAILNET_IFACE})")
+    else:
+        print(f"[MONITOR] no address on {TAILNET_IFACE} — loopback only; "
+              f"the gate works, the dashboard links are hidden")
+
+    # Publish the origin so addon.py can redirect the old /budget/* dashboard URLs to
+    # wherever the pages actually live, instead of just 404ing someone's bookmark.
+    _try(lambda: r.set("monitor_origin", monitor_origin(ts_ip)))
+
+    serve(app, listen=" ".join(listen), threads=12)
