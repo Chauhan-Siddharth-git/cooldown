@@ -92,6 +92,93 @@ in the path of your traffic has bugs. The question is whether anyone is looking.
 
 ---
 
+## The risk that only exists because of this: code running inside other websites
+
+This one has no equivalent in a normal setup, so it's worth its own section.
+
+**The background.** Websites are constantly attacked by people trying to sneak their own
+JavaScript onto the page — a *cross-site scripting* attack, or XSS. It's the most common
+serious web bug there is, and it's nasty because JavaScript running on a page can do
+anything you could: read what's on screen, read the cookie that keeps you logged in, fill
+in forms, click buttons, make requests **as you**. Browsers and websites spend enormous
+effort making sure only the site's own code runs on the site's own pages.
+
+**What Cooldown does.** It puts its own JavaScript on Reddit, YouTube, Spotify, Facebook
+and about ninety news sites. That's the timer — it's how "foreground time only" works.
+
+There's no way to soften this: **Cooldown does the exact thing XSS defences exist to
+prevent.** It is a benign version, written by you, running on your own devices — but the
+mechanism is identical, and it creates three things a normal person doesn't have.
+
+### 1. A compromised box can *act as you*, not just watch you
+
+This is the biggest one, and it's easy to miss.
+
+If someone taps your home network without Cooldown, the worst case is **eavesdropping**,
+and modern encryption mostly prevents even that. If someone gets into your Cooldown box,
+they don't just read your traffic — they control what gets injected into every gated site.
+That means they can run their own JavaScript on Reddit *as you*: read your session, post,
+message, change your email, start a password reset.
+
+> The difference is between **a wiretap** and **someone sitting at your keyboard.** Most
+> people's mental model of "they can read my traffic" is the first. This setup makes the
+> second possible too.
+
+Everything else on this page — guard the key, guard the box, revoke fast — matters more
+because of this, not less.
+
+### 2. Sites' own defences are slightly weakened, on purpose
+
+Websites can send a rule saying *"only run scripts I have vouched for"* (a Content
+Security Policy). Cooldown's timer isn't vouched for by Reddit, so it would be blocked.
+
+Earlier versions solved that by **deleting the rule entirely**, which switched off the
+site's protection for the whole page. That was wrong and it's fixed: the rule is now kept
+and *amended* — one single-use random pass added, for our script only, and only on the
+handful of pages Cooldown actually injects into. Everything else the site asked for is
+still enforced.
+
+Honest residue, because "we amend rather than delete" isn't a clean bill of health:
+
+- The pass is a random value printed in that page's HTML. If the site *already* has a
+  bug that lets an attacker read or reflect page content, they could copy the pass and
+  use it — turning a bug that wouldn't have run any code into one that does. Narrow, but
+  real, and it doesn't exist without Cooldown.
+- If a site's policy already allowed inline scripts, nothing is touched at all.
+- Cooldown discards the "report violations to me" variant of the rule, so the site loses
+  a little telemetry. That costs the site, not you.
+
+### 3. A handful of Cooldown's own endpoints sit on those sites' origins
+
+The gate page and the session endpoints (`/budget`, `/enter`, `/heartbeat` and a few
+more — eight in total) have to live on the gated site's address, because the gate must
+appear *in place of* Reddit. That means any script already running on Reddit — including
+an advertisement — can reach them.
+
+What that buys an attacker is small: they could end your session or burn budget, which is
+annoying rather than dangerous. What it *used* to buy them was your device names, home
+network addresses and usage history, because the dashboard lived there too. Those pages
+have been moved to the box's own address, where a script on Reddit is simply not allowed
+to read them — the browser enforces that, rather than Cooldown asking nicely.
+
+### What keeps this from being worse
+
+- **Nothing attacker-controlled is ever injected.** What gets added to a page is fixed
+  text plus the site's own name; no part of it comes from the URL, the page or the network.
+- **Everything Cooldown displays is escaped.** A device on your network called
+  `<script>…</script>` shows up as those literal characters, not as code.
+- **Only pages get touched.** Images, JSON and scripts are passed through untouched.
+- **Bugs of exactly this shape have been found and fixed here** — one where a crafted link
+  made the box serve an attacker's page as though it came from Reddit, which is textbook
+  XSS. It's covered in the case study, and there are now automated checks that fail if
+  anyone reintroduces that class.
+
+**If this section is the one that worries you, that's a reasonable reaction** — it's the
+part of the design with no safe equivalent, and it's the strongest argument for using your
+phone's built-in Screen Time instead.
+
+---
+
 ## "Do I even need this?" — the three options
 
 Cooldown is not the only way to spend less time on Reddit, and it is the most invasive.
