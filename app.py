@@ -1900,14 +1900,27 @@ def _uptime():
     d, h, m = int(secs // 86400), int(secs % 86400 // 3600), int(secs % 3600 // 60)
     return f"{d}d {h}h {m}m" if d else (f"{h}h {m}m" if h else f"{m}m")
 
+def _iface_speed(base):
+    """Link speed in Mbit, or None if the interface doesn't have one.
+
+    Reading `speed` on a wireless or virtual interface legitimately fails with EINVAL,
+    and tunnels report -1. That is "not applicable", not a fault — so it is caught here
+    rather than by _try(), which would count it. A monitoring line that permanently reads
+    "1 handled error" for a healthy box is worse than no line at all: it teaches you to
+    ignore the number, which is the one thing it must never do.
+    """
+    try:
+        v = int(_first_line(f"{base}/speed"))
+    except (OSError, ValueError):
+        return None
+    return v if v >= 0 else None
+
 def _iface(name):
     base = f"/sys/class/net/{name}"
     if not os.path.exists(base):
         return None
     state = _try(lambda: _first_line(f"{base}/operstate"), "unknown")
-    speed = _try(lambda: int(_first_line(f"{base}/speed")), None)
-    if speed is not None and speed < 0:
-        speed = None
+    speed = _iface_speed(base)
     # Real NICs report up/down honestly; tunnels (tailscale/wg) sit at "unknown"
     # while perfectly up, so treat anything but an explicit "down" as connected.
     up = state != "down" if name.startswith(("tailscale", "wg", "tun")) else state == "up"

@@ -606,3 +606,21 @@ def test_digest_is_box_origin_only(rdb):
     rdb.set("monitor_origin", "http://100.64.0.1:5000")
     for hdrs in (FETCH, IFRAME, NAV):
         assert probe("/budget/digest", hdrs).status_code == 302
+
+
+def test_a_healthy_box_reports_zero_handled_errors(rdb, monkeypatch):
+    """wlan0 with no association returns EINVAL for `speed`; tunnels report -1. Both are
+    "not applicable". If they land in the counter, the health line permanently reads
+    "1 handled error" on a perfectly healthy Pi and everyone learns to ignore it."""
+    budget._ERRORS.clear()
+    def fake_first_line(path):
+        if path.endswith("/speed"):
+            raise OSError(22, "Invalid argument")     # the wlan0 case, on a real Pi
+        if path.endswith("/operstate"):
+            return "down"
+        return "0"                                    # rx_bytes / tx_bytes
+    monkeypatch.setattr(budget, "_first_line", fake_first_line)
+    monkeypatch.setattr(budget.os.path, "exists", lambda p: True)
+    budget._iface("wlan0")
+    assert budget.error_summary()["total"] == 0, budget.error_summary()["top"]
+    assert budget._iface_speed("/sys/class/net/wlan0") is None
