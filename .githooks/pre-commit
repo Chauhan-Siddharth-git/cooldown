@@ -90,7 +90,12 @@ done
 
 # --- 6. template built from runtime data (SSTI) ------------------------------
 for f in $(staged '*.py'); do
-  if added "$f" | grep -E 'render_template_string\(' | grep -qvE 'render_template_string\([A-Z_]+[,)]'; then
+  # Skip tests (they legitimately name both spellings) and the definition line itself.
+  # Allow a module prefix: budget.STATS_PAGE is as constant as STATS_PAGE.
+  case "$f" in tests/*) continue ;; esac
+  if added "$f" | grep -vE '^\s*(#|def )' \
+       | grep -E 'render_(template_string|page)\(' \
+       | grep -qvE 'render_(template_string|page)\(([A-Za-z_]+\.)?[A-Z_]+[,)]'; then
     note "render_template_string with a non-constant in $f" \
          "the template itself must be a module-level constant" \
          "Anything else is server-side template injection."

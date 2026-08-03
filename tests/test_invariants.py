@@ -269,15 +269,35 @@ def test_no_listener_is_hardcoded_to_all_interfaces():
 
 
 def test_templates_are_never_built_from_runtime_data():
-    """render_template_string with anything but a module constant is SSTI. Nothing does
-    this today; this is here so nothing starts."""
+    """Rendering anything but a module constant is SSTI. Nothing does this today; this is
+    here so nothing starts. Both spellings are checked: the project renders through
+    render_page() now, and a guard that names only the function it used to call would
+    quietly stop guarding anything."""
     bad = []
     for n in ast.walk(_tree("app.py")):
-        if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "render_template_string":
+        if isinstance(n, ast.Call) and getattr(n.func, "id", "") in (
+                "render_template_string", "render_page"):
             first = n.args[0] if n.args else None
             if not (isinstance(first, ast.Name) and first.id.isupper()):
-                bad.append(n.lineno)
-    assert not bad, f"render_template_string called with non-constant template at {bad}"
+                bad.append(f"{getattr(n.func, 'id', '?')}:{n.lineno}")
+    assert not bad, f"template rendered from a non-constant at {bad}"
+
+
+def test_the_template_cache_cannot_grow_without_bound():
+    """Keyed by the source string. Fine while every key is a module constant — a caller
+    passing a per-request string would turn the cache into a memory leak, which is
+    exactly the class of bug this change was made to remove."""
+    budget._TEMPLATE_CACHE.clear()
+    with budget.app.app_context():
+        for _ in range(25):
+            budget.render_page(budget.DIGEST_PAGE, d={
+                "range": "", "total_min": 0, "per_day_min": 0, "delta_pct": None,
+                "delta_abs": 0, "sites": [], "cooldowns": 0, "rapid": 0, "rapid_hours": 3,
+                "busiest_day": "", "busiest_min": 0,
+                "why": {"total": 0, "rows": [], "passes": 0, "rate": 0},
+                "worth": {"total": 0, "rate": 0}, "top_trigger": "", "worst_trigger": "",
+                "worst_pct": 0})
+    assert len(budget._TEMPLATE_CACHE) == 1, "one entry per distinct template, not per call"
 
 
 def test_the_gate_never_carries_the_master_token():

@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, redirect, render_template_string, request
+from flask import Flask, jsonify, redirect, request
 from urllib.parse import urlparse
 from collections import Counter, deque
 from datetime import datetime, timezone
@@ -732,6 +732,29 @@ STATS_PAGE = """
 </html>
 """
 
+# Page templates are module constants that never change after import — but
+# flask.render_template_string() calls jinja_env.from_string(), which compiles the
+# template from scratch on EVERY request. Measured on the Pi: 46 ms for the stats page,
+# 47 ms for health, 24 ms for the gate — roughly half of each request spent recompiling
+# markup that is byte-identical to last time.
+#
+# That is not just slow, it is the shape of F12: /health is polled every 4 seconds while
+# a dashboard tab is open, each poll held a worker thread, and a starved pool makes
+# heartbeats fail silently — which stops time being charged while browsing continues.
+# Compile once, render many.
+_TEMPLATE_CACHE = {}
+
+def render_page(source, **context):
+    """Render one of the page constants, compiling it only once."""
+    tpl = _TEMPLATE_CACHE.get(source)
+    if tpl is None:
+        tpl = _TEMPLATE_CACHE[source] = app.jinja_env.from_string(source)
+    # What render_template_string does before rendering. Skipping it would silently drop
+    # the context processors — ui_tok, feed_tok and mon — and the pages would render with
+    # empty tokens and no dashboard links.
+    app.update_template_context(context)
+    return tpl.render(context)
+
 def resolve_site(s):
     return s if s in SITES else DEFAULT_SITE
 
@@ -1129,7 +1152,7 @@ def render_gate(site, label, *, overline, message, title="", mood="wait",
     # the Enter button return to the original link instead of the site home.
     # `study_primary` promotes the Study button to the main CTA — used on the cooldown
     # screens, turning the enforced break into a one-tap redirect to the course.
-    return render_template_string(BUDGET_PAGE,
+    return render_page(BUDGET_PAGE,
         site=site, label=label, overline=overline, title=title, message=message, mood=mood,
         can_enter=can_enter, button_text=button_text, headline=headline,
         countdown=int(countdown), show_study=show_study, study_primary=study_primary,
@@ -1575,7 +1598,7 @@ def digest():
         "worst_trigger": worst["label"] if worst else "",
         "worst_pct": worst["pct"] if worst else 0,
     }
-    return render_template_string(DIGEST_PAGE, d=d)
+    return render_page(DIGEST_PAGE, d=d)
 
 @app.route('/')
 def index():
@@ -1684,7 +1707,7 @@ def stats():
 
     why = reflection_summary()
     worth = worth_summary()
-    return render_template_string(STATS_PAGE, why=why, worth=worth, series=series,
+    return render_page(STATS_PAGE, why=why, worth=worth, series=series,
         days=days, today_min=today_min, week_avg=week_avg,
         trend=trend, trend_cls=trend_cls, live_line=live_line, stale=stale, cd=cd)
 
@@ -2353,8 +2376,8 @@ def health():
     card = lambda p: "" if p < 70 else ("warm" if p < 85 else "hot")
     ts = _try(boot_watch)
     boot_alert = time.strftime("%a %-d %b, %-I:%M %p", time.localtime(float(ts))) if ts else None
-    return render_template_string(
-        HEALTH_PAGE, d=d, boot_alert=boot_alert,
+    return render_page(HEALTH_PAGE,
+        d=d, boot_alert=boot_alert,
         tclass=_temp_class(d["temp_c"]),
         eth_state=eth_state,
         ram_class=_pct_class(mem_pct),
@@ -2694,7 +2717,7 @@ def devices():
         return jsonify(d)
     phone = next((x for x in d["devices"] if x["kind"] == "phone"), None)
     laptop = next((x for x in d["devices"] if x["kind"] == "computer"), None)
-    return render_template_string(DEVICES_PAGE, d=d, phone=phone, laptop=laptop)
+    return render_page(DEVICES_PAGE, d=d, phone=phone, laptop=laptop)
 
 if __name__ == '__main__':
     # Production WSGI server (waitress) instead of the Werkzeug dev server: more
