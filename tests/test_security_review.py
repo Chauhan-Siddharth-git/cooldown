@@ -815,3 +815,67 @@ def test_every_dashboard_page_looks_like_the_same_product(rdb, client, page):
     assert 'id="bp-bg"' in html, f"{page} has no background canvas"
     assert "backdrop-filter" in html, f"{page} panels are not frosted"
     assert 'name="cd-feed"' in html, f"{page} cannot poll the traffic feed"
+
+
+# ---------- 17. disk reporting, retention, and the year in review ----------
+
+def test_disk_matches_df_not_the_reserved_blocks(rdb, monkeypatch):
+    """The old sum counted root-reserved blocks as used and reported 6.4 GB where df
+    said 4.7 GB — alarming, and wrong."""
+    class FakeVFS:
+        f_frsize = 4096
+        f_blocks = 7_500_000        # 30.7 GB total
+        f_bfree = 6_300_000         # 25.8 GB actually free
+        f_bavail = 5_950_000        # 24.4 GB available to a non-root user
+    monkeypatch.setattr(budget.os, "statvfs", lambda p: FakeVFS())
+    d = budget._disk()
+    assert d["used_gb"] == 4.9, d          # total - f_bfree, as df computes it
+    assert d["avail_gb"] == 24.4
+    assert d["pct"] == 17                  # against used + available, not raw total
+
+
+def test_history_survives_long_enough_for_a_year_in_review(rdb):
+    """A yearly page is impossible if the data expires at 100 days — the year ends after
+    the history does."""
+    assert budget.HISTORY_TTL >= 366 * 86400
+    day = time.strftime("%Y-%m-%d")
+    budget.log_reflection("tired", "pass")
+    budget.queue_worth_prompt("reddit"); budget.log_worth("no")
+    budget.start_cooldown("main", "reddit")
+    for key in (f"reflect:{day}", f"worth:{day}", f"cooldown_events:{day}"):
+        assert rdb.ttl(key) > 365 * 86400, key
+
+
+def test_wrapped_is_honest_when_there_is_no_data(rdb, client):
+    html = client.get("/wrapped").get_data(as_text=True)
+    assert "No usage recorded yet" in html
+    assert client.get("/wrapped").status_code == 200
+
+
+def test_wrapped_reports_the_trend_that_answers_did_it_work(rdb, client):
+    now = time.time()
+    for i in range(120):                      # heavier at the start, lighter lately
+        k = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+        rdb.set(f"usage:{k}:reddit", 600 if i < 30 else 2400)
+    d = budget.wrapped_data()
+    assert d["any"] and d["days"] == 120
+    assert d["trend_pct"] < 0, d              # recent days lighter than early ones
+    assert d["enough"] is True
+    assert "Did it work?" in client.get("/wrapped").get_data(as_text=True)
+
+
+def test_wrapped_admits_when_the_sample_is_too_small(rdb, client):
+    now = time.time()
+    for i in range(10):
+        k = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+        rdb.set(f"usage:{k}:reddit", 600)
+    assert budget.wrapped_data()["enough"] is False
+    assert "treat this as a hint" in client.get("/wrapped").get_data(as_text=True)
+
+
+def test_wrapped_is_box_origin_only(rdb):
+    """It reads a year of behavioural history — the most sensitive page in the project."""
+    assert "/wrapped" in addon.MOVED_TO_BOX
+    rdb.set("monitor_origin", "http://100.64.0.1:5000")
+    for hdrs in (FETCH, IFRAME, NAV):
+        assert probe("/budget/wrapped", hdrs).status_code == 302

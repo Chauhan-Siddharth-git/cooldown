@@ -113,7 +113,8 @@ def restore(path, force=False):
                 r.rpush(key, *rec["v"])
         else:
             r.set(key, rec["v"])
-        r.expire(key, 100 * 86400)          # same self-pruning window as live data
+        r.expire(key, 400 * 86400)          # same self-pruning window as live data
+                                            # (app.HISTORY_TTL — keep the two in step)
         n += 1
     print(f"restored {n} keys from {path} (created {payload.get('created')})")
     return 0

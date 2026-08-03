@@ -53,7 +53,10 @@ case "${1:-code}" in
             echo "unchanged  $f"
             continue
         fi
-        "${SSH[@]}" "cp $DIR/$f $DIR/$f.bak-\$(date +%Y%m%d-%H%M) 2>/dev/null || true"
+        # Keep a rollback copy, but only the last few. Unbounded, this leaves one
+        # snapshot per deploy forever.
+        "${SSH[@]}" "cp $DIR/$f $DIR/$f.bak-\$(date +%Y%m%d-%H%M%S) 2>/dev/null || true;
+                     ls -1t $DIR/$f.bak-* 2>/dev/null | tail -n +6 | xargs -r rm -f"
         scp -o BatchMode=yes "$f" "$PI:$DIR/$f"
         echo "deployed   $f"
         case "$f" in

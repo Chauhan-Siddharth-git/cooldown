@@ -183,7 +183,9 @@ else
   echo "  routed device mid-browse.${N}"
   if ask "Enable automatic security updates?"; then
     dpkg -s unattended-upgrades >/dev/null 2>&1 || { run apt-get update -qq; run apt-get install -y unattended-upgrades; }
-    printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' \
+    # AutocleanInterval too: without it the downloaded .deb files just accumulate
+    # (426 MB on a box that had been patching itself for a few weeks).
+    printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\nAPT::Periodic::AutocleanInterval "7";\n' \
       | sudo tee /etc/apt/apt.conf.d/20auto-upgrades >/dev/null
     ok "security updates will install themselves; reboots stay manual"
   else

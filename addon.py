@@ -609,7 +609,8 @@ BUDGET_ENDPOINTS = frozenset(("", "/feed") + STATE_CHANGING)
 # is now cross-origin with these, so the browser refuses to hand it the response; that
 # replaces the header checks that could never quite cover window.open. Listed here only
 # so an old bookmark gets a redirect instead of a bare 404.
-MOVED_TO_BOX = ("/", "/stats", "/health", "/devices", "/digest", "/remaining", "/boot-ack")
+MOVED_TO_BOX = ("/", "/stats", "/health", "/devices", "/digest", "/wrapped",
+                "/remaining", "/boot-ack")
 
 
 def _forwarded_headers(flow):

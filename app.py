@@ -149,6 +149,13 @@ SERIES_OVERFLOW = "#6b7280"
 def series_color(i):
     return SERIES_COLORS[i] if i < len(SERIES_COLORS) else SERIES_OVERFLOW
 
+# How long the behavioural history is kept. Was 100 days, which quietly made a
+# year-in-review impossible: the data expired before the year was up. Every one of these
+# keys is a short string keyed by day, so a full year of them is a few megabytes — Redis
+# holds 28 days in 1.2 MB today. Long enough to see a year, short enough that it is still
+# a rolling window rather than a permanent record of your behaviour.
+HISTORY_TTL = 400 * 86400
+
 RAPID_REPEAT_WINDOW = 3 * 60 * 60  # "a few hours" — a cooldown starting within this of
                                    # the previous one is a "rapid repeat" (binge clustering).
                                    # Also the window escalating cooldowns look back over.
@@ -997,7 +1004,7 @@ def start_cooldown(p, site, now=None):
     r.set(f"cooldown_secs:{p}", duration)
     day = time.strftime("%Y-%m-%d", time.localtime(now))
     r.rpush(f"cooldown_events:{day}", f"{now:.0f} {site}")
-    r.expire(f"cooldown_events:{day}", 100 * 86400)
+    r.expire(f"cooldown_events:{day}", HISTORY_TTL)
 
 # The reflection prompt asks *why* you're reaching for the feed. That answer — and
 # whether naming it actually stopped you — is the most interesting thing this system can
@@ -1043,7 +1050,7 @@ def log_reflection(trigger, action, now=None):
     now = now if now is not None else time.time()
     day = time.strftime("%Y-%m-%d", time.localtime(now))
     r.rpush(f"reflect:{day}", f"{now:.0f} {trigger} {action}")
-    r.expire(f"reflect:{day}", 100 * 86400)
+    r.expire(f"reflect:{day}", HISTORY_TTL)
 
 def reflection_summary(days=30, now=None):
     """Per-trigger counts and how often naming it was enough to stop you."""
@@ -1096,7 +1103,7 @@ def log_worth(verdict, now=None):
     now = now if now is not None else time.time()
     day = time.strftime("%Y-%m-%d", time.localtime(now))
     r.rpush(f"worth:{day}", f"{now:.0f} {trigger} {verdict}")
-    r.expire(f"worth:{day}", 100 * 86400)
+    r.expire(f"worth:{day}", HISTORY_TTL)
     return True
 
 def worth_summary(days=30, now=None):
@@ -1131,7 +1138,7 @@ def log_soft_pause(site, now=None):
     now = now if now is not None else time.time()
     day = time.strftime("%Y-%m-%d", time.localtime(now))
     r.rpush(f"soft_pauses:{day}", f"{now:.0f} {site}")
-    r.expire(f"soft_pauses:{day}", 100 * 86400)
+    r.expire(f"soft_pauses:{day}", HISTORY_TTL)
 
 def recent_soft_pause_count(site, now):
     """How many soft pauses for `site` fell inside the trailing CLUSTER_WINDOW (through now).
@@ -1408,7 +1415,7 @@ def heartbeat():
             if gap <= HEARTBEAT_MAX_GAP:
                 day = time.strftime("%Y-%m-%d")
                 r.incrbyfloat(f"study_usage:{day}", gap)
-                r.expire(f"study_usage:{day}", 100 * 86400)
+                r.expire(f"study_usage:{day}", HISTORY_TTL)
                 r.set("last_study_charge", now)
         r.set("last_study_beat", now)
         return jsonify({"status": "study"})
@@ -1426,7 +1433,7 @@ def heartbeat():
             # goes stale for days, the heartbeat pipeline probably broke (fails open).
             day = time.strftime("%Y-%m-%d")
             r.incrbyfloat(f"usage:{day}:{site}", gap)
-            r.expire(f"usage:{day}:{site}", 100 * 86400)
+            r.expire(f"usage:{day}:{site}", HISTORY_TTL)
             # Same figure bucketed by hour, purely so the shadow-meter experiment can
             # compare like with like. Daily totals cannot be aligned with a meter that
             # started at 15:49 — the first comparison divided 15 hours of heartbeat by
@@ -1597,6 +1604,7 @@ DIGEST_PAGE = """
         {% endif %}
     </div>
 
+    <a class="back" href="/wrapped{{ qs }}">Your year, in review &rarr;</a>
     <a class="back" href="/stats{{ qs }}">Full usage stats &rarr;</a>
     <a class="back" href="/health{{ qs }}">Pi health</a>
     {% if back_url %}<a class="back home" href="{{ back_url }}">&larr; Back to {{ back_label }}</a>{% endif %}
@@ -1604,6 +1612,217 @@ DIGEST_PAGE = """
 </body>
 </html>
 """
+
+def wrapped_data(now=None):
+    """The year, answering one question: did this work?
+
+    A year-in-review that only celebrates volume would be telling you how much you
+    doomscrolled with a party hat on. The number that matters is the trend — first
+    quarter of the data against the last — and the reflection prompt's hit rate, because
+    those are the two things that say whether the tool changed anything.
+
+    Degrades to whatever exists: retention is a rolling 400 days and the box may only
+    have weeks of it, so the page says how much it is working from rather than implying
+    a full year.
+    """
+    now = now if now is not None else time.time()
+    days, per_site, daily = [], {s: 0.0 for s in SITES}, []
+    for i in range(364, -1, -1):
+        key_day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+        tot = 0.0
+        for site in SITES:
+            v = float(_try(lambda s=site, k=key_day: r.get(f"usage:{k}:{s}"), 0) or 0)
+            per_site[site] += v
+            tot += v
+        if tot:
+            days.append(key_day)
+            daily.append((key_day, tot))
+
+    total = sum(t for _, t in daily)
+    n = len(daily)
+    if not n:
+        return {"any": False}
+
+    # Trend: the first quarter of the days that have data against the last quarter.
+    # Comparing halves hides a late improvement; quarters are blunt but honest, and the
+    # page says outright when there is too little to mean anything.
+    q = max(1, n // 4)
+    early = sum(t for _, t in daily[:q]) / q
+    late = sum(t for _, t in daily[-q:]) / q
+    trend_pct = round((late - early) / early * 100) if early > 0 else None
+
+    busiest = max(daily, key=lambda x: x[1])
+    quietest = min(daily, key=lambda x: x[1])
+
+    months = {}
+    for d, t in daily:
+        months.setdefault(d[:7], 0.0)
+        months[d[:7]] += t
+    top_month = max(months.items(), key=lambda kv: kv[1]) if months else None
+
+    cds = 0
+    for i in range(365):
+        key_day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+        cds += len(_try(lambda k=key_day: r.lrange(f"cooldown_events:{k}", 0, -1), []) or [])
+
+    why = reflection_summary(365, now)
+    worth = worth_summary(365, now)
+    worst = min((x for x in worth["rows"] if x["n"] >= 3), key=lambda x: x["pct"], default=None)
+    best = max((x for x in worth["rows"] if x["n"] >= 3), key=lambda x: x["pct"], default=None)
+
+    sites = sorted(({"label": SITES[s]["label"], "min": int(per_site[s] // 60),
+                     "pct": round(100 * per_site[s] / total) if total else 0,
+                     "color": series_color(i)}
+                    for i, s in enumerate(SITES) if per_site[s] >= 60),
+                   key=lambda x: -x["min"])
+
+    return {
+        "any": True, "days": n, "enough": n >= 60,
+        "span": f"{days[0]} to {days[-1]}",
+        "hours": round(total / 3600, 1),
+        "full_days": round(total / 86400, 1),
+        "avg_min": int(total / n // 60),
+        "sites": sites,
+        "trend_pct": trend_pct, "early_min": int(early // 60), "late_min": int(late // 60),
+        "busiest_day": time.strftime("%A %-d %b", time.strptime(busiest[0], "%Y-%m-%d")),
+        "busiest_min": int(busiest[1] // 60),
+        "quietest_day": time.strftime("%A %-d %b", time.strptime(quietest[0], "%Y-%m-%d")),
+        "quietest_min": int(quietest[1] // 60),
+        "top_month": time.strftime("%B", time.strptime(top_month[0], "%Y-%m")) if top_month else "",
+        "top_month_hours": round(top_month[1] / 3600, 1) if top_month else 0,
+        "cooldowns": cds,
+        "why": why, "worth": worth,
+        "worst_trigger": worst["label"] if worst else "", "worst_pct": worst["pct"] if worst else 0,
+        "best_trigger": best["label"] if best else "", "best_pct": best["pct"] if best else 0,
+    }
+
+WRAPPED_PAGE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Your year · Countdown</title>
+    <style>
+        :root{--bg:#0b0d10;--card:#14171d;--line:#232732;--fg:#f4f6f8;--muted:#8b93a0;
+              --faint:#5f6773;--good:#0ca30c;--warn:#ec835a;--accent:#3987e5}
+        *{box-sizing:border-box}
+        body{margin:0;background:var(--bg);color:var(--fg);
+            font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+            -webkit-font-smoothing:antialiased;padding:28px 16px max(28px,env(safe-area-inset-bottom));
+            display:flex;justify-content:center}
+        .wrap{width:100%;max-width:560px}
+        .kicker{display:flex;align-items:center;gap:8px;justify-content:center;font-size:11.5px;
+            font-weight:700;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
+        .kicker .dot{width:7px;height:7px;border-radius:50%;background:var(--accent)}
+        .range{text-align:center;font-size:12px;color:var(--faint);margin-bottom:18px}
+        .card{background:var(--card);border:1px solid var(--line);border-radius:16px;
+            padding:20px 18px;margin-bottom:12px}
+        .card h2{font-size:12.5px;font-weight:600;color:var(--muted);margin:0 0 14px;letter-spacing:.02em}
+        .hero{text-align:center;padding:26px 18px}
+        .hero .big{font-size:46px;font-weight:700;letter-spacing:-1.5px;line-height:1}
+        .hero .sub{font-size:13.5px;color:var(--muted);margin-top:10px;line-height:1.55}
+        .verdict{text-align:center;padding:24px 18px}
+        .verdict .n{font-size:38px;font-weight:700;letter-spacing:-1px;line-height:1}
+        .verdict .n.down{color:var(--good)} .verdict .n.up{color:var(--warn)}
+        .verdict .lab{font-size:13px;color:var(--muted);margin-top:10px;line-height:1.55}
+        .row{display:flex;align-items:center;gap:10px;font-size:13.5px;margin-top:9px}
+        .row .k{flex:1}
+        .row .v{color:var(--muted);font-variant-numeric:tabular-nums}
+        .bar{flex:2;height:8px;background:#0e1116;border-radius:4px;overflow:hidden}
+        .bar i{display:block;height:100%;border-radius:4px}
+        .fact{display:flex;justify-content:space-between;gap:12px;font-size:13.5px;
+            padding:9px 0;border-bottom:1px solid var(--line)}
+        .fact:last-child{border-bottom:none}
+        .fact .k{color:var(--muted)} .fact .v{color:var(--fg);font-weight:600;text-align:right}
+        .note{font-size:12.5px;color:var(--muted);line-height:1.55;margin:12px 0 0}
+        .note b{color:var(--fg)}
+        .thin{font-size:12px;color:var(--faint);line-height:1.5;margin-top:12px}
+        .back{display:block;text-align:center;margin-top:20px;font-size:12.5px;color:var(--faint);text-decoration:none}
+        .back.home{margin-top:22px;padding:11px;border:1px solid var(--line);border-radius:11px;
+            color:var(--fg);font-size:13.5px;font-weight:600}
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <div class="kicker"><span class="dot"></span>Your year</div>
+    {% if not d.any %}
+    <div class="card"><div class="note">No usage recorded yet. This page fills in as the
+        history does &mdash; it keeps a rolling 400 days.</div></div>
+    {% else %}
+    <div class="range">{{ d.span }} &middot; {{ d.days }} days with any usage</div>
+
+    <div class="card hero">
+        <div class="big">{{ d.hours }}h</div>
+        <div class="sub">on the sites you chose to budget &mdash; about <b>{{ d.avg_min }}m</b> on
+            a day you used them at all. That's <b>{{ d.full_days }}</b> entire days.</div>
+    </div>
+
+    <div class="card verdict">
+        <h2>Did it work?</h2>
+        {% if d.trend_pct is none %}
+        <div class="lab">Not enough history to say yet.</div>
+        {% else %}
+        <div class="n {{ 'down' if d.trend_pct < 0 else 'up' }}">
+            {{ '&darr;' | safe if d.trend_pct < 0 else '&uarr;' | safe }}{{ d.trend_pct|abs }}%</div>
+        <div class="lab">Your last stretch averaged <b>{{ d.late_min }}m</b> a day against
+            <b>{{ d.early_min }}m</b> at the start.
+            {% if not d.enough %}Only {{ d.days }} days of data, so treat this as a hint rather
+            than a result.{% elif d.trend_pct < -10 %}That is the number this whole thing exists
+            to move.{% elif d.trend_pct > 10 %}Worth knowing rather than worth hiding.{% else %}
+            Roughly flat.{% endif %}</div>
+        {% endif %}
+    </div>
+
+    <div class="card">
+        <h2>Where the time went</h2>
+        {% for s in d.sites %}
+        <div class="row">
+            <span class="k">{{ s.label }}</span>
+            <span class="bar"><i style="width:{{ s.pct }}%;background:{{ s.color }}"></i></span>
+            <span class="v">{{ s.min }}m &middot; {{ s.pct }}%</span>
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="card">
+        <h2>Notable days</h2>
+        <div class="fact"><span class="k">Heaviest</span><span class="v">{{ d.busiest_day }} &middot; {{ d.busiest_min }}m</span></div>
+        <div class="fact"><span class="k">Lightest</span><span class="v">{{ d.quietest_day }} &middot; {{ d.quietest_min }}m</span></div>
+        {% if d.top_month %}<div class="fact"><span class="k">Heaviest month</span><span class="v">{{ d.top_month }} &middot; {{ d.top_month_hours }}h</span></div>{% endif %}
+        <div class="fact"><span class="k">Times you hit the wall</span><span class="v">{{ d.cooldowns }}</span></div>
+    </div>
+
+    {% if d.why.total %}
+    <div class="card">
+        <h2>What you told yourself</h2>
+        <div class="note">The gate asked why you were reaching for it <b>{{ d.why.total }}</b> times.
+            Naming it was enough to stop you <b>{{ d.why.passes }}</b> of those
+            (<b>{{ d.why.rate }}%</b>){% if d.why.rows %}, and the reason you gave most often was
+            <b>{{ d.why.rows[0].label }}</b>{% endif %}.</div>
+        {% if d.worth.total %}
+        <div class="note">Afterwards you judged it worth it <b>{{ d.worth.rate }}%</b> of the time.
+            {% if d.worst_trigger %}Least worth it going in <b>{{ d.worst_trigger }}</b>
+            ({{ d.worst_pct }}%){% if d.best_trigger and d.best_trigger != d.worst_trigger %};
+            most worth it <b>{{ d.best_trigger }}</b> ({{ d.best_pct }}%){% endif %}.{% endif %}</div>
+        <div class="thin">That pairing is the most useful thing on this page: the reason you go in
+            predicts the answer better than the site does.</div>
+        {% endif %}
+    </div>
+    {% endif %}
+    {% endif %}
+
+    <a class="back" href="/digest{{ qs }}">This week &rarr;</a>
+    <a class="back" href="/stats{{ qs }}">Usage stats</a>
+    {% if back_url %}<a class="back home" href="{{ back_url }}">&larr; Back to {{ back_label }}</a>{% endif %}
+</div>
+</body>
+</html>
+"""
+
+@app.route('/wrapped')
+def wrapped():
+    return render_page(WRAPPED_PAGE, d=wrapped_data())
 
 @app.route('/digest')
 def digest():
@@ -2068,11 +2287,22 @@ def _mem():
             "pct": round(100 * used / total, 1)}
 
 def _disk(path="/"):
+    """Disk use, matching what `df` reports.
+
+    The old version computed used as total - f_bavail, which counts the ~5% of blocks
+    reserved for root as if you had filled them: it showed 6.4 GB used of 30.9 GB when
+    df said 4.7 GB of 29 GB. Alarming and wrong. f_bavail is what is available to YOU,
+    f_bfree is what is actually free — so used is total - f_bfree, and the percentage is
+    against used + available, not against the raw total. Same convention as df, so the
+    dashboard and the terminal agree.
+    """
     st = os.statvfs(path)
     total = st.f_blocks * st.f_frsize
-    used = total - st.f_bavail * st.f_frsize
+    used = total - st.f_bfree * st.f_frsize
+    avail = st.f_bavail * st.f_frsize
     return {"used_gb": round(used / 1e9, 1), "total_gb": round(total / 1e9, 1),
-            "pct": round(100 * used / total)}
+            "avail_gb": round(avail / 1e9, 1),
+            "pct": round(100 * used / (used + avail)) if used + avail else 0}
 
 def _uptime():
     secs = float(_first_line("/proc/uptime").split()[0])
@@ -2210,7 +2440,7 @@ def collect_health(max_age=2.0):
         "temp_c": temp,
         "temp_hist": list(_TEMP_HIST),
         "mem": _try(_mem, {"used_mb": 0, "total_mb": 0, "pct": 0}),
-        "disk": _try(_disk, {"used_gb": 0, "total_gb": 0, "pct": 0}),
+        "disk": _try(_disk, {"used_gb": 0, "total_gb": 0, "avail_gb": 0, "pct": 0}),
         "uptime": _try(_uptime, "?"),
         "net": {n: _iface(n) for n in ("eth0", "tailscale0", "wlan0")},
         "power": _try(_power, {"ok": True}),
@@ -2864,6 +3094,7 @@ def _add_bg(page, full=True, token="{{ ui_tok }}", feed="/feed"):
 # /digest was added later and never went through this, so it was the one dashboard page
 # with no ambient background and no frosted panels — visibly a different product.
 DIGEST_PAGE = _add_bg(DIGEST_PAGE)
+WRAPPED_PAGE = _add_bg(WRAPPED_PAGE)
 STATS_PAGE = _add_bg(STATS_PAGE)
 HEALTH_PAGE = _add_bg(HEALTH_PAGE)
 DEVICES_PAGE = _add_bg(DEVICES_PAGE)
