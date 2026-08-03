@@ -167,6 +167,30 @@ else
   did "installed"
 fi
 
+# F11 in the case study: an always-on box with 18 pending security updates and nothing
+# installing them. SECURITY.md tells people this is handled at install, so it has to
+# actually be handled at install rather than by hand on one machine.
+step "Automatic security updates"
+if dpkg -s unattended-upgrades >/dev/null 2>&1 \
+   && [ -f /etc/apt/apt.conf.d/20auto-upgrades ] \
+   && grep -q '"1"' /etc/apt/apt.conf.d/20auto-upgrades 2>/dev/null; then
+  ok "already enabled"
+elif [ "$DRY" = 1 ]; then
+  would "install unattended-upgrades and enable daily security updates"
+else
+  echo "  ${DIM}A box you never log into again is exactly the thing that needs to patch"
+  echo "  itself. Auto-REBOOT stays off — a gateway restarting itself would drop every"
+  echo "  routed device mid-browse.${N}"
+  if ask "Enable automatic security updates?"; then
+    dpkg -s unattended-upgrades >/dev/null 2>&1 || { run apt-get update -qq; run apt-get install -y unattended-upgrades; }
+    printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' \
+      | sudo tee /etc/apt/apt.conf.d/20auto-upgrades >/dev/null
+    ok "security updates will install themselves; reboots stay manual"
+  else
+    warn "skipped — run 'sudo unattended-upgrades --dry-run' occasionally, or the box rots"
+  fi
+fi
+
 step "Python environment"
 if [ -x "$REPO/venv/bin/python" ]; then ok "venv exists"
 else runu python3 -m venv "$REPO/venv"; did "venv created"; fi

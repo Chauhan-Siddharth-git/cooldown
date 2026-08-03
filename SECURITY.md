@@ -179,6 +179,60 @@ phone's built-in Screen Time instead.
 
 ---
 
+## The other side of the ledger
+
+Everything above is what can go wrong, because that's what a page like this is for. But a
+list of risks with nothing beside it isn't a decision — it's just a fright. Here is the
+rest of the ledger, and none of it is reassurance: every item is something you can check
+yourself in this repository or on your own box.
+
+**The risks are almost all conditional on things you control.** Read the list again and
+notice the shape of it: don't install a certificate somebody hands you, don't put yours on
+other people's devices, don't expose the box to the internet, wipe the card before you
+retire it. Those are decisions, not exposures. Compare that with a cloud service, where
+the equivalent risk is "their infrastructure is sound and their staff are honest" — true
+or not, you cannot check it and you cannot change it. Here the dangerous paths are ones
+you walk into deliberately.
+
+**Undoing it is genuinely fast, and it works even against someone holding the hardware.**
+Most security problems can't be undone. This one can: remove the certificate from your
+devices and the key is inert — instantly, permanently, even if a thief has the memory card
+in their hand. Two minutes, no cleverness required.
+[RECOVERY.md](RECOVERY.md) is the checklist. That escape hatch is why "the SD card isn't
+encrypted" is an acceptable design rather than a fatal one.
+
+**Nothing leaves the box, and there is no company in the picture.** No account, no cloud,
+no telemetry, no analytics, no subscription, no privacy policy that can change next year.
+Your usage history and your reflections sit in a database on hardware you own. The
+comparable commercial tools cannot make that claim, and several of them use the very same
+interception mechanism with their key instead of yours.
+
+**It has been looked at, and the results are published.** Twenty findings, all fixed, all
+written up in detail — including the two that took more than one attempt and the one where
+the fix's own reasoning turned out to be wrong. A project that publishes its own worst
+moments is one you can calibrate. There are now **437 automated tests**, including ones
+that fail if a whole *class* of past mistake is reintroduced, plus a pre-commit hook that
+blocks the specific patterns this codebase has got wrong before.
+
+**The box is not a soft target.** The programs run as locked-down accounts with no
+password and no login shell. Between them they hold exactly **one** elevated permission —
+reading a network counter — so a bug in the web app cannot become control of the machine.
+The proxy ports answer only on your private network and are refused from your own home
+wifi and from the public internet. Security updates install themselves.
+
+**You can read all of it.** Not as a slogan — the whole thing is about 3,700 lines, the
+security-relevant parts are heavily commented with *why*, and the case study explains the
+reasoning behind every control. If you don't want to read code, that's fine, but the
+option is real and it is the one thing no closed alternative offers.
+
+**And the thing you're actually trading is narrower than it first sounds.** You are not
+giving up "security". You are giving up *privacy from a machine in your own home*, in
+exchange for a tool that makes you put your phone down. Whether that's worth it is a
+personal call — but it is a much smaller giveaway than the mail analogy makes it feel, as
+long as the box stays yours and stays patched.
+
+---
+
 ## "Do I even need this?" — the three options
 
 Cooldown is not the only way to spend less time on Reddit, and it is the most invasive.
@@ -229,8 +283,8 @@ that the project is small, readable, tested, and reviewed rather than trusted.
 
 **The box quietly rots.**
 It's a computer that runs unattended for years. Unpatched software is how boring machines
-become someone else's. Automatic security updates are switched on during install; leave
-them on.
+become someone else's. The installer offers to switch on automatic security updates
+(reboots stay manual, so it can't drop your devices mid-browse) — say yes, and leave it on.
 
 ---
 
