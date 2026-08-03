@@ -51,6 +51,102 @@ That's why the rest of this page exists.
 
 ---
 
+## Compared with not doing this at all
+
+Most of this page describes how Cooldown works. This section is the one that matters
+most: **what is different about your life afterwards.**
+
+| | Without Cooldown | With Cooldown |
+|---|---|---|
+| **Who can read your browsing** | You and the websites. Nobody in between — not your internet provider, not the café wifi. | The same, **plus** anyone who gets the master key off your box. |
+| **If someone breaks into your home wifi** | They see scrambled noise. Modern encryption holds. | Same — **unless** they also get the key. Then they see everything in plain text. |
+| **If hardware is physically stolen** | Stealing your router gets someone almost nothing. | The Pi's memory card holds a working key to your traffic, and it isn't encrypted. Whoever holds the card holds the key — for years. |
+| **Code sitting in the path of your traffic** | Your operating system and browser. Written by large teams, patched constantly, attacked and fixed by thousands of people. | All of that, **plus roughly 3,700 lines written by one person in their spare time.** |
+| **If that code has a bug** | Not applicable. | A website you visit might be able to reach further than it should — into the box, or your home network. |
+| **Who else is affected** | Just you. | Every device you installed the certificate on. Including anyone else's. |
+| **Would you notice a break-in?** | Often, eventually. Stolen passwords get used, accounts do odd things. | **Probably not.** A copied key leaves no trace and keeps working silently. |
+| **Turning it off** | Not applicable. | Two taps. Switch the VPN off and you're unprotected *and* ungated. That's deliberate. |
+
+**The honest summary:** you are trading a real, permanent increase in risk for a
+behavioural benefit. That can be a perfectly sensible trade — people accept comparable
+trades for convenience all the time — but it is a trade, and it is not reversible by
+wishing. It is reversible by *removing the certificate*, which takes about two minutes
+and is the answer to almost everything below.
+
+### Has the "bug in the code" risk ever actually happened?
+
+Yes. Being straight with you about this is more useful than a reassurance.
+
+Reviews of this project have found **twenty issues, five of them rated serious.** The
+worst for an ordinary user: a specially-crafted link could have made the box fetch an
+attacker's page and hand it to your browser *as though it came from Reddit* — enough to
+attack your Reddit account, and to poke at devices on your home network. Others included
+the proxy being reachable from the whole home wifi, and the box accepting SSH passwords
+from any device on the network. All are fixed; the whole story, including the ones that
+took three attempts, is in [SECURITY-CASESTUDY.md](SECURITY-CASESTUDY.md).
+
+Take two things from that. First: **this is the category of risk you are accepting** —
+not a hypothetical. Second: it was found because somebody went looking, the fix is tested,
+and the tests now fail automatically if anyone reintroduces that class of mistake. Software
+in the path of your traffic has bugs. The question is whether anyone is looking.
+
+---
+
+## "Do I even need this?" — the three options
+
+Cooldown is not the only way to spend less time on Reddit, and it is the most invasive.
+
+| | What it costs you | What you get |
+|---|---|---|
+| **Built-in** — iOS Screen Time, Android Digital Wellbeing | **Nothing.** No key, no certificate, nobody reading anything. | Blunt: block a whole app, or a daily cap. Easy to tap "ignore for today" and forget. |
+| **A commercial screen-time app** | Varies, and worth checking. Many route your traffic through a VPN profile on your phone; **some also install their own certificate** — the same mechanism as Cooldown, except the key belongs to a company, sits on their infrastructure, and is governed by a privacy policy you can't audit. | Usually polished, usually a subscription. Someone else maintains it. |
+| **Cooldown** | You read your own traffic. The key is yours, stays on hardware you own, and nothing leaves the box — but see the whole of this page. | Foreground-time budgeting, cooldowns that escalate on binges, a wind-down before bed. Every line inspectable. |
+
+If the built-in tools would work for you, **use the built-in tools.** They are strictly
+safer. Cooldown earns its keep only if you've genuinely tried the simple thing and the
+blunt on/off model didn't hold.
+
+If you'd otherwise install a commercial app that intercepts traffic, the comparison is
+narrower than it looks: same mechanism, different key-holder. The question becomes *who
+would you rather trust with it* — a company, or yourself plus the state of your home
+security.
+
+---
+
+## What could actually happen to you
+
+Plain scenarios, roughly in order of how likely they are.
+
+**Your house is burgled, or you sell/recycle the Pi without wiping it.**
+Whoever ends up with the memory card can read the traffic of every device still trusting
+the key. They don't need to be a hacker; the card is not encrypted. *What to do:* the
+two-minute checklist in [RECOVERY.md](RECOVERY.md) — remove the certificate from your
+devices and the key becomes worthless immediately, even to someone holding the hardware.
+
+**Somebody hands you a certificate and a "quick setup."**
+The single worst thing you can do, covered in full below. There is never a good reason for
+anyone to give you one.
+
+**You put the certificate on a partner's or child's phone.**
+Now you can read *their* messages, banking and browsing — whether or not you ever intend
+to. And if the arrangement ends, their phone keeps trusting your box until somebody
+actively removes it. Don't do this. If you already have: remove it from their device.
+
+**You take the laptop to work with the tunnel on.**
+Your employer's traffic now flows through a personal device in your home. Depending on
+where you work, that ranges from awkward to a fireable policy breach. Turn the exit node
+off before connecting to a network that isn't yours.
+
+**A bug in the software.** See above — this has happened once, publicly. The mitigation is
+that the project is small, readable, tested, and reviewed rather than trusted.
+
+**The box quietly rots.**
+It's a computer that runs unattended for years. Unpatched software is how boring machines
+become someone else's. Automatic security updates are switched on during install; leave
+them on.
+
+---
+
 ## The three things that can actually go wrong
 
 ### 1. Someone steals the master key off your box

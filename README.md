@@ -21,6 +21,12 @@ is spent, shows a calm "Countdown" page instead of the feed.
 > **[SECURITY.md](SECURITY.md) explains exactly what that means, in plain language.**
 > Five minutes, no jargon. It's the one page not to skip.
 >
+> If you read only one part of it, read
+> **[Compared with not doing this at all](SECURITY.md#compared-with-not-doing-this-at-all)**
+> — a side-by-side of what actually changes, what could realistically happen to you, and
+> an honest look at whether your phone's built-in Screen Time would do the job instead.
+> (Often it would. That's the safer answer, and this page says so.)
+>
 > The short version: you create your own "master key" on your box and nowhere else. This
 > repo ships none, and **you should never install one that anybody hands you.**
 >
