@@ -2,6 +2,7 @@ from mitmproxy import http
 from urllib.parse import urlsplit, parse_qs, quote
 import json
 import secrets
+import time
 import os
 import sys
 import redis
@@ -452,6 +453,68 @@ def site_for_host(host):
             return site
     return None
 
+# How far apart the two clocks may drift before we call the heartbeat dead. A page load
+# with no charge for this long, during a live session, is not idling: idling does not
+# navigate. Generous enough that a slow page or a paused tab cannot trip it.
+ENFORCEMENT_STALE_AFTER = 8 * 60      # no charge for this long...
+ENFORCEMENT_NAV_WINDOW  = 5 * 60      # ...while pages were still being loaded this recently
+
+
+def _try_redis(fn, default=None):
+    try:
+        return fn()
+    except Exception:
+        return default
+
+
+def enforcement_looks_dead():
+    """True when pages are loading during a live session but nothing is being charged.
+
+    The failure this catches is the one the injected script cannot report, because the
+    injected script is what is broken: a CSP that blocks it (F20), a service worker that
+    swallows the fetch, a network path that eats the POST. In every case the sites keep
+    working, the budget stops draining, and nothing anywhere says so.
+    """
+    now = time.time()
+    nav = _try_redis(lambda: r.get("last_active_nav"))
+    if not nav or now - float(nav) > ENFORCEMENT_NAV_WINDOW:
+        return False                      # not actively browsing a gated site: no signal
+    charge = _try_redis(lambda: r.get("last_charge"))
+    return charge is None or (now - float(charge)) > ENFORCEMENT_STALE_AFTER
+
+
+# Deliberately script-free: inline styles, no JS. The condition it reports is *the
+# injected JavaScript not running*, so a warning that needs JavaScript would be silent in
+# exactly the case it exists for. A <div> with a style attribute survives a CSP that
+# blocks scripts, because the CSP we amend is the site's own and we only added a nonce.
+ENFORCEMENT_WARNING = (
+    '<div role="alert" style="position:fixed;top:0;left:0;right:0;z-index:2147483647;'
+    'background:#7a1f1f;color:#fff;padding:10px 16px;'
+    'padding-top:max(10px,env(safe-area-inset-top));text-align:center;'
+    'font:600 14px/1.4 -apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,Arial,sans-serif;'
+    'box-shadow:0 2px 12px rgba(0,0,0,.45)">'
+    '\u26A0\uFE0F Cooldown isn\'t counting this time \u2014 the timer script isn\'t reporting. '
+    'Your budget is not draining. Check the box.</div>'
+)
+
+
+def _note_error(where, exc):
+    """Publish swallowed proxy errors so /health can show them.
+
+    The proxy runs as its own service, its stdout goes to the journal, and nothing ever
+    reads it — so an exception here was strictly invisible. This is the counterpart to
+    app.py's _ERRORS: a failure on either side of the loopback call now shows up in the
+    same place. Never raises; a broken error reporter must not break the proxy.
+    """
+    try:
+        r.incr("proxy_errors")
+        r.setex("proxy_last_error", 7 * 86400,
+                f"{int(__import__('time').time())} {where}: {type(exc).__name__}: {exc}"[:200])
+    except Exception:
+        pass
+    print(f"[ERROR] {where}: {exc}")
+
+
 def session_mode(site):
     """Return the active session's mode ('active' or 'study'), or None if there's
     no live session for this site."""
@@ -467,14 +530,14 @@ def session_mode(site):
 # These are the endpoints that have to live on the GATED site's origin, and only those:
 # the gate replaces the site's own page, the session endpoints are driven from it, and
 # /feed backs the gate's animated background. Everything data-rich has moved off.
-STATE_CHANGING = ("/enter", "/study", "/exit", "/heartbeat", "/reflect")
+STATE_CHANGING = ("/enter", "/study", "/exit", "/heartbeat", "/reflect", "/worth")
 BUDGET_ENDPOINTS = frozenset(("", "/feed") + STATE_CHANGING)
 
 # Moved to the box's own origin — see the long note in app.py. A script on a gated site
 # is now cross-origin with these, so the browser refuses to hand it the response; that
 # replaces the header checks that could never quite cover window.open. Listed here only
 # so an old bookmark gets a redirect instead of a bare 404.
-MOVED_TO_BOX = ("/stats", "/health", "/devices", "/remaining", "/boot-ack")
+MOVED_TO_BOX = ("/", "/stats", "/health", "/devices", "/digest", "/remaining", "/boot-ack")
 
 
 def _forwarded_headers(flow):
@@ -705,7 +768,7 @@ class BudgetAddon:
                          "Cache-Control": "no-store"}
                     )
             except Exception as e:
-                print(f"[DEBUG] Budget handler error: {e}")
+                _note_error("budget_handler", e)
                 flow.response = http.Response.make(500, b"Budget server error")
             return
 
@@ -751,6 +814,12 @@ class BudgetAddon:
         # The injected heartbeat keeps the session alive and charges time; we just
         # let traffic through here. Background/idle traffic is free.
         if mode == "active":
+            # Dead-man's switch, half one. A page load during a live session is a moment
+            # the injected heartbeat SHOULD be running. Record it; app.py records the
+            # last time it actually charged. The two diverging means the clock has
+            # stopped while browsing continues — the tool's whole job, failing silently.
+            if is_navigation:
+                _try_redis(lambda: r.set("last_active_nav", time.time()))
             return
 
         # No session (no budget, cooldown, or idled out). Serve the budget/cooldown
@@ -792,7 +861,8 @@ class BudgetAddon:
             return
         try:
             body = flow.response.get_text(strict=False)
-        except Exception:
+        except Exception as e:
+            _note_error("inject_decode", e)
             return
         if not body:
             return
@@ -809,6 +879,10 @@ class BudgetAddon:
             if mode is None:
                 return
             injection = HEARTBEAT_SCRIPT.replace("__SITE__", site)
+            # Prepended, not appended, and outside the nonce rewrite below: it must be
+            # the first thing in the injection and must not depend on scripts running.
+            if _try_redis(enforcement_looks_dead, False):
+                injection = ENFORCEMENT_WARNING + injection
             if site in ("youtube", "reddit"):
                 injection += SW_KILL
             if site == "youtube":

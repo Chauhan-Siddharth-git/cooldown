@@ -1,6 +1,6 @@
 from flask import Flask, jsonify, redirect, render_template_string, request
 from urllib.parse import urlparse
-from collections import deque
+from collections import Counter, deque
 from datetime import datetime, timezone
 import os
 import subprocess
@@ -10,6 +10,7 @@ import random
 import redis
 import secrets
 import time
+import traceback
 import uuid
 from apscheduler.schedulers.background import BackgroundScheduler
 from news_domains import NEWS_DOMAINS
@@ -127,6 +128,9 @@ SITES = {
     },
 }
 DEFAULT_SITE = "reddit"
+
+# One chart colour per site, in SITES order; wraps if you add more than there are colours.
+SERIES_COLORS = ["#3987e5", "#199e70", "#c98500", "#a678de", "#d1495b"]
 
 RAPID_REPEAT_WINDOW = 3 * 60 * 60  # "a few hours" — a cooldown starting within this of
                                    # the previous one is a "rapid repeat" (binge clustering).
@@ -278,6 +282,14 @@ BUDGET_PAGE = """
         .r-list ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:9px}
         .r-list li{display:flex;gap:9px;align-items:flex-start;font-size:14px;color:var(--fg);line-height:1.4}
         .r-list li::before{content:"\\25CB";color:var(--accent)}
+        /* Post-session check-in. Small and skippable — it must never feel like a toll. */
+        .worth{margin-top:20px;padding-top:16px;border-top:1px solid var(--line)}
+        .worth-q{font-size:13.5px;color:var(--muted);margin:0 0 10px}
+        .worth-btns{display:flex;gap:8px}
+        .worth-btns form{flex:1}
+        .wbtn{width:100%;padding:11px;font-size:14px;font-weight:600;border-radius:10px;
+              background:#1c2028;color:var(--fg);border:1px solid var(--line)}
+        .wbtn:active{opacity:.7}
         .pass{background:var(--go);color:#06120b}
         .cont{background:transparent;color:var(--muted);border:1px solid var(--line)}
         .cont:active{opacity:.7}
@@ -325,6 +337,17 @@ BUDGET_PAGE = """
         </div>
         <!-- Absolute links to the BOX, not relative ones onto the gated site: the
              dashboard deliberately no longer exists on this origin. -->
+        {% if ask_worth %}
+        <div class="worth">
+          <p class="worth-q">That session just ended. Was it worth it?</p>
+          <div class="worth-btns">
+            <form action="/budget/worth" method="post"><input type="hidden" name="v" value="yes">
+              <button class="wbtn" type="submit">Yes</button></form>
+            <form action="/budget/worth" method="post"><input type="hidden" name="v" value="no">
+              <button class="wbtn" type="submit">Not really</button></form>
+          </div>
+        </div>
+        {% endif %}
         <div class="foots">{% if mon %}<a class="foot" href="{{ mon }}/stats">Usage stats</a><a class="foot" href="{{ mon }}/health">Pi health</a>{% endif %}<button class="infobtn" id="bgInfoBtn" type="button" aria-label="What is the moving background?">i</button></div>
         <div class="bgpanel" id="bgPanel">
             <h2>The moving background</h2>
@@ -411,7 +434,10 @@ BUDGET_PAGE = """
     })();
     </script>
     {% endraw %}{% endif %}
-    {% raw %}
+"""
+
+# The ambient background block, spliced back in below.
+BG_BLOCK = """    {% raw %}
     <script>
     (function(){
       var TOK=(document.querySelector('meta[name="cd-tok"]')||{}).content||"";
@@ -511,7 +537,9 @@ BUDGET_PAGE = """
     })();
     </script>
     {% endraw %}
-</body>
+"""
+
+BUDGET_PAGE += BG_BLOCK + """</body>
 </html>
 """
 
@@ -526,7 +554,7 @@ STATS_PAGE = """
         :root{
             --bg:#0b0d10; --card:#14171d; --line:#232732; --fg:#f4f6f8; --muted:#8b93a0;
             --faint:#5f6773; --grid:#232732;
-            --s1:#3987e5; --s2:#199e70; --s3:#c98500; --s4:#a678de;   /* reddit / youtube / spotify / puzzmo */
+            /* series colours come from the server (one per site in SITES) */
             --good:#0ca30c; --warn:#ec835a;
         }
         *{box-sizing:border-box}
@@ -560,7 +588,6 @@ STATS_PAGE = """
         .chart{display:flex;align-items:flex-end;gap:6px;height:150px;border-bottom:1px solid var(--grid);padding-bottom:0}
         .day{flex:1;display:flex;flex-direction:column;justify-content:flex-end;gap:2px;height:100%;position:relative;border-radius:4px 4px 0 0}
         .seg{width:100%;min-height:2px}
-        .seg.r{background:var(--s1)} .seg.y{background:var(--s2)} .seg.s{background:var(--s3)} .seg.p{background:var(--s4)}
         .day .seg:first-child{border-radius:4px 4px 0 0}
         .day .tip{
             display:none;position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);
@@ -597,6 +624,13 @@ STATS_PAGE = """
         .why-foot{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}
         .why-foot b{color:var(--good);font-size:15px}
         .why-empty{color:var(--faint);font-size:12.5px;margin-top:8px;line-height:1.5}
+        .worth-block{margin-top:18px;padding-top:14px;border-top:1px solid var(--line)}
+        .worth-block h3{font-size:12.5px;font-weight:600;color:var(--muted);margin:0 0 12px;letter-spacing:.02em}
+        .why-bar i.w-lo{background:var(--good)}     /* rarely worth it = the useful finding */
+        .why-bar i.w-mid{background:var(--s3)}
+        .why-bar i.w-hi{background:var(--s1)}
+        .worth-foot{margin-top:12px;font-size:12.5px;color:var(--muted);line-height:1.5}
+        .worth-foot b{color:var(--fg)}
     </style>
 </head>
 <body>
@@ -625,8 +659,24 @@ STATS_PAGE = """
             ({{ why.rate }}%).</div>
         {% else %}
         <div class="why-empty">Nothing yet. When the gate asks why you're reaching for a site, the
-            answer you pick is recorded here &mdash; along with whether naming it was enough to stop you.
-            It never leaves this box.</div>
+            answer you pick is recorded here &mdash; along with whether naming it was enough to stop you,
+            and whether you judged the time worth it afterwards. It never leaves this box.</div>
+        {% endif %}
+        {% if worth.total %}
+        <div class="worth-block">
+            <h3>&hellip;and afterwards, was it worth it?</h3>
+            {% for row in worth.rows %}
+            <div class="why-row">
+                <span class="why-lab">{{ row.label }}</span>
+                <span class="why-bar"><i class="{{ 'w-lo' if row.pct < 34 else ('w-hi' if row.pct >= 67 else 'w-mid') }}"
+                      style="width:{{ row.pct }}%"></i></span>
+                <span class="why-n">{{ row.pct }}% &middot; {{ row.n }}&times;</span>
+            </div>
+            {% endfor %}
+            <div class="worth-foot">Overall you called it worth it <b>{{ worth.rate }}%</b> of the time
+                ({{ worth.yes }} of {{ worth.total }}). The pairing is the point: the reason you go in
+                predicts the answer better than the site does.</div>
+        </div>
         {% endif %}
     </div>
 
@@ -635,35 +685,25 @@ STATS_PAGE = """
         <div class="chart">
         {% for d in days %}
             <div class="day">
-                {% if d.p_pct %}<div class="seg p" style="height:{{ d.p_pct }}%"></div>{% endif %}
-                {% if d.s_pct %}<div class="seg s" style="height:{{ d.s_pct }}%"></div>{% endif %}
-                {% if d.y_pct %}<div class="seg y" style="height:{{ d.y_pct }}%"></div>{% endif %}
-                {% if d.r_pct %}<div class="seg r" style="height:{{ d.r_pct }}%"></div>{% endif %}
+                {% for sr in series|reverse %}{% if d.pcts[sr.key] %}<div class="seg" style="height:{{ d.pcts[sr.key] }}%;background:{{ sr.color }}"></div>{% endif %}{% endfor %}
                 <div class="tip"><b>{{ d.label_full }}</b><br>
-                    <span class="d" style="background:var(--s1)"></span>Reddit {{ d.r_min }}m<br>
-                    <span class="d" style="background:var(--s2)"></span>YouTube {{ d.y_min }}m<br>
-                    <span class="d" style="background:var(--s3)"></span>Spotify {{ d.s_min }}m<br>
-                    <span class="d" style="background:var(--s4)"></span>Puzzmo {{ d.p_min }}m<br>
-                    <b>{{ d.total_min }}m total</b>
+                    {% for sr in series %}<span class="d" style="background:{{ sr.color }}"></span>{{ sr.label }} {{ d.mins[sr.key] }}m<br>
+                    {% endfor %}<b>{{ d.total_min }}m total</b>
                 </div>
             </div>
         {% endfor %}
         </div>
         <div class="xlabels">{% for d in days %}<span>{{ d.label }}</span>{% endfor %}</div>
         <div class="legend">
-            <span><span class="d" style="background:var(--s1)"></span>Reddit</span>
-            <span><span class="d" style="background:var(--s2)"></span>YouTube</span>
-            <span><span class="d" style="background:var(--s3)"></span>Spotify</span>
-            <span><span class="d" style="background:var(--s4)"></span>Puzzmo</span>
+            {% for sr in series %}<span><span class="d" style="background:{{ sr.color }}"></span>{{ sr.label }}</span>{% endfor %}
         </div>
         <details>
             <summary>Table view</summary>
             <table>
-                <tr><th>Day</th><th>Reddit</th><th>YouTube</th><th>Spotify</th><th>Puzzmo</th><th>Total</th></tr>
+                <tr><th>Day</th>{% for sr in series %}<th>{{ sr.label }}</th>{% endfor %}<th>Total</th></tr>
                 {% for d in days %}
                 <tr {% if loop.last %}class="today"{% endif %}>
-                    <td>{{ d.label_full }}</td><td>{{ d.r_min }}m</td><td>{{ d.y_min }}m</td>
-                    <td>{{ d.s_min }}m</td><td>{{ d.p_min }}m</td><td>{{ d.total_min }}m</td>
+                    <td>{{ d.label_full }}</td>{% for sr in series %}<td>{{ d.mins[sr.key] }}m</td>{% endfor %}<td>{{ d.total_min }}m</td>
                 </tr>
                 {% endfor %}
             </table>
@@ -684,6 +724,7 @@ STATS_PAGE = """
     </div>
 
     <div class="live {{ 'stale' if stale else '' }}">{{ live_line }}</div>
+    <a class="back" href="/digest">This week, in one screen &rarr;</a>
     <a class="back" href="/health">Raspberry Pi health &rarr;</a>
     <a class="back" href="/devices">Devices &rarr;</a>
 </div>
@@ -945,6 +986,59 @@ def reflection_summary(days=30, now=None):
     return {"rows": out, "total": total, "passes": passes,
             "rate": round(100 * passes / total) if total else 0, "days": days}
 
+# The reflection prompt asks why you are reaching for the feed. It never asks how it went.
+# That is the more interesting half: "when I was tired it was never worth it, when I
+# actually needed it it usually was" is the sentence the whole feature is reaching for,
+# and a pre-session trigger alone cannot produce it. Queued when a session ends, asked
+# once on the next gate screen — you are already stopped, so it costs nothing.
+WORTH_TTL = 2 * 3600
+
+def queue_worth_prompt(site, now=None):
+    now = now if now is not None else time.time()
+    trigger = r.get(f"session_trigger:{pool(site)}") or "-"
+    r.setex("pending_worth", WORTH_TTL, f"{now:.0f} {site} {trigger}")
+
+def log_worth(verdict, now=None):
+    """Record the verdict against the trigger that opened the session. Returns False if
+    there was nothing pending, so a double-tap or a stale form can't invent data."""
+    if verdict not in ("yes", "no"):
+        return False
+    pending = r.get("pending_worth")
+    if not pending:
+        return False
+    r.delete("pending_worth")
+    parts = pending.split()
+    trigger = parts[2] if len(parts) > 2 else "-"
+    now = now if now is not None else time.time()
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    r.rpush(f"worth:{day}", f"{now:.0f} {trigger} {verdict}")
+    r.expire(f"worth:{day}", 100 * 86400)
+    return True
+
+def worth_summary(days=30, now=None):
+    """Per-trigger: how often the time was judged worth it afterwards."""
+    now = now if now is not None else time.time()
+    rows, yes, total = {}, 0, 0
+    for i in range(days):
+        day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+        for raw in r.lrange(f"worth:{day}", 0, -1):
+            parts = raw.split()
+            if len(parts) < 3:
+                continue
+            t, v = parts[1], parts[2]
+            d = rows.setdefault(t, {"key": t, "label": REFLECT_TRIGGERS.get(t, "Not asked"),
+                                    "n": 0, "yes": 0})
+            d["n"] += 1
+            total += 1
+            if v == "yes":
+                d["yes"] += 1
+                yes += 1
+    out = sorted(rows.values(), key=lambda d: -d["n"])
+    for d in out:
+        d["pct"] = round(100 * d["yes"] / d["n"]) if d["n"] else 0
+    return {"rows": out, "total": total, "yes": yes,
+            "rate": round(100 * yes / total) if total else 0, "days": days}
+
 def log_soft_pause(site, now=None):
     """Log a per-site SOFT pause: a site hit its own cap while the shared bucket still had
     room, so the session ended with NO hard cooldown. Feeds the cluster brake below
@@ -1028,7 +1122,7 @@ def _safe_next(site, nxt):
 def render_gate(site, label, *, overline, message, title="", mood="wait",
                 can_enter=False, button_text="", headline="",
                 countdown=0, show_study=False, study_primary=False, refresh=0, next_url="",
-                show_reflect=False, reflect_q=""):
+                show_reflect=False, reflect_q="", ask_worth=False):
     # One template, many states. `overline` is the uppercase kicker; `countdown` (secs)
     # renders a live ticking timer that reloads at zero; `headline` renders a big static
     # time; `mood` picks the accent colour (go/wait/sleep). `next_url`, when set, makes
@@ -1040,12 +1134,14 @@ def render_gate(site, label, *, overline, message, title="", mood="wait",
         can_enter=can_enter, button_text=button_text, headline=headline,
         countdown=int(countdown), show_study=show_study, study_primary=study_primary,
         refresh=refresh, next_url=next_url,
-        show_reflect=show_reflect, reflect_q=reflect_q)
+        show_reflect=show_reflect, reflect_q=reflect_q, ask_worth=ask_worth)
 
 @app.route('/budget')
 def budget_page():
     site = resolve_site(request.args.get("site"))
     label = SITES[site]["label"]
+    # Only on the screens you land on *because* a session ended — never on the way in.
+    ask_worth = bool(_try(lambda: r.get("pending_worth")))
 
     p = pool(site)
     study_ok = (site == "youtube" and bool(STUDY_PLAYLISTS))
@@ -1093,7 +1189,7 @@ def budget_page():
             msg += " Put the break to work — the course is one tap away."
         return render_gate(site, label, overline=f"{label} · Cooldown", mood="wait",
             countdown=cooldown_remaining, show_study=study_ok, study_primary=study_ok,
-            title="Take a break", message=msg)
+            title="Take a break", message=msg, ask_worth=ask_worth)
 
     # One site looping (repeated cap-hits in a short window) -> a short site-specific breather.
     soft_cd = get_soft_cd_remaining(site)
@@ -1114,7 +1210,7 @@ def budget_page():
             msg += " Or turn the break into progress: the course is one tap away."
         return render_gate(site, label, overline=f"{label} · Time's up", mood="wait",
             countdown=get_cooldown_remaining(site), show_study=study_ok, study_primary=study_ok,
-            title="Whole bucket spent", message=msg)
+            title="Whole bucket spent", message=msg, ask_worth=ask_worth)
 
     # This site's slice used up, but the bucket still has time for a bigger-cap site.
     if remaining <= 0:
@@ -1123,7 +1219,7 @@ def budget_page():
         steer = f" Still time on {' & '.join(others)}." if others else ""
         return render_gate(site, label, overline=f"{label} · Spent", mood="wait",
             title=f"{label} is done for now", button_text=f"{label} used up",
-            show_study=study_ok, refresh=15,
+            show_study=study_ok, refresh=15, ask_worth=ask_worth,
             message=f"You've used your {label} share of the bucket.{steer} It trickles back if you step away.")
 
     # Enter.
@@ -1140,6 +1236,12 @@ def reflect():
     log_reflection(request.form.get("trigger", ""), "pass")
     return jsonify({"status": "ok"})
 
+@app.route('/worth', methods=['POST'])
+def worth():
+    site = resolve_site(request.args.get("site"))
+    _try(lambda: log_worth(request.form.get("v", "")))
+    return redirect(f'/budget?site={site}')
+
 @app.route('/enter', methods=['POST'])
 def enter():
     site = resolve_site(request.args.get("site"))
@@ -1149,7 +1251,11 @@ def enter():
     if remaining <= 0 or cooldown > 0 or get_soft_cd_remaining(site) > 0:
         return redirect(f'/budget?site={site}')
 
-    log_reflection(request.form.get("trigger", ""), "enter")
+    trigger = request.form.get("trigger", "")
+    log_reflection(trigger, "enter")
+    # Carried through the session so the "was that worth it?" answer can be attributed
+    # to the reason you gave for starting. Without the join, both halves are just tallies.
+    r.setex(f"session_trigger:{pool(site)}", 6 * 3600, trigger or "-")
     day = time.strftime("%Y-%m-%d")
     r.incr(f"entries:{day}")          # drives "skip the prompt on your first session"
     r.expire(f"entries:{day}", 7 * 86400)
@@ -1244,6 +1350,7 @@ def heartbeat():
                 if r.incrbyfloat(f"night_spent:{p}", gap) >= NIGHT_BUDGET_SECONDS:
                     r.delete(f"active_token:{site}")
                     r.delete(f"session:{token}")
+                    queue_worth_prompt(site, now)
                     return jsonify({"status": "blocked", "remaining": 0}), 403
             else:
                 spent = r.incrbyfloat(f"spent:{p}", gap)
@@ -1252,6 +1359,7 @@ def heartbeat():
                     if spent >= pool_max_budget(p):
                         r.delete(f"active_token:{site}")
                         r.delete(f"session:{token}")
+                        queue_worth_prompt(site, now)
                         start_cooldown(p, site, now)
                         return jsonify({"status": "blocked", "remaining": 0}), 403
                     # This site's slice is used up but the bucket isn't -> end just this
@@ -1259,6 +1367,7 @@ def heartbeat():
                     if spent >= SITES[site]["budget_seconds"]:
                         r.delete(f"active_token:{site}")
                         r.delete(f"session:{token}")
+                        queue_worth_prompt(site, now)
                         log_soft_pause(site, now)
                         maybe_cluster_cooldown(site, now)   # short brake if this site is looping
                         return jsonify({"status": "blocked", "remaining": 0}), 403
@@ -1266,6 +1375,7 @@ def heartbeat():
                 elif spent >= effective_cap(site):
                     r.delete(f"active_token:{site}")
                     r.delete(f"session:{token}")
+                    queue_worth_prompt(site, now)
                     return jsonify({"status": "blocked", "remaining": 0}), 403
 
     r.set(f"last_heartbeat:{p}", now)
@@ -1290,10 +1400,201 @@ def remaining():
         for s in SITES
     })
 
+DIGEST_PAGE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>This week · Countdown</title>
+    <style>
+        :root{--bg:#0b0d10;--card:#14171d;--line:#232732;--fg:#f4f6f8;--muted:#8b93a0;
+              --faint:#5f6773;--good:#0ca30c;--warn:#ec835a;--accent:#3987e5}
+        *{box-sizing:border-box}
+        body{margin:0;background:var(--bg);color:var(--fg);
+            font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+            -webkit-font-smoothing:antialiased;padding:28px 16px max(28px,env(safe-area-inset-bottom));
+            display:flex;justify-content:center}
+        .wrap{width:100%;max-width:560px}
+        .kicker{display:flex;align-items:center;gap:8px;justify-content:center;font-size:11.5px;
+            font-weight:700;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
+        .kicker .dot{width:7px;height:7px;border-radius:50%;background:var(--accent)}
+        .range{text-align:center;font-size:12px;color:var(--faint);margin-bottom:18px}
+        .lede{background:var(--card);border:1px solid var(--line);border-radius:16px;
+            padding:22px 18px;text-align:center;margin-bottom:12px}
+        .lede .big{font-size:40px;font-weight:700;letter-spacing:-1px;line-height:1}
+        .lede .sub{font-size:13px;color:var(--muted);margin-top:8px;line-height:1.5}
+        .lede .delta{font-weight:700}
+        .delta.down{color:var(--good)} .delta.up{color:var(--warn)}
+        .card{background:var(--card);border:1px solid var(--line);border-radius:16px;
+            padding:18px 16px;margin-bottom:12px}
+        .card h2{font-size:12.5px;font-weight:600;color:var(--muted);margin:0 0 14px;letter-spacing:.02em}
+        .row{display:flex;align-items:center;gap:10px;font-size:13.5px;margin-top:9px}
+        .row .k{flex:1}
+        .row .v{color:var(--muted);font-variant-numeric:tabular-nums}
+        .bar{flex:2;height:8px;background:#0e1116;border-radius:4px;overflow:hidden}
+        .bar i{display:block;height:100%;border-radius:4px}
+        .note{font-size:12.5px;color:var(--muted);line-height:1.55;margin:12px 0 0}
+        .note b{color:var(--fg)}
+        .empty{font-size:12.5px;color:var(--faint);line-height:1.5}
+        .back{display:block;text-align:center;margin-top:20px;font-size:12.5px;color:var(--faint);text-decoration:none}
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <div class="kicker"><span class="dot"></span>This week</div>
+    <div class="range">{{ d.range }}</div>
+
+    <div class="lede">
+        <div class="big">{{ d.total_min }}m</div>
+        <div class="sub">on gated sites &mdash; about <b>{{ d.per_day_min }}m</b> a day.
+        {% if d.delta_pct is not none %}
+          <span class="delta {{ 'down' if d.delta_pct < 0 else 'up' }}">
+          {{ '&darr;' | safe if d.delta_pct < 0 else '&uarr;' | safe }}{{ d.delta_abs }}%</span>
+          vs the week before.
+        {% else %}Not enough history yet to compare.{% endif %}
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Where it went</h2>
+        {% for s in d.sites %}
+        <div class="row">
+            <span class="k">{{ s.label }}</span>
+            <span class="bar"><i style="width:{{ s.pct }}%;background:{{ s.color }}"></i></span>
+            <span class="v">{{ s.min }}m</span>
+        </div>
+        {% else %}
+        <div class="empty">Nothing charged this week.</div>
+        {% endfor %}
+    </div>
+
+    <div class="card">
+        <h2>The binge signal</h2>
+        <div class="note">
+        {% if d.cooldowns %}
+            <b>{{ d.cooldowns }}</b> cooldown{{ '' if d.cooldowns == 1 else 's' }}, of which
+            <b>{{ d.rapid }}</b> came within {{ d.rapid_hours }}h of the last.
+            {% if d.rapid %}That clustering &mdash; not the daily total &mdash; is what draws a longer wall.
+            {% else %}Spread out rather than clustered, so every wall stayed at the base hour.{% endif %}
+            {% if d.busiest_day %}<br>Heaviest day: <b>{{ d.busiest_day }}</b> ({{ d.busiest_min }}m).{% endif %}
+        {% else %}
+            No cooldowns this week &mdash; you stopped before the bucket ran dry every time.
+        {% endif %}
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>What you said</h2>
+        {% if d.why.total %}
+        <div class="note">Asked why you were reaching for it <b>{{ d.why.total }}</b> times.
+            Naming it was enough to stop you <b>{{ d.why.passes }}</b> of those ({{ d.why.rate }}%).
+            {% if d.top_trigger %}Most common reason: <b>{{ d.top_trigger }}</b>.{% endif %}
+        </div>
+        {% else %}
+        <div class="empty">The reflection prompt didn't come up this week.</div>
+        {% endif %}
+        {% if d.worth.total %}
+        <div class="note">Afterwards you called it worth it <b>{{ d.worth.rate }}%</b> of the time.
+            {% if d.worst_trigger %}Least worth it when you went in
+            <b>{{ d.worst_trigger }}</b> &mdash; {{ d.worst_pct }}%.{% endif %}
+        </div>
+        {% endif %}
+    </div>
+
+    <a class="back" href="/stats">Full usage stats &rarr;</a>
+    <a class="back" href="/health">Pi health</a>
+</div>
+</body>
+</html>
+"""
+
+@app.route('/digest')
+def digest():
+    """The week in one screen.
+
+    Everything here already existed — daily usage, cooldown clustering, reflection
+    triggers, the worth-it verdicts — and all of it was only visible if you went looking,
+    which you don't while things feel fine. A tool whose whole premise is "make the
+    invisible visible" shouldn't need you to remember to go and look.
+    """
+    now = time.time()
+    days_secs, per_site = [], {s: 0.0 for s in SITES}
+    for i in range(6, -1, -1):
+        key_day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+        tot = 0.0
+        for s in SITES:
+            v = float(_try(lambda s=s, k=key_day: r.get(f"usage:{k}:{s}"), 0) or 0)
+            per_site[s] += v
+            tot += v
+        days_secs.append((key_day, tot))
+    total = sum(t for _, t in days_secs)
+
+    prior = 0.0
+    for i in range(13, 6, -1):
+        key_day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+        for s in SITES:
+            prior += float(_try(lambda s=s, k=key_day: r.get(f"usage:{k}:{s}"), 0) or 0)
+
+    top = max(per_site.values()) or 1
+    sites = [{"label": SITES[s]["label"], "min": int(per_site[s] // 60),
+              "pct": round(100 * per_site[s] / top),
+              "color": SERIES_COLORS[i % len(SERIES_COLORS)]}
+             for i, s in enumerate(SITES) if per_site[s] >= 60]
+    sites.sort(key=lambda x: -x["min"])
+
+    cd = []
+    for i in range(6, -1, -1):
+        key_day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+        for raw in _try(lambda k=key_day: r.lrange(f"cooldown_events:{k}", 0, -1), []) or []:
+            try:
+                cd.append(float(raw.split()[0]))
+            except (ValueError, IndexError):
+                continue
+    cd.sort()
+    rapid = sum(1 for a, b in zip(cd, cd[1:]) if b - a <= RAPID_REPEAT_WINDOW)
+
+    busiest = max(days_secs, key=lambda x: x[1]) if days_secs else None
+    why = reflection_summary(7, now)
+    worth = worth_summary(7, now)
+    worst = min((row for row in worth["rows"] if row["n"] >= 2),
+                key=lambda x: x["pct"], default=None)
+
+    d = {
+        "range": time.strftime("%b %-d", time.localtime(now - 6 * 86400)) + " – "
+                 + time.strftime("%b %-d", time.localtime(now)),
+        "total_min": int(total // 60), "per_day_min": int(total // 60 // 7),
+        "delta_pct": None if prior <= 0 else round((total - prior) / prior * 100),
+        "delta_abs": 0 if prior <= 0 else abs(round((total - prior) / prior * 100)),
+        "sites": sites, "cooldowns": len(cd), "rapid": rapid,
+        "rapid_hours": RAPID_REPEAT_WINDOW // 3600,
+        "busiest_day": time.strftime("%A", time.strptime(busiest[0], "%Y-%m-%d")) if busiest and busiest[1] else "",
+        "busiest_min": int(busiest[1] // 60) if busiest else 0,
+        "why": why, "worth": worth,
+        "top_trigger": why["rows"][0]["label"] if why["rows"] else "",
+        "worst_trigger": worst["label"] if worst else "",
+        "worst_pct": worst["pct"] if worst else 0,
+    }
+    return render_template_string(DIGEST_PAGE, d=d)
+
+@app.route('/')
+def index():
+    """The dashboard's front door. Since the monitoring pages moved to the box's own
+    origin, "http://<box>:5000" is an address people actually type — and it used to 404."""
+    return redirect('/stats')
+
 @app.route('/stats')
 def stats():
     now = time.time()
-    order = ["reddit", "youtube", "spotify", "puzzmo"]   # fixed series order (matches template)
+    # Derived from SITES, not a second hand-maintained list. The old fixed list omitted
+    # "news", so every minute of news reading was charged to the shared bucket — draining
+    # it and triggering cooldowns — while the dashboard showed nothing. The headline
+    # number was wrong by however much news you read, which for a tool whose whole job is
+    # making usage visible is the worst place to be wrong. Add a site to SITES and it
+    # appears here automatically.
+    order = list(SITES)
+    series = [{"key": s, "label": SITES[s]["label"], "color": SERIES_COLORS[i % len(SERIES_COLORS)]}
+              for i, s in enumerate(order)]
 
     # Last 14 local days, oldest first.
     days = []
@@ -1313,10 +1614,11 @@ def stats():
     # Scale segments against the biggest day (leave 0-height segments out entirely).
     max_total = max(totals) or 1
     for d in days:
-        for s, css in (("reddit", "r"), ("youtube", "y"), ("spotify", "s"), ("puzzmo", "p")):
+        d["pcts"], d["mins"] = {}, {}
+        for s in order:
             pct = d["secs"][s] / max_total * 100
-            d[f"{css}_pct"] = round(pct, 1) if pct >= 1 else 0
-            d[f"{css}_min"] = int(d["secs"][s] // 60)
+            d["pcts"][s] = round(pct, 1) if pct >= 1 else 0
+            d["mins"][s] = int(d["secs"][s] // 60)
         d["total_min"] = int(d["total"] // 60)
 
     today_min = days[-1]["total_min"]
@@ -1381,11 +1683,35 @@ def stats():
             live_line = f"Heartbeat alive — last charged {ago}."
 
     why = reflection_summary()
-    return render_template_string(STATS_PAGE, why=why,
+    worth = worth_summary()
+    return render_template_string(STATS_PAGE, why=why, worth=worth, series=series,
         days=days, today_min=today_min, week_avg=week_avg,
         trend=trend, trend_cls=trend_cls, live_line=live_line, stale=stale, cd=cd)
 
-def daily_reset():
+def reset_day(now=None):
+    """Which day's reset the current moment belongs to. Before NIGHT_END_HOUR you are
+    still inside yesterday's day, so the reset that matters is yesterday's."""
+    now = now if now is not None else time.time()
+    lt = time.localtime(now)
+    if lt.tm_hour < NIGHT_END_HOUR:
+        return time.strftime("%Y-%m-%d", time.localtime(now - 86400))
+    return time.strftime("%Y-%m-%d", lt)
+
+def catch_up_reset(now=None):
+    """Run the daily reset if the scheduled one was missed.
+
+    The cron job only fires if the process is running at 07:00 — so a box that was off,
+    or restarting, silently skipped a day. That mattered most for `night_spent`, which
+    nothing else clears: a missed reset meant no night buffer that night. Called at
+    startup; idempotent, because it is keyed on which reset-day was last completed.
+    """
+    if r.get("last_reset") != reset_day(now):
+        print("[RESET] catching up a missed daily reset")
+        daily_reset(now)
+        return True
+    return False
+
+def daily_reset(now=None):
     pools = set()
     for site in SITES:
         token = r.get(f"active_token:{site}")
@@ -1400,6 +1726,7 @@ def daily_reset():
         r.delete(f"cooldown_secs:{p}")
         r.delete(f"last_heartbeat:{p}")
         r.delete(f"refilled_through:{p}")
+    r.set("last_reset", reset_day(now))
     print("[RESET] Daily budget reset complete")
 
 scheduler = BackgroundScheduler()
@@ -1454,11 +1781,58 @@ def _inject_ui_token():
     return {"ui_tok": _try(ui_token, ""), "feed_tok": _try(feed_token, ""),
             "mon": _try(monitor_origin, "")}
 
+# Swallowed exceptions, counted. Two of the twenty security findings were silent
+# fail-open in the enforcement path, and they were hard to find precisely because this
+# codebase had no way to say "something broke": _try() ate everything, the injected
+# heartbeat eats its own fetch errors, and print() was the only logging. This does not
+# change the failure behaviour — a missing /proc file on a non-Pi host should still
+# degrade to a dash — it just stops the failure being invisible.
+_ERRORS = Counter()          # "where:ExcType" -> count, since boot
+_LAST_ERROR = {}             # {"what": str, "when": epoch}
+
+def _note_error(exc):
+    tb = traceback.extract_tb(exc.__traceback__)
+    where = tb[-1].name if tb else "?"
+    _ERRORS[f"{where}:{type(exc).__name__}"] += 1
+    _LAST_ERROR.update(what=f"{where}: {type(exc).__name__}: {exc}"[:180], when=time.time())
+
 def _try(fn, default=None):
     try:
         return fn()
-    except Exception:
+    except Exception as exc:
+        _note_error(exc)
         return default
+
+def enforcement_status():
+    """Is time actually being charged? The dashboard's honest answer.
+
+    /stats has long carried a "last charged N ago" line, but it reads as a clean streak
+    just as easily as a broken pipeline, and you only see it if you go looking. This is
+    the same two clocks addon.py compares — pages loading during a live session vs. time
+    actually being charged — reported as a state you can act on.
+    """
+    now = time.time()
+    nav = _try(lambda: r.get("last_active_nav"))
+    charge = _try(lambda: r.get("last_charge"))
+    nav_ago = int(now - float(nav)) if nav else None
+    charge_ago = int(now - float(charge)) if charge else None
+    browsing = nav_ago is not None and nav_ago <= 5 * 60
+    dead = browsing and (charge_ago is None or charge_ago > 8 * 60)
+    return {"ok": not dead, "browsing": browsing,
+            "nav_ago": nav_ago, "charge_ago": charge_ago}
+
+def error_summary():
+    """Counts for /health. `proxy` comes from addon.py, which has its own swallowed
+    exceptions on the other side of the loopback call and is otherwise unobservable."""
+    proxy = 0
+    try:
+        proxy = int(r.get("proxy_errors") or 0)
+    except Exception:
+        pass                                  # never let the error reporter raise
+    return {"total": sum(_ERRORS.values()), "proxy": proxy,
+            "top": [{"what": k, "n": n} for k, n in _ERRORS.most_common(3)],
+            "last": _LAST_ERROR.get("what", ""),
+            "last_ago": int(time.time() - _LAST_ERROR["when"]) if _LAST_ERROR else None}
 
 def _first_line(path):
     with open(path) as f:
@@ -1650,6 +2024,8 @@ def collect_health(max_age=2.0):
         "power": _try(_power, {"ok": True}),
         "services": svc,
         "services_ok": all(v == "active" for v in svc.values()),
+        "errors": error_summary(),
+        "enforcement": enforcement_status(),
     }
     _HEALTH_CACHE.update(t=time.monotonic(), d=out)
     return out
@@ -1740,6 +2116,12 @@ HEALTH_PAGE = """
         .ndot.on{background:var(--go);box-shadow:0 0 0 3px rgba(62,207,124,.15)}
         .ndot.off{background:#3a3f4a}
         .svc{display:flex;flex-wrap:wrap;gap:7px;justify-content:center;margin-top:12px}
+        .enfbad{margin-top:12px;padding:11px 13px;border-radius:11px;background:#2a1416;
+            border:1px solid #7a1f1f;color:#ffd9d9;font-size:12.5px;line-height:1.5;text-align:center}
+        .enfbad b{color:#fff}
+        .errline{text-align:center;font-size:11.5px;color:var(--faint);margin-top:10px;line-height:1.5}
+        .errline b{color:var(--wait)}
+        .errlast{display:block;font-size:11px;color:#4a515c;word-break:break-word}
         .pill{font-size:11px;font-weight:600;padding:6px 10px;border-radius:999px;border:1px solid var(--line);
             display:flex;align-items:center;gap:6px;color:var(--muted)}
         .pill::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--faint)}
@@ -1860,6 +2242,23 @@ HEALTH_PAGE = """
       {% for name, state in d.services.items() %}
       <span class="pill {{ 'ok' if state=='active' else 'bad' }}" id="svc_{{ name }}">{{ name }}</span>
       {% endfor %}
+    </div>
+
+    {% if not d.enforcement.ok %}
+    <div class="enfbad">&#9888;&#65039; <b>Time is not being charged.</b> Pages are loading on a
+      gated site but nothing has been counted for {{ (d.enforcement.charge_ago // 60) if d.enforcement.charge_ago else 'ever' }}m.
+      The injected timer is not reporting &mdash; your budget is not draining.</div>
+    {% endif %}
+
+    <!-- Swallowed errors. Silence here used to mean "fine" and "broken" equally. -->
+    <div class="errline">
+      {%- if d.errors.total or d.errors.proxy -%}
+      <b>{{ d.errors.total }}</b> handled error{{ '' if d.errors.total == 1 else 's' }} in the app{% if d.errors.proxy %},
+      <b>{{ d.errors.proxy }}</b> in the proxy{% endif %} since boot.
+      {%- if d.errors.last %}<span class="errlast">Last: {{ d.errors.last }}</span>{% endif -%}
+      {%- else -%}
+      No handled errors since boot.
+      {%- endif -%}
     </div>
 
     <div class="foot"><a href="/stats">&larr; Usage stats</a><a href="/devices">Devices</a><a href="/health">Refresh</a></div>
@@ -2241,10 +2640,12 @@ DEVICES_PAGE = """
 # and frost the panels so the drifting hex softly shows through instead of vanishing behind
 # them. The animation is defined once (in BUDGET_PAGE) and reused, so there's no drift. ---
 BG_CANVAS = '<canvas id="bp-bg" aria-hidden="true"></canvas>'
-# The {% raw %}<script>…</script>{% endraw %} block from BUDGET_PAGE that owns #bp-bg (the
-# other raw/script block on that page is the reflection prompt — pick the bp-bg one).
-BG_SCRIPT = next(b for b in re.findall(r"\{% raw %\}\s*<script>.*?</script>\s*\{% endraw %\}",
-                                       BUDGET_PAGE, re.S) if "bp-bg" in b)
+# Defined once, above, and shared by reference. This used to re-read it back OUT of
+# BUDGET_PAGE with a regex over this module's own source, picking whichever {% raw %}
+# block happened to mention "bp-bg" — which would have silently selected the wrong block
+# the first time a second one mentioned it, and silently selected NOTHING (raising at
+# import) if the markup were reformatted.
+BG_SCRIPT = BG_BLOCK
 BG_STYLE = ("html,body{background:#070b0e!important}"
             "#bp-bg{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:block}"
             ".wrap{position:relative;z-index:1}"
@@ -2286,6 +2687,14 @@ if __name__ == '__main__':
     # Production WSGI server (waitress) instead of the Werkzeug dev server: more
     # robust for 24/7 operation, no dev-server warning.
     from waitress import serve
+
+    # Close a reset the cron job missed while the box was off. Deliberately here and not
+    # at module scope: this DELETES budget state, and `import app` happens in tests, in
+    # backup tooling and in a REPL — none of which should reset your day.
+    try:
+        catch_up_reset()
+    except Exception as e:
+        print(f"[RESET] catch-up failed: {e}")
 
     # Loopback is the critical listener — the addon reaches the gate there, so the
     # gate must never depend on the tailnet being up. The tailnet address is added as
