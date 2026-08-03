@@ -624,3 +624,98 @@ def test_a_healthy_box_reports_zero_handled_errors(rdb, monkeypatch):
     budget._iface("wlan0")
     assert budget.error_summary()["total"] == 0, budget.error_summary()["top"]
     assert budget._iface_speed("/sys/class/net/wlan0") is None
+
+
+# ---------- 14. the shadow meter (experiment, 2026-08-03) ----------
+
+def test_shadow_accrues_time_between_signs_of_life(rdb):
+    addon._SHADOW.clear()
+    t = time.time()
+    for i in range(6):                       # a request every 5s for 25s
+        addon.shadow_note("reddit", t + i * 5)
+    addon._shadow_flush("reddit", addon._SHADOW["reddit"])
+    day = time.strftime("%Y-%m-%d", time.localtime(t))
+    assert abs(float(rdb.get(f"shadow_usage:{day}:reddit")) - 25.0) < 0.01
+
+
+def test_shadow_ignores_gaps_that_mean_you_left(rdb):
+    """Same rule the heartbeat uses: a gap bigger than the cap is idleness, not use.
+    Without it, opening a tab on Monday and again on Friday would bill you four days."""
+    addon._SHADOW.clear()
+    t = time.time()
+    addon.shadow_note("reddit", t)
+    addon.shadow_note("reddit", t + 5)        # counted
+    addon.shadow_note("reddit", t + 5 + 3600) # an hour later: not counted
+    addon.shadow_note("reddit", t + 10 + 3600)
+    addon._shadow_flush("reddit", addon._SHADOW["reddit"])
+    day = time.strftime("%Y-%m-%d", time.localtime(t))
+    assert abs(float(rdb.get(f"shadow_usage:{day}:reddit")) - 10.0) < 0.01
+
+
+def test_shadow_never_touches_budget_state(rdb):
+    """The whole point of shadow mode. If this can move real state it isn't an
+    experiment, it's a change."""
+    rdb.set("spent:main", 123)
+    before = {k: rdb.get(k) for k in rdb.keys("*")}
+    addon._SHADOW.clear()
+    t = time.time()
+    for i in range(40):
+        addon.shadow_note("reddit", t + i)
+        addon.shadow_note("youtube", t + i)
+    # The property is "shadow-namespaced only", not one specific key — it also writes
+    # shadow_started. Anything outside that namespace would make this a change, not an
+    # experiment.
+    after = {k: rdb.get(k) for k in rdb.keys("*") if not k.startswith("shadow")}
+    assert after == before, "shadow mode wrote outside its own namespace"
+    assert float(rdb.get("spent:main")) == 123
+
+
+def test_shadow_survives_a_dead_redis(rdb, monkeypatch):
+    """A measurement must never be able to break the proxy."""
+    class Dead:
+        def __getattr__(self, _):
+            def f(*a, **k):
+                raise ConnectionError("redis down")
+            return f
+    monkeypatch.setattr(addon, "r", Dead())
+    addon._SHADOW.clear()
+    t = time.time()
+    for i in range(30):
+        addon.shadow_note("reddit", t + i)     # must not raise
+    assert addon._SHADOW["reddit"]["pending"] > 0   # held, not lost
+
+
+def test_shadow_banks_yesterday_before_rolling_over(rdb):
+    addon._SHADOW.clear()
+    t = time.time()
+    yesterday = t - 86400
+    addon.shadow_note("reddit", yesterday)
+    addon.shadow_note("reddit", yesterday + 5)
+    addon.shadow_note("reddit", t)             # new day -> flush the old one first
+    addon._shadow_flush("reddit", addon._SHADOW["reddit"])
+    yday = time.strftime("%Y-%m-%d", time.localtime(yesterday))
+    assert abs(float(rdb.get(f"shadow_usage:{yday}:reddit") or 0) - 5.0) < 0.01
+
+
+def test_shadow_writes_are_batched_not_per_request(rdb, monkeypatch):
+    """This runs on the proxy's hot path. A Redis round-trip per request is exactly the
+    kind of cost that starved the worker pool in F12."""
+    calls = []
+    real = addon.r.incrbyfloat
+    monkeypatch.setattr(addon.r, "incrbyfloat", lambda *a, **k: (calls.append(a), real(*a, **k))[1])
+    addon._SHADOW.clear()
+    t = time.time()
+    for i in range(100):                        # 100 requests, 1s apart = 99s of time
+        addon.shadow_note("reddit", t + i)
+    assert len(calls) <= 12, f"{len(calls)} redis writes for 100 requests"
+
+
+def test_stats_shows_the_comparison_only_once_there_is_data(rdb, client):
+    html = client.get("/stats").get_data(as_text=True)
+    assert "measuring the same time two ways" not in html
+    day = time.strftime("%Y-%m-%d")
+    rdb.set(f"usage:{day}:reddit", 600)
+    rdb.set(f"shadow_usage:{day}:reddit", 1200)
+    html = client.get("/stats").get_data(as_text=True)
+    assert "measuring the same time two ways" in html
+    assert "2.0&times;" in html or "2.0×" in html     # 20m passive vs 10m injected

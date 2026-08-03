@@ -631,6 +631,15 @@ STATS_PAGE = """
         .why-bar i.w-hi{background:var(--s1)}
         .worth-foot{margin-top:12px;font-size:12.5px;color:var(--muted);line-height:1.5}
         .worth-foot b{color:var(--fg)}
+        .sh-lede{font-size:12.5px;color:var(--muted);line-height:1.55;margin:0 0 14px}
+        .sh-tbl{width:100%;border-collapse:collapse;font-size:13px}
+        .sh-tbl th{color:var(--faint);font-weight:600;border-bottom:1px solid var(--line);
+            padding:5px 6px;text-align:right;font-size:11.5px}
+        .sh-tbl td{padding:6px;text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
+        .sh-tbl th:first-child,.sh-tbl td:first-child{text-align:left}
+        .sh-tbl tr.sh-tot td{color:var(--fg);font-weight:600;border-top:1px solid var(--line)}
+        .sh-note{font-size:12px;color:var(--faint);line-height:1.55;margin-top:12px}
+        .sh-note b{color:var(--muted)}
     </style>
 </head>
 <body>
@@ -722,6 +731,31 @@ STATS_PAGE = """
         <div class="cd-sub">No cooldowns logged yet. Once you hit the full-bucket wall a few times, the clustering pattern shows up here.</div>
         {% endif %}
     </div>
+
+    {% if shadow.any %}
+    <div class="card">
+        <h2>Experiment &mdash; measuring the same time two ways</h2>
+        <div class="sh-lede">The countdown is driven by a script injected into these sites.
+            That injection is the largest single risk in this project. The proxy is now also
+            measuring passively &mdash; watching the requests the sites make on their own, with
+            nothing injected. If the two columns track each other, the injection could go.</div>
+        <table class="sh-tbl">
+            <tr><th>Site</th><th>Injected timer</th><th>Passive</th><th>&times;</th></tr>
+            {% for row in shadow.rows %}
+            <tr><td>{{ row.label }}</td><td>{{ row.hb }}m</td><td>{{ row.sh }}m</td>
+                <td>{% if row.ratio %}{{ row.ratio }}&times;{% else %}&mdash;{% endif %}</td></tr>
+            {% endfor %}
+            <tr class="sh-tot"><td>All</td><td>{{ shadow.hb }}m</td><td>{{ shadow.sh }}m</td>
+                <td>{% if shadow.ratio %}{{ shadow.ratio }}&times;{% else %}&mdash;{% endif %}</td></tr>
+        </table>
+        <div class="sh-note">Last {{ shadow.days }} days &middot; running {{ shadow.running_days }}
+            day{{ '' if shadow.running_days == 1 else 's' }}. Passive is <b>expected to read high</b>:
+            background tabs, autoplaying video and prefetching all keep making requests while you
+            aren't looking, which is exactly what the injected timer excludes. A steady, boring
+            multiplier is the good outcome &mdash; it means passive plus a correction could replace
+            the injection. A number that jumps around means it can't.</div>
+    </div>
+    {% endif %}
 
     <div class="live {{ 'stale' if stale else '' }}">{{ live_line }}</div>
     <a class="back" href="/digest">This week, in one screen &rarr;</a>
@@ -1707,7 +1741,8 @@ def stats():
 
     why = reflection_summary()
     worth = worth_summary()
-    return render_page(STATS_PAGE, why=why, worth=worth, series=series,
+    shadow = shadow_comparison()
+    return render_page(STATS_PAGE, why=why, worth=worth, series=series, shadow=shadow,
         days=days, today_min=today_min, week_avg=week_avg,
         trend=trend, trend_cls=trend_cls, live_line=live_line, stale=stale, cd=cd)
 
@@ -1733,6 +1768,40 @@ def catch_up_reset(now=None):
         daily_reset(now)
         return True
     return False
+
+def shadow_comparison(days=7, now=None):
+    """Heartbeat minutes vs passively-observed minutes, per site, over `days`.
+
+    An experiment (started 2026-08-03). The heartbeat is the only reason injected
+    JavaScript runs on gated sites, and that injection is the biggest single item in this
+    project's threat model. addon.py now also measures the same thing passively, by
+    watching the requests those sites make on their own. If the two numbers track each
+    other, the injection could eventually go; if they don't, this says by how much.
+
+    Expect shadow to read HIGH: background tabs, autoplaying video and prefetching SPAs
+    all keep making requests while you are not looking, which is exactly what the
+    heartbeat excludes. The ratio is the finding, not the raw number.
+    """
+    now = now if now is not None else time.time()
+    rows, hb_tot, sh_tot = [], 0.0, 0.0
+    for site in SITES:
+        hb = sh = 0.0
+        for i in range(days):
+            key_day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+            hb += float(_try(lambda k=key_day, s=site: r.get(f"usage:{k}:{s}"), 0) or 0)
+            sh += float(_try(lambda k=key_day, s=site: r.get(f"shadow_usage:{k}:{s}"), 0) or 0)
+        hb_tot += hb
+        sh_tot += sh
+        if hb or sh:
+            rows.append({"label": SITES[site]["label"],
+                         "hb": int(hb // 60), "sh": int(sh // 60),
+                         "ratio": round(sh / hb, 1) if hb >= 60 else None})
+    rows.sort(key=lambda x: -max(x["hb"], x["sh"]))
+    started = _try(lambda: r.get("shadow_started"))
+    return {"rows": rows, "hb": int(hb_tot // 60), "sh": int(sh_tot // 60),
+            "ratio": round(sh_tot / hb_tot, 1) if hb_tot >= 60 else None,
+            "days": days, "any": bool(sh_tot),
+            "running_days": int((now - float(started)) // 86400) if started else 0}
 
 def daily_reset(now=None):
     pools = set()

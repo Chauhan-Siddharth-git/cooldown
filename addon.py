@@ -498,6 +498,73 @@ ENFORCEMENT_WARNING = (
 )
 
 
+# ---------------------------------------------------------------------------
+# SHADOW METER — an experiment, running in parallel with the injected heartbeat.
+#
+# The heartbeat is the only reason foreign JavaScript runs on Reddit, YouTube and the
+# rest, and that injection is the single largest item in this project's threat model
+# (see "code running inside other websites" in SECURITY.md). This measures the same
+# thing *passively*: the sites already talk to their own servers constantly while you
+# use them, and every one of those requests passes through this proxy. No injection
+# needed to watch them.
+#
+# It is deliberately site-agnostic — no hardcoded telemetry endpoints, because those
+# change without warning and would fail silently, which is the direction that has bitten
+# this project twice. Any request to a gated host counts as a sign of life, and time is
+# accrued between consecutive signs using the same gap cap the heartbeat uses, so the two
+# numbers are measured the same way and can be compared directly.
+#
+# Known bias, and the reason this runs in shadow rather than in production: a background
+# tab, an autoplaying video and a prefetching SPA all keep making requests when you are
+# not looking. The heartbeat excludes those by design. So the shadow number should read
+# HIGH, and *how much* higher is exactly what a week of parallel running is for.
+#
+# Nothing here can affect the budget: it writes only shadow_usage:* keys, and every
+# Redis call is wrapped so a measurement can never break the proxy.
+# ---------------------------------------------------------------------------
+SHADOW_MAX_GAP = 30.0        # same cap as the heartbeat: bigger gaps are idle, not use
+SHADOW_FLUSH_AFTER = 10.0    # accrue in memory, write once per 10 charged seconds
+_SHADOW = {}                 # site -> {"last": epoch, "pending": secs, "day": "Y-m-d"}
+
+
+def _shadow_day(now):
+    return time.strftime("%Y-%m-%d", time.localtime(now))
+
+
+def _shadow_flush(site, st):
+    if st["pending"] <= 0:
+        return
+    def write():
+        k = f"shadow_usage:{st['day']}:{site}"
+        r.incrbyfloat(k, st["pending"])
+        r.expire(k, 100 * 86400)
+        r.setnx("shadow_started", f"{time.time():.0f}")   # so the page can say "day 3 of 7"
+    if _try_redis(write, "failed") != "failed":
+        st["pending"] = 0.0
+
+
+def shadow_note(site, now):
+    """Record one sign of life for `site` and accrue the gap since the previous one.
+
+    Called on every request to a gated host. Kept in process memory and flushed in
+    batches, because this is the proxy's hot path and a Redis round-trip per request
+    would be a real cost — the thing this whole area of the code keeps getting wrong is
+    making the request path expensive (F12).
+    """
+    st = _SHADOW.setdefault(site, {"last": 0.0, "pending": 0.0, "day": _shadow_day(now)})
+    day = _shadow_day(now)
+    if day != st["day"]:                       # midnight: bank yesterday before rolling
+        _shadow_flush(site, st)
+        st["day"], st["last"] = day, 0.0
+    if st["last"]:
+        gap = now - st["last"]
+        if 0 < gap <= SHADOW_MAX_GAP:
+            st["pending"] += gap
+    st["last"] = now
+    if st["pending"] >= SHADOW_FLUSH_AFTER:
+        _shadow_flush(site, st)
+
+
 def _note_error(where, exc):
     """Publish swallowed proxy errors so /health can show them.
 
@@ -778,6 +845,11 @@ class BudgetAddon:
         site = site_for_host(host)
         if not site:
             return
+
+        # SHADOW METER (experiment, started 2026-08-03 — see shadow_note). Purely
+        # observational: it never reads or writes budget state, and removing the two
+        # lines below removes the feature entirely.
+        shadow_note(site, time.time())
 
         user_agent = flow.request.headers.get("User-Agent", "")
         is_regular_profile = "regular-profile" in user_agent

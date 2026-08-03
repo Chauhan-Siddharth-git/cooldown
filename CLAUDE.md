@@ -34,6 +34,21 @@ usually need checking against both.
   allowlist (`python3 deploy/gen_allow_hosts.py`) and restart the proxy. Three places
   must agree: `app.py`, `addon.py`, and the unit's `--allow-hosts`.
 
+## Running experiment: the shadow meter (started 2026-08-03)
+
+`addon.shadow_note()` measures foreground time a second way — passively, by watching the
+requests gated sites make on their own, with nothing injected. It writes only
+`shadow_usage:*`, never budget state, and `/stats` shows both columns side by side.
+
+The question it answers: **can the injected heartbeat go away?** That injection is the
+largest item in the threat model (see SECURITY.md), and if passive tracks it with a
+steady multiplier, passive plus a correction could replace it. Passive is *expected* to
+read high — background tabs and autoplaying video keep making requests.
+
+**It is an experiment with an end.** If it is still here months later with nobody having
+looked at the ratio, delete it: `shadow_note`, its two constants, the call site in
+`request()`, `shadow_comparison()` and the `/stats` card. Roughly 90 lines.
+
 ## Commands
 
 ```bash
