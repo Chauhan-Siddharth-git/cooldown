@@ -53,11 +53,19 @@ services:
     environment:
       - REDIS_HOST=redis          # reach Redis by its compose service name
       - TZ=${TZ:-UTC}             # local time for the nightly reset / curfew
+      # The dashboard (/stats, /health, /devices) is served on the BOX's own origin,
+      # never on the gated site's — that separation is what keeps a script on Reddit
+      # from reading your device list. There's no tailscale0 in this container, so
+      # bind all of its interfaces and let the port map below be the boundary.
+      - COOLDOWN_LISTEN=0.0.0.0:5000
+      - COOLDOWN_MONITOR_ORIGIN=http://127.0.0.1:5000
     ports:
       # Explicit proxy, bound to host loopback ONLY. Publishing on 0.0.0.0 would
       # expose an intercepting proxy to your LAN — don't. If you need other devices
       # to use it, that's the transparent/host setup, not this port map.
       - "127.0.0.1:8080:8080"
+      # The dashboard. Host loopback only, for the same reason.
+      - "127.0.0.1:5000:5000"
     volumes:
       - cooldown-ca:/home/app/.mitmproxy   # persist the CA so you re-trust only once
     restart: unless-stopped

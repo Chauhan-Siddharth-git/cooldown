@@ -50,6 +50,9 @@ services:
       - REDIS_HOST=redis
       - TZ=${TZ:-UTC}
       - TS_HOSTNAME=${TS_HOSTNAME:-cooldown-docker}
+      # This variant DOES have a tailscale0, so the app finds it by itself and binds
+      # loopback + the tailnet address. The dashboard is then reachable from the phone
+      # at http://<this container's tailnet IP>:5000, and the gate links there.
     # Powers needed to run Tailscale + act as a router. This is the privileged part.
     cap_add:
       - NET_ADMIN

@@ -320,30 +320,44 @@ def _probe(path, headers, method="GET"):
 
 SCRIPT = {"Sec-Fetch-Dest": "empty", "Sec-Fetch-Mode": "cors"}   # what fetch() sends
 NAV = {"Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate"}
+IFRAME = {"Sec-Fetch-Dest": "iframe", "Sec-Fetch-Mode": "navigate"}   # a navigation a script CAN cause
 
 @pytest.mark.parametrize("path", [
     "/budget/devices?fmt=json", "/budget/stats", "/budget/health?fmt=json",
-    "/budget/remaining", "/budget/feed",
+    "/budget/remaining", "/budget/boot-ack",
 ])
-def test_page_scripts_cannot_read_monitoring_pages(rdb, path):
-    """A malicious ad on a gated site is same-origin with our pages. Without this it
-    could read device names, tailnet IPs and usage history."""
-    assert _probe(path, SCRIPT) == 403
+@pytest.mark.parametrize("hdrs", [SCRIPT, NAV, IFRAME])
+def test_monitoring_pages_are_not_served_on_a_gated_origin(rdb, path, hdrs):
+    """They live on the box's own origin now. However the request is made — script,
+    navigation or iframe — this origin must never return their content, so there is
+    nothing left for a same-origin script to read."""
+    rdb.set("monitor_origin", "http://100.64.0.1:5000")
+    assert _probe(path, hdrs) == 302
 
 @pytest.mark.parametrize("path", ["/budget/devices", "/budget/stats", "/budget/health"])
-def test_real_navigation_is_allowed(rdb, path):
-    """Sec-Fetch-* are forbidden header names — a script cannot forge a navigation."""
-    assert _probe(path, NAV) != 403
+def test_moved_pages_redirect_to_the_box(rdb, path):
+    """A stale bookmark should land on the dashboard, not a dead end. Following the
+    redirect puts the browser cross-origin, which is the whole point."""
+    rdb.set("monitor_origin", "http://100.64.0.1:5000")
+    f = mkflow("www.reddit.com", path, resp=False, headers=NAV)
+    addon.BudgetAddon().request(f)
+    assert f.response.status_code == 302
+    assert f.response.headers["Location"] == "http://100.64.0.1:5000" + path[len("/budget"):]
+
+def test_moved_pages_404_when_the_box_origin_is_unknown(rdb):
+    """No tailnet address -> no origin to send them to. Still must not serve content."""
+    rdb.delete("monitor_origin")
+    assert _probe("/budget/devices", NAV) == 404
 
 def test_our_own_pages_poll_with_the_token(rdb):
-    rdb.set("ui_token", "SEKRIT")
+    rdb.set("feed_token", "SEKRIT")
     assert _probe("/budget/feed?t=SEKRIT", SCRIPT) != 403
     assert _probe("/budget/feed?t=WRONG", SCRIPT) == 403
     assert _probe("/budget/feed", SCRIPT) == 403
 
 def test_missing_token_does_not_open_the_door(rdb):
     """If no token is set, an empty ?t= must still be rejected, not treated as a match."""
-    rdb.delete("ui_token")
+    rdb.delete("ui_token", "feed_token")
     assert _probe("/budget/feed?t=", SCRIPT) == 403
 
 def test_gate_and_heartbeat_stay_reachable(rdb):

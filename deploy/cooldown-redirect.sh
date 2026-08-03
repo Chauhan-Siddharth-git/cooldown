@@ -44,7 +44,10 @@ q_dn(){ while iptables  -D FORWARD -i "$IF" -p udp --dport 443 -j REJECT 2>/dev/
 # potentially the public internet over v6. Interface-scoped so it covers both proxy
 # modes and IPv4+IPv6 with one rule set; transparent-redirected packets arrive on
 # tailscale0 so they still pass. ACCEPTs go at the top of INPUT, DROP at the end.
-PORTS=8080,8081
+# 5000 is the Flask app. It binds loopback + the tailscale0 address (never 0.0.0.0), so
+# this rule is the second layer rather than the only one — but it is what keeps the
+# dashboard off the LAN and off the public IPv6 address if that bind ever widens.
+PORTS=5000,8080,8081
 fw_up(){ for ipt in iptables ip6tables; do
           $ipt -C INPUT -i "$IF" -p tcp -m multiport --dports "$PORTS" -j ACCEPT 2>/dev/null || $ipt -I INPUT 1 -i "$IF" -p tcp -m multiport --dports "$PORTS" -j ACCEPT
           $ipt -C INPUT -i lo    -p tcp -m multiport --dports "$PORTS" -j ACCEPT 2>/dev/null || $ipt -I INPUT 2 -i lo    -p tcp -m multiport --dports "$PORTS" -j ACCEPT
@@ -59,7 +62,7 @@ fw_dn(){ for ipt in iptables ip6tables; do
 # rules with NO target, so they only count and fall through — they cannot affect routing.
 # :443 = TLS (encrypted), :80 + :53 = HTTP + DNS (the plaintext that leaves in the clear).
 # Created here (as root, at boot) rather than by the web app, so the app needs nothing
-# beyond a single read; see deploy/sudoers.d-budget-proxy.
+# beyond a single read; see deploy/sudoers.d-cooldown.
 acct_up(){
   iptables -t mangle -nL TRAFFIC_ACCT >/dev/null 2>&1 || iptables -t mangle -N TRAFFIC_ACCT
   for spec in "tcp 443" "tcp 80" "udp 53" "tcp 53"; do

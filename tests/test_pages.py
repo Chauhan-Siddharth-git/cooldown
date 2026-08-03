@@ -25,8 +25,27 @@ def test_day_enter_page(client, rdb, day):
     assert "Enter YouTube" in html
     assert "15:00" in html                       # full budget as the headline
     assert "Study mode" not in html         # study ships off
-    assert "/budget/stats" in html               # footer link
+    assert "/budget/stats" not in html           # the dashboard is NOT on this origin
     assert "Budget" not in html                  # renamed to Countdown
+
+
+def test_gate_links_to_the_dashboard_absolutely(client, rdb, day, monkeypatch):
+    """The footer must point at the box, not at a path on the gated site — that path
+    no longer exists there, and a relative link would put the dashboard back inside
+    the origin it was moved out of."""
+    monkeypatch.setattr(budget, "monitor_origin", lambda *a: "http://100.64.0.1:5000")
+    html = gate(client, "youtube")
+    assert 'href="http://100.64.0.1:5000/stats"' in html
+    assert 'href="http://100.64.0.1:5000/health"' in html
+
+
+def test_gate_hides_dashboard_links_when_the_box_has_no_address(client, rdb, day, monkeypatch):
+    """Better no link than one that hangs."""
+    monkeypatch.setattr(budget, "monitor_origin", lambda *a: "")
+    html = gate(client, "youtube")
+    assert "Usage stats" not in html
+    assert "Pi health" not in html
+    assert "Enter YouTube" in html               # the gate itself still works
 
 
 def test_day_site_spent_steers_no_cooldown(client, rdb, day):
