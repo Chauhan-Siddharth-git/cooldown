@@ -180,15 +180,27 @@ from that device — for any site, not only the gated ones.
    `*.pem`, `*.key`, `certs/`, `.mitmproxy/`. If exposed, regenerate and untrust the old one.
 3. **Gate your own devices only.** Cooldown is not a hosted service.
 
-**The monitoring pages are not readable by page scripts.** `/budget/stats`, `/health`,
-`/devices`, `/remaining` and `/feed` are served on the *gated site's* origin, which means
-any script on that site — including a malicious ad — is same-origin with them and could
-otherwise read your device names, tailnet addresses and usage history. They now require
-either a real navigation (`Sec-Fetch-Dest: document`; these are forbidden header names,
-so a script cannot forge them) or a token that only Cooldown's own pages carry, which a
-foreign script cannot obtain because the pages holding it can't be fetched by script
-either. The gate itself and `/heartbeat` stay open — the gate has to render in place of a
-site, and the injected heartbeat legitimately runs on the site's own pages.
+**The monitoring pages live on the box, not inside the sites you gate.** `/stats`,
+`/health` and `/devices` show your device names, tailnet addresses and usage history, so
+where they are served matters more than what guards them. They used to sit on the *gated
+site's* origin — meaning every script on that site, including any ad it loads, was
+same-origin with them and only a header check away from reading them. Two rounds of header
+checks narrowed that and never closed it.
+
+They now live on **the box's own address** (`http://<your-box>:5000`), reachable over
+Tailscale only, never through the proxy. A script on Reddit is now *cross-origin* with
+them, so the browser refuses to hand it a response and refuses to let it read the window —
+the same rule that stops a random tab reading your email. The gate page links to them
+directly, so you never type the address.
+
+What stays on the gated site's origin is only what has to be: the gate itself (it renders
+in place of the site), the session endpoints behind it, and `/feed` — two aggregate
+bytes-per-second numbers that drive the moving background, behind a token that unlocks
+nothing else. That's seven endpoints where it used to be twelve.
+
+Belt and braces: the app binds loopback plus your tailnet address only — never
+`0.0.0.0` — and the firewall drops port 5000 on every other interface, so neither your
+LAN nor a public IPv6 address can reach it even if that bind ever widened.
 
 **Network exposure.**
 
