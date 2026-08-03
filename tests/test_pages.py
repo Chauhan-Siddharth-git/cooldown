@@ -35,8 +35,11 @@ def test_gate_links_to_the_dashboard_absolutely(client, rdb, day, monkeypatch):
     the origin it was moved out of."""
     monkeypatch.setattr(budget, "monitor_origin", lambda *a: "http://100.64.0.1:5000")
     html = gate(client, "youtube")
-    assert 'href="http://100.64.0.1:5000/stats"' in html
-    assert 'href="http://100.64.0.1:5000/health"' in html
+    # ?from= is load-bearing, not decoration: the dashboard is on a different origin and
+    # has no other way to know where you tapped through from, so without it there is no
+    # way back to the gate.
+    assert 'href="http://100.64.0.1:5000/stats?from=youtube"' in html
+    assert 'href="http://100.64.0.1:5000/health?from=youtube"' in html
 
 
 def test_gate_hides_dashboard_links_when_the_box_has_no_address(client, rdb, day, monkeypatch):

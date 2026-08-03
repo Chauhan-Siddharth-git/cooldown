@@ -348,7 +348,7 @@ BUDGET_PAGE = """
           </div>
         </div>
         {% endif %}
-        <div class="foots">{% if mon %}<a class="foot" href="{{ mon }}/stats">Usage stats</a><a class="foot" href="{{ mon }}/health">Pi health</a>{% endif %}<button class="infobtn" id="bgInfoBtn" type="button" aria-label="What is the moving background?">i</button></div>
+        <div class="foots">{% if mon %}<a class="foot" href="{{ mon }}/stats?from={{ site }}">Usage stats</a><a class="foot" href="{{ mon }}/health?from={{ site }}">Pi health</a>{% endif %}<button class="infobtn" id="bgInfoBtn" type="button" aria-label="What is the moving background?">i</button></div>
         <div class="bgpanel" id="bgPanel">
             <h2>The moving background</h2>
             <p>A live picture of the web traffic passing through this box right now.</p>
@@ -612,6 +612,10 @@ STATS_PAGE = """
         td:first-child,th:first-child{text-align:left}
         tr.today td{color:var(--fg)}
         .back{display:block;text-align:center;margin-top:20px;font-size:12.5px;color:var(--faint);text-decoration:none}
+        /* The way out. The dashboard sits on a different origin from the gate, so this is
+           the only link that crosses back — it should not look like a footnote. */
+        .back.home{margin-top:22px;padding:11px;border:1px solid var(--line);border-radius:11px;
+            color:var(--fg);font-size:13.5px;font-weight:600}
         .cd-n{font-size:22px;font-weight:650;color:var(--fg);font-variant-numeric:tabular-nums}
         .cd-row{color:var(--muted);font-size:13px}
         .cd-sub{color:var(--faint);font-size:12.5px;margin-top:6px}
@@ -763,9 +767,10 @@ STATS_PAGE = """
     {% endif %}
 
     <div class="live {{ 'stale' if stale else '' }}">{{ live_line }}</div>
-    <a class="back" href="/digest">This week, in one screen &rarr;</a>
-    <a class="back" href="/health">Raspberry Pi health &rarr;</a>
-    <a class="back" href="/devices">Devices &rarr;</a>
+    <a class="back" href="/digest{{ qs }}">This week, in one screen &rarr;</a>
+    <a class="back" href="/health{{ qs }}">Raspberry Pi health &rarr;</a>
+    <a class="back" href="/devices{{ qs }}">Devices &rarr;</a>
+    {% if back_url %}<a class="back home" href="{{ back_url }}">&larr; Back to {{ back_label }}</a>{% endif %}
 </div>
 </body>
 </html>
@@ -1507,6 +1512,10 @@ DIGEST_PAGE = """
         .note b{color:var(--fg)}
         .empty{font-size:12.5px;color:var(--faint);line-height:1.5}
         .back{display:block;text-align:center;margin-top:20px;font-size:12.5px;color:var(--faint);text-decoration:none}
+        /* The way out. The dashboard sits on a different origin from the gate, so this is
+           the only link that crosses back — it should not look like a footnote. */
+        .back.home{margin-top:22px;padding:11px;border:1px solid var(--line);border-radius:11px;
+            color:var(--fg);font-size:13.5px;font-weight:600}
     </style>
 </head>
 <body>
@@ -1571,8 +1580,9 @@ DIGEST_PAGE = """
         {% endif %}
     </div>
 
-    <a class="back" href="/stats">Full usage stats &rarr;</a>
-    <a class="back" href="/health">Pi health</a>
+    <a class="back" href="/stats{{ qs }}">Full usage stats &rarr;</a>
+    <a class="back" href="/health{{ qs }}">Pi health</a>
+    {% if back_url %}<a class="back home" href="{{ back_url }}">&larr; Back to {{ back_label }}</a>{% endif %}
 </div>
 </body>
 </html>
@@ -1902,6 +1912,27 @@ def feed_token():
     gives no access to /devices, /health, /stats or /remaining.
     """
     return _persistent_token("feed_token")
+
+def back_to_gate():
+    """Where "back" goes from a dashboard page.
+
+    The dashboard lives on the box's own origin now, so it cannot know which site you
+    were looking at when you tapped through — different origin, no referrer worth
+    trusting. So the gate says: its links carry ?from=<site>, and that turns into a link
+    back to that site, which re-renders the gate if you are still gated.
+
+    `qs` is threaded through the links *between* dashboard pages so the trail survives
+    stats -> health -> devices and you can still get out at the end.
+    """
+    site = _try(lambda: request.args.get("from", ""), "")
+    if site not in SITES:
+        return {"back_url": "", "back_label": "", "qs": ""}
+    return {"back_url": SITES[site]["home"], "back_label": SITES[site]["label"],
+            "qs": f"?from={site}"}
+
+@app.context_processor
+def _inject_back():
+    return back_to_gate()
 
 @app.context_processor
 def _inject_ui_token():
@@ -2277,6 +2308,7 @@ HEALTH_PAGE = """
             background:transparent;color:#e0b9b9;font-size:13px;cursor:pointer}
         .foot{display:flex;gap:16px;justify-content:center;margin-top:20px}
         .foot a{font-size:12.5px;color:var(--faint);text-decoration:none}
+        .foot a.home{color:var(--fg);font-weight:600}   /* the only link off this origin */
     </style>
 </head>
 <body>
@@ -2403,7 +2435,7 @@ HEALTH_PAGE = """
       {%- endif -%}
     </div>
 
-    <div class="foot"><a href="/stats">&larr; Usage stats</a><a href="/devices">Devices</a><a href="/health">Refresh</a></div>
+    <div class="foot">{% if back_url %}<a class="home" href="{{ back_url }}">&larr; {{ back_label }}</a>{% endif %}<a href="/stats{{ qs }}">Usage stats</a><a href="/devices{{ qs }}">Devices</a><a href="/health{{ qs }}">Refresh</a></div>
 </div>
 {% raw %}
 <script>
@@ -2669,6 +2701,7 @@ DEVICES_PAGE = """
         .empty{color:var(--faint);font-size:13px;text-align:center;padding:20px}
         .foot{display:flex;gap:16px;justify-content:center;margin-top:20px}
         .foot a{font-size:12.5px;color:var(--faint);text-decoration:none}
+        .foot a.home{color:var(--fg);font-weight:600}   /* the only link off this origin */
     </style>
 </head>
 <body>
@@ -2728,7 +2761,7 @@ DEVICES_PAGE = """
       {% endfor %}
     </div>
 
-    <div class="foot"><a href="/health">&larr; Pi health</a><a href="/stats">Usage stats</a><a href="/devices">Refresh</a></div>
+    <div class="foot">{% if back_url %}<a class="home" href="{{ back_url }}">&larr; {{ back_label }}</a>{% endif %}<a href="/health{{ qs }}">Pi health</a><a href="/stats{{ qs }}">Usage stats</a><a href="/devices{{ qs }}">Refresh</a></div>
 </div>
 {% raw %}
 <script>

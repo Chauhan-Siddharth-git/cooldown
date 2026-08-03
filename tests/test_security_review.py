@@ -758,3 +758,36 @@ def test_comparison_says_it_is_too_early_on_day_one(rdb, client):
     rdb.set("shadow_started", f"{now - 3600:.0f}")   # one hour old
     assert budget.shadow_comparison()["settled"] is False
     assert "too early to draw conclusions" in client.get("/stats").get_data(as_text=True)
+
+
+# ---------- 15. you can always get back to the gate ----------
+
+@pytest.mark.parametrize("page", ["/stats", "/health", "/devices", "/digest"])
+def test_every_dashboard_page_offers_a_way_back(rdb, client, page):
+    """The dashboard moved to the box's own origin, and the 'back to the gate' link was
+    removed at the same time without replacement — leaving a dead end you could only
+    escape with the browser's back button."""
+    html = client.get(page + "?from=reddit").get_data(as_text=True)
+    assert 'href="https://www.reddit.com"' in html
+    assert "Reddit" in html
+
+
+@pytest.mark.parametrize("page", ["/stats", "/health", "/devices", "/digest"])
+def test_the_trail_survives_hopping_between_dashboard_pages(rdb, client, page):
+    """stats -> health -> devices must not lose the way out on the way."""
+    html = client.get(page + "?from=youtube").get_data(as_text=True)
+    for other in ("/stats", "/health", "/devices", "/digest"):
+        if other in html:
+            assert other + "?from=youtube" in html, f"{page} drops ?from on its {other} link"
+
+
+def test_no_back_link_when_you_arrived_directly(rdb, client):
+    """Typed the URL? There is nowhere to go 'back' to, so don't invent one."""
+    html = client.get("/stats").get_data(as_text=True)
+    assert 'class="back home"' not in html
+
+
+def test_a_bogus_from_parameter_is_ignored(rdb, client):
+    html = client.get("/stats?from=https://evil.example").get_data(as_text=True)
+    assert "evil.example" not in html
+    assert 'class="back home"' not in html
