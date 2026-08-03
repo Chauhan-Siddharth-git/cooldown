@@ -707,28 +707,47 @@ def test_shadow_writes_are_batched_not_per_request(rdb, monkeypatch):
     t = time.time()
     for i in range(100):                        # 100 requests, 1s apart = 99s of time
         addon.shadow_note("reddit", t + i)
-    assert len(calls) <= 12, f"{len(calls)} redis writes for 100 requests"
+    # Two writes per flush now (daily + hourly bucket), so ~20 for 100 requests. The
+    # property under test is "batched, not per-request", not an exact count.
+    assert len(calls) <= 25, f"{len(calls)} redis writes for 100 requests"
 
 
 def test_stats_hides_the_comparison_until_the_meter_has_run(rdb, client):
     assert "measuring the same time two ways" not in client.get("/stats").get_data(as_text=True)
 
 
-def test_comparison_only_counts_days_the_meter_was_running(rdb, client):
-    """The heartbeat has months of history; the meter starts today. Dividing one by the
-    other would show a terrifying ratio on day one that means nothing at all."""
+def _seed_hours(rdb, now, n, hb, sh, site="reddit"):
+    """Fill n whole hours before `now` with hb/sh seconds each."""
+    for i in range(1, n + 1):
+        lt = time.localtime(now - i * 3600)
+        d, h = time.strftime("%Y-%m-%d", lt), time.strftime("%H", lt)
+        if hb: rdb.set(f"usage_hour:{d}:{h}:{site}", hb)
+        if sh: rdb.set(f"shadow_hour:{d}:{h}:{site}", sh)
+
+
+def test_comparison_counts_only_hours_where_both_meters_ran(rdb, client):
+    """Day-granular keys cannot express "the meter started at 15:49". The first attempt
+    divided 15 hours of heartbeat by 3 hours of passive and reported 0.22x — an artefact
+    that looked exactly like a real finding."""
     now = time.time()
-    today = time.strftime("%Y-%m-%d", time.localtime(now))
-    old_day = time.strftime("%Y-%m-%d", time.localtime(now - 5 * 86400))
-    rdb.set(f"usage:{old_day}:reddit", 9999)          # long before the meter existed
-    rdb.set(f"usage:{today}:reddit", 600)
-    rdb.set(f"shadow_usage:{today}:reddit", 1200)
-    rdb.set("shadow_started", f"{now - 3 * 86400:.0f}")
+    # Heartbeat has history stretching back before the meter; passive only overlaps 20h.
+    _seed_hours(rdb, now, 40, hb=300, sh=0)
+    _seed_hours(rdb, now, 20, hb=300, sh=600)
+    rdb.set("shadow_started", f"{now - 21 * 3600:.0f}")
     c = budget.shadow_comparison()
-    assert c["hb"] == 10 and c["sh"] == 20, c        # the 9999 is outside the window
-    assert c["ratio"] == 2.0
+    assert c["ratio"] == 2.0, c            # only the overlapping hours, not the 40
     assert c["settled"] is True
     assert "2.0&times;" in client.get("/stats").get_data(as_text=True)
+
+
+def test_comparison_ignores_the_partial_hour_the_meter_started_in(rdb):
+    now = time.time()
+    _seed_hours(rdb, now, 3, hb=300, sh=300)
+    rdb.set("shadow_started", f"{now - 3 * 3600:.0f}")
+    c = budget.shadow_comparison()
+    # 3 hours seeded, meter started 3h ago -> only whole hours after that count
+    assert c["hb"] == c["sh"], c
+    assert c["ratio"] == 1.0
 
 
 def test_comparison_says_it_is_too_early_on_day_one(rdb, client):

@@ -753,11 +753,12 @@ STATS_PAGE = """
             Give it a few days.{% else %}Comparing the
             {{ shadow.days }} day{{ '' if shadow.days == 1 else 's' }} the meter has been running
             ({{ shadow.running }}).{% endif %}
-            Passive is <b>expected to read high</b>:
-            background tabs, autoplaying video and prefetching all keep making requests while you
-            aren't looking, which is exactly what the injected timer excludes. A steady, boring
-            multiplier is the good outcome &mdash; it means passive plus a correction could replace
-            the injection. A number that jumps around means it can't.</div>
+            Only whole hours where <i>both</i> meters were running are compared.
+            Two effects pull opposite ways: background tabs and autoplay make passive read
+            <b>high</b>, while <b>reading</b> makes it read <b>low</b> &mdash; a feed rendered in the
+            browser sends nothing to the network while you sit and scan it, so passive sees a gap
+            and discards it. A steady multiplier either way means passive plus a correction could
+            replace the injected timer. A number that jumps around means it can't.</div>
     </div>
     {% endif %}
 
@@ -1404,6 +1405,13 @@ def heartbeat():
             day = time.strftime("%Y-%m-%d")
             r.incrbyfloat(f"usage:{day}:{site}", gap)
             r.expire(f"usage:{day}:{site}", 100 * 86400)
+            # Same figure bucketed by hour, purely so the shadow-meter experiment can
+            # compare like with like. Daily totals cannot be aligned with a meter that
+            # started at 15:49 — the first comparison divided 15 hours of heartbeat by
+            # three hours of passive and produced 0.22x, which meant nothing at all.
+            hour_key = f"usage_hour:{day}:{time.strftime('%H')}:{site}"
+            r.incrbyfloat(hour_key, gap)
+            r.expire(hour_key, 14 * 86400)
             r.set("last_charge", now)
             if ph == "night":
                 # Charge the independent night buffer, not the day bucket. No cooldown
@@ -1782,38 +1790,55 @@ def shadow_comparison(days=7, now=None):
     watching the requests those sites make on their own. If the two numbers track each
     other, the injection could eventually go; if they don't, this says by how much.
 
-    Expect shadow to read HIGH: background tabs, autoplaying video and prefetching SPAs
-    all keep making requests while you are not looking, which is exactly what the
-    heartbeat excludes. The ratio is the finding, not the raw number.
+    The original prediction was that passive would read HIGH — background tabs,
+    autoplaying video and prefetching all keep requesting while you are not looking. Early
+    data suggests the opposite may dominate: modern feeds render client-side, so *reading*
+    generates no network traffic at all. Sit on one Reddit thread for two minutes and
+    passive sees a gap it must discard, while the heartbeat counts every second. If that
+    holds, passive undercounts exactly the behaviour this tool exists to catch, and it
+    cannot replace the injection. Either way the ratio is the finding, not the raw number.
     """
     now = now if now is not None else time.time()
     started = _try(lambda: r.get("shadow_started"))
-    # Only compare days the meter was actually running. Otherwise the heartbeat's week of
-    # history is divided by a meter that started this morning, and the ratio reads as a
-    # catastrophic under-count on day one — a number that looks like a bug and isn't.
-    since = float(started) if started else now
-    window = [i for i in range(days) if now - i * 86400 >= since - 86400]
+    if not started:
+        return {"rows": [], "hb": 0, "sh": 0, "ratio": None, "days": 0,
+                "any": False, "settled": False, "running": ""}
+    since = float(started)
+
+    # Compare only whole hours during which BOTH meters were running. Day-granular keys
+    # cannot express "the meter started at 15:49", and the first attempt at this divided
+    # 15 hours of heartbeat by 3 hours of passive and reported 0.22x — an artefact that
+    # looked exactly like a real finding. Start at the hour AFTER the meter came up, so
+    # neither side gets credit for a partial hour.
+    first = ((int(since) // 3600) + 1) * 3600
+    hours_list = []
+    t = first
+    while t < now - 3600 and (now - t) <= days * 86400:
+        hours_list.append(t)
+        t += 3600
+    hours_list = hours_list[-days * 24:]
+
     rows, hb_tot, sh_tot = [], 0.0, 0.0
     for site in SITES:
         hb = sh = 0.0
-        for i in window:
-            key_day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
-            hb += float(_try(lambda k=key_day, s=site: r.get(f"usage:{k}:{s}"), 0) or 0)
-            sh += float(_try(lambda k=key_day, s=site: r.get(f"shadow_usage:{k}:{s}"), 0) or 0)
+        for t in hours_list:
+            lt = time.localtime(t)
+            d, h = time.strftime("%Y-%m-%d", lt), time.strftime("%H", lt)
+            hb += float(_try(lambda: r.get(f"usage_hour:{d}:{h}:{site}"), 0) or 0)
+            sh += float(_try(lambda: r.get(f"shadow_hour:{d}:{h}:{site}"), 0) or 0)
         hb_tot += hb
         sh_tot += sh
         if hb >= 60 or sh >= 60:
             rows.append({"label": SITES[site]["label"],
                          "hb": int(hb // 60), "sh": int(sh // 60),
-                         "ratio": round(sh / hb, 1) if hb >= 300 else None})
+                         "ratio": round(sh / hb, 2) if hb >= 300 else None})
     rows.sort(key=lambda x: -max(x["hb"], x["sh"]))
-    hours = (now - since) / 3600 if started else 0
+    hours = len(hours_list)          # whole hours where both meters were running
     return {"rows": rows, "hb": int(hb_tot // 60), "sh": int(sh_tot // 60),
-            "ratio": round(sh_tot / hb_tot, 1) if hb_tot >= 300 else None,
-            "days": len(window), "any": bool(started),
-            "settled": hours >= 24,          # under a day, the ratio is noise
-            "running": (f"{hours:.0f} hour{'' if 0.5 <= hours < 1.5 else 's'}" if hours < 48
-                        else f"{hours/24:.0f} days")}
+            "ratio": round(sh_tot / hb_tot, 2) if hb_tot >= 300 else None,
+            "days": max(1, hours // 24), "any": True,
+            "settled": hours >= 12,          # under half a day the ratio is noise
+            "running": f"{hours} compared hour{'' if hours == 1 else 's'}"}
 
 def daily_reset(now=None):
     pools = set()

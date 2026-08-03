@@ -538,7 +538,12 @@ def _shadow_flush(site, st):
         k = f"shadow_usage:{st['day']}:{site}"
         r.incrbyfloat(k, st["pending"])
         r.expire(k, 100 * 86400)
-        r.setnx("shadow_started", f"{time.time():.0f}")   # so the page can say "day 3 of 7"
+        # Hourly too — the heartbeat records the same way, and only hour-aligned buckets
+        # let the two be compared over the exact window both were running.
+        hk = f"shadow_hour:{st['day']}:{time.strftime('%H')}:{site}"
+        r.incrbyfloat(hk, st["pending"])
+        r.expire(hk, 14 * 86400)
+        r.setnx("shadow_started", f"{time.time():.0f}")
     if _try_redis(write, "failed") != "failed":
         st["pending"] = 0.0
 
