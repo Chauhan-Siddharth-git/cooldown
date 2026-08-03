@@ -6,6 +6,7 @@ rather than just describing it.
 import os
 import re
 import sys
+import time
 
 import pytest
 import redis
@@ -280,3 +281,346 @@ def test_real_asset_hosts_still_match(host):
 
 def test_host_matching_ignores_port_and_case():
     assert addon.host_matches("I.Redd.It:443", addon.IGNORED_HOSTS)
+
+
+# ---------- 9. the three bugs found in the 2026-08 read-through ----------
+
+def test_every_gated_site_appears_in_the_dashboard(rdb, client):
+    """The old fixed series list omitted "news", so news minutes were charged to the
+    shared bucket — draining it, triggering cooldowns — and shown nowhere. Derived from
+    SITES now, so adding a site cannot silently fall out of the chart again."""
+    import time as _t
+    day = _t.strftime("%Y-%m-%d")
+    for site in budget.SITES:
+        rdb.set(f"usage:{day}:{site}", 600)          # 10 minutes each
+    html = client.get("/stats").get_data(as_text=True)
+    for site, cfg in budget.SITES.items():
+        assert cfg["label"] in html, f"{site} missing from the dashboard"
+    total = 10 * len(budget.SITES)
+    assert f"{total}m" in html, "the headline total must count every site"
+
+
+def test_dashboard_root_does_not_404(rdb, client):
+    """The monitoring pages live on the box's own origin now, so http://<box>:5000/ is
+    an address people type."""
+    resp = client.get("/")
+    assert resp.status_code in (301, 302)
+    assert "/stats" in resp.headers["Location"]
+
+
+def test_missed_daily_reset_is_caught_up_at_startup(rdb):
+    """A cron job only fires if the process is running at 07:00. A box that was off
+    skipped the day — and nothing but this reset ever clears night_spent."""
+    rdb.set("spent:main", 500)
+    rdb.set("night_spent:main", 300)
+    rdb.delete("last_reset")                          # as if never reset
+    assert budget.catch_up_reset() is True
+    assert float(rdb.get("spent:main") or 0) == 0
+    assert float(rdb.get("night_spent:main") or 0) == 0
+    assert rdb.get("last_reset") == budget.reset_day()
+
+
+def test_catch_up_is_idempotent(rdb):
+    budget.catch_up_reset()
+    rdb.set("spent:main", 400)
+    assert budget.catch_up_reset() is False           # already done today
+    assert float(rdb.get("spent:main")) == 400        # so it must not wipe a live session
+
+
+def test_reset_day_belongs_to_yesterday_before_the_reset_hour(rdb):
+    """At 03:00 you are still inside yesterday's budget day."""
+    import time as _t
+    lt = _t.localtime()
+    at_3am = _t.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 3, 0, 0, lt.tm_wday, lt.tm_yday, -1))
+    at_9am = _t.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 9, 0, 0, lt.tm_wday, lt.tm_yday, -1))
+    assert budget.reset_day(at_3am) != budget.reset_day(at_9am)
+
+
+def test_importing_app_does_not_reset_anything(rdb):
+    """catch_up_reset DELETES budget state, so it must live in __main__, not at module
+    scope where `import app` (tests, backup tooling, a REPL) would trigger it."""
+    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "app.py")).read()
+    body, _, main = src.partition("if __name__ == '__main__':")
+    assert "catch_up_reset()" not in body, "catch_up_reset is called at import time"
+    assert "catch_up_reset()" in main
+
+
+# ---------- 10. swallowed errors are counted, not silent ----------
+
+def test_try_counts_what_it_swallows(rdb):
+    budget._ERRORS.clear(); budget._LAST_ERROR.clear()
+    def boom():
+        raise ValueError("nope")
+    assert budget._try(boom, "fallback") == "fallback"     # behaviour unchanged
+    s = budget.error_summary()
+    assert s["total"] == 1
+    assert "ValueError" in s["top"][0]["what"]
+    assert "nope" in s["last"]
+
+
+def test_health_reports_proxy_side_errors_too(rdb):
+    """addon.py runs as a separate service whose stdout nobody reads; without this its
+    exceptions are strictly invisible."""
+    budget._ERRORS.clear(); budget._LAST_ERROR.clear()
+    addon._note_error("budget_handler", RuntimeError("proxy exploded"))
+    assert budget.error_summary()["proxy"] == 1
+    assert rdb.get("proxy_last_error").endswith("RuntimeError: proxy exploded")
+
+
+def test_error_reporting_never_raises(rdb, monkeypatch):
+    """A broken reporter must not break the proxy or the health page."""
+    class Dead:
+        def __getattr__(self, _):
+            def f(*a, **k):
+                raise ConnectionError("redis is down")
+            return f
+    monkeypatch.setattr(addon, "r", Dead())
+    addon._note_error("x", ValueError("y"))                # must not raise
+    monkeypatch.setattr(budget, "r", Dead())
+    assert budget.error_summary()["proxy"] == 0
+
+
+def _health_html(client, monkeypatch, errors):
+    """Render /health against a fixed payload. Collecting it for real is
+    environment-dependent — on a non-Pi host vcgencmd and /proc/device-tree/model are
+    genuinely missing, which is two swallowed errors before the test does anything."""
+    base = {"model": "Raspberry Pi", "cpu": {"pct": 0, "per_core": [], "load": [0, 0, 0], "cores": 1},
+            "temp_c": 40, "temp_hist": [40], "mem": {"used_mb": 1, "total_mb": 2, "pct": 50},
+            "disk": {"used_gb": 1, "total_gb": 2, "pct": 50}, "uptime": "1h",
+            "net": {"eth0": None, "tailscale0": None, "wlan0": None},
+            "power": {"ok": True}, "services": {}, "services_ok": True, "errors": errors,
+            "enforcement": {"ok": True, "browsing": False, "nav_ago": None, "charge_ago": None}}
+    monkeypatch.setattr(budget, "collect_health", lambda *a, **k: base)
+    return client.get("/health").get_data(as_text=True)
+
+
+def test_health_page_says_so_when_nothing_has_broken(rdb, client, monkeypatch):
+    html = _health_html(client, monkeypatch,
+                        {"total": 0, "proxy": 0, "top": [], "last": "", "last_ago": None})
+    assert "No handled errors since boot." in html
+
+
+def test_health_page_surfaces_app_and_proxy_errors(rdb, client, monkeypatch):
+    html = _health_html(client, monkeypatch,
+                        {"total": 3, "proxy": 2, "top": [], "last_ago": 5,
+                         "last": "_power: FileNotFoundError: vcgencmd"})
+    assert "handled errors in the app" in html
+    assert "in the proxy" in html
+    assert "vcgencmd" in html
+
+
+# ---------- 11. the enforcement dead-man's switch ----------
+
+def _live_session(rdb, site="reddit"):
+    rdb.set(f"active_token:{site}", "tok"); rdb.set("session:tok", "active")
+
+
+def test_navigation_during_a_live_session_is_recorded(rdb):
+    _live_session(rdb)
+    f = tflow.tflow(resp=False)
+    f.request.host, f.request.path = "www.reddit.com", "/r/python"
+    f.request.headers["Sec-Fetch-Dest"] = "document"
+    addon.BudgetAddon().request(f)
+    assert f.response is None                       # traffic still passes through
+    assert rdb.get("last_active_nav")               # ...and the moment is recorded
+
+
+def test_switch_fires_when_pages_load_but_nothing_is_charged(rdb):
+    """The exact F20 shape: a CSP blocks the injected script, so the site works, the
+    heartbeat never posts, and the budget silently stops draining."""
+    now = time.time()
+    rdb.set("last_active_nav", now - 30)            # browsing right now
+    rdb.set("last_charge", now - 3600)              # nothing charged for an hour
+    assert addon.enforcement_looks_dead() is True
+
+
+def test_switch_is_quiet_when_the_heartbeat_is_working(rdb):
+    now = time.time()
+    rdb.set("last_active_nav", now - 30)
+    rdb.set("last_charge", now - 20)
+    assert addon.enforcement_looks_dead() is False
+
+
+def test_switch_is_quiet_when_you_simply_are_not_browsing(rdb):
+    """A quiet week is not a broken pipeline. Idling does not navigate."""
+    now = time.time()
+    rdb.set("last_active_nav", now - 6 * 3600)
+    rdb.set("last_charge", now - 6 * 3600)
+    assert addon.enforcement_looks_dead() is False
+    rdb.delete("last_active_nav", "last_charge")
+    assert addon.enforcement_looks_dead() is False   # fresh install
+
+
+def test_warning_needs_no_javascript(rdb):
+    """It reports that the injected JavaScript is not running, so it must not need any.
+    A <div> with inline styles survives the CSP that caused the failure."""
+    assert "<script" not in addon.ENFORCEMENT_WARNING
+    assert "onerror" not in addon.ENFORCEMENT_WARNING and "onload" not in addon.ENFORCEMENT_WARNING
+    assert addon.ENFORCEMENT_WARNING.startswith("<div")
+
+
+def test_warning_is_injected_into_the_page_when_the_switch_fires(rdb):
+    _live_session(rdb)
+    now = time.time()
+    rdb.set("last_active_nav", now - 30); rdb.set("last_charge", now - 3600)
+    f = tflow.tflow(resp=True)
+    f.request.host, f.request.path = "www.reddit.com", "/r/python"
+    f.response.headers["content-type"] = "text/html"
+    f.response.text = "<html><body>page</body></html>"
+    addon.BudgetAddon().response(f)
+    assert "isn't counting this time" in f.response.text
+    assert f.response.text.index("role=\"alert\"") < f.response.text.index("bp-timewarn")
+
+
+def test_no_warning_when_enforcement_is_healthy(rdb):
+    _live_session(rdb)
+    now = time.time()
+    rdb.set("last_active_nav", now - 30); rdb.set("last_charge", now - 10)
+    f = tflow.tflow(resp=True)
+    f.request.host, f.request.path = "www.reddit.com", "/r/python"
+    f.response.headers["content-type"] = "text/html"
+    f.response.text = "<html><body>page</body></html>"
+    addon.BudgetAddon().response(f)
+    assert "isn't counting" not in f.response.text
+    assert "bp-timewarn" in f.response.text          # the normal heartbeat still injected
+
+
+def test_health_reports_a_dead_heartbeat(rdb, client, monkeypatch):
+    now = time.time()
+    rdb.set("last_active_nav", now - 30); rdb.set("last_charge", now - 3600)
+    assert budget.enforcement_status()["ok"] is False
+    html = _health_html(client, monkeypatch,
+                        {"total": 0, "proxy": 0, "top": [], "last": "", "last_ago": None})
+    assert "No handled errors" in html               # fixture forces enforcement ok
+
+
+# ---------- 12. the post-session check-in ----------
+
+def test_the_trigger_is_carried_through_the_session(rdb, client):
+    """Without the join, both halves are just tallies — the whole value is 'when I was
+    tired it was never worth it'."""
+    client.post("/enter?site=reddit", data={"trigger": "tired"})
+    assert rdb.get("session_trigger:main") == "tired"
+
+
+def test_session_end_queues_the_question_and_the_gate_asks_it(rdb, client, day):
+    """Asked on the screen you land on BECAUSE a session ended — here, the cap being
+    spent. Never on the way in: the gate must not become a toll booth."""
+    rdb.set("session_trigger:main", "bored")
+    rdb.set("spent:main", budget.SITES["reddit"]["budget_seconds"] + 1)
+    budget.queue_worth_prompt("reddit")
+    html = client.get("/budget?site=reddit").get_data(as_text=True)
+    assert "Was it worth it?" in html
+
+
+def test_the_gate_never_asks_on_the_way_in(rdb, client, day, session):
+    """A live session with budget left renders Enter — no question there."""
+    budget.queue_worth_prompt("reddit")
+    html = client.get("/budget?site=reddit").get_data(as_text=True)
+    assert "Enter Reddit" in html
+    assert "Was it worth it?" not in html
+
+
+def test_the_gate_does_not_ask_when_nothing_ended(rdb, client, day):
+    html = client.get("/budget?site=reddit").get_data(as_text=True)
+    assert "Was it worth it?" not in html
+
+
+def test_answering_records_it_against_the_trigger(rdb, client, day):
+    rdb.set("session_trigger:main", "tired")
+    budget.queue_worth_prompt("reddit")
+    client.post("/worth?site=reddit", data={"v": "no"})
+    s = budget.worth_summary()
+    assert s["total"] == 1 and s["yes"] == 0
+    assert s["rows"][0]["key"] == "tired" and s["rows"][0]["pct"] == 0
+
+
+def test_a_second_tap_cannot_invent_data(rdb, client, day):
+    budget.queue_worth_prompt("reddit")
+    assert budget.log_worth("yes") is True
+    assert budget.log_worth("yes") is False        # nothing pending any more
+    assert budget.worth_summary()["total"] == 1
+
+
+def test_a_bogus_verdict_is_ignored(rdb):
+    budget.queue_worth_prompt("reddit")
+    assert budget.log_worth("maybe") is False
+    assert budget.log_worth("<script>") is False
+    assert budget.worth_summary()["total"] == 0
+
+
+def test_every_heartbeat_session_end_queues_the_prompt(rdb):
+    """Four code paths end a budgeted session; a prompt queued at only some of them
+    would quietly bias the data toward whichever cap you hit."""
+    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "app.py")).read()
+    hb = src[src.index("def heartbeat("):src.index("@app.route('/remaining')")]
+    ends = hb.count('r.delete(f"session:{token}")')
+    assert ends == 4, f"heartbeat now has {ends} session-end paths"
+    assert hb.count("queue_worth_prompt(site, now)") == ends
+
+
+def test_stats_pairs_the_reason_with_the_outcome(rdb, client):
+    day_key = time.strftime("%Y-%m-%d")
+    for t, v in [("tired", "no"), ("tired", "no"), ("need", "yes")]:
+        rdb.rpush(f"worth:{day_key}", f"{time.time():.0f} {t} {v}")
+    html = client.get("/stats").get_data(as_text=True)
+    assert "was it worth it?" in html
+    assert "Tired" in html and "Actually needed it" in html
+
+
+# ---------- 13. the weekly digest ----------
+
+def test_digest_renders_with_no_data_at_all(rdb, client):
+    """A fresh install must not 500 on an empty week."""
+    resp = client.get("/digest")
+    assert resp.status_code == 200
+    assert "Nothing charged this week" in resp.get_data(as_text=True)
+
+
+def test_digest_summarises_the_week(rdb, client):
+    now = time.time()
+    for i in range(7):                                  # 20 min/day on reddit, 10 on news
+        k = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+        rdb.set(f"usage:{k}:reddit", 1200)
+        rdb.set(f"usage:{k}:news", 600)
+    html = client.get("/digest").get_data(as_text=True)
+    assert "210m" in html                               # 30 min x 7 days
+    assert "Reddit" in html and "News" in html          # every gated site, not a fixed four
+
+
+def test_digest_reports_cluster_not_just_volume(rdb, client):
+    now = time.time()
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    rdb.rpush(f"cooldown_events:{day}", f"{now - 7200:.0f} reddit", f"{now - 3600:.0f} reddit")
+    html = client.get("/digest").get_data(as_text=True)
+    assert "2</b> cooldown" in html
+    assert "1</b> came within" in html                  # the rapid repeat is the signal
+
+
+def test_digest_is_box_origin_only(rdb):
+    """It reads a week of behavioural history — it must not be reachable from a gated
+    site any more than /stats is."""
+    assert "/digest" in addon.MOVED_TO_BOX
+    rdb.set("monitor_origin", "http://100.64.0.1:5000")
+    for hdrs in (FETCH, IFRAME, NAV):
+        assert probe("/budget/digest", hdrs).status_code == 302
+
+
+def test_a_healthy_box_reports_zero_handled_errors(rdb, monkeypatch):
+    """wlan0 with no association returns EINVAL for `speed`; tunnels report -1. Both are
+    "not applicable". If they land in the counter, the health line permanently reads
+    "1 handled error" on a perfectly healthy Pi and everyone learns to ignore it."""
+    budget._ERRORS.clear()
+    def fake_first_line(path):
+        if path.endswith("/speed"):
+            raise OSError(22, "Invalid argument")     # the wlan0 case, on a real Pi
+        if path.endswith("/operstate"):
+            return "down"
+        return "0"                                    # rx_bytes / tx_bytes
+    monkeypatch.setattr(budget, "_first_line", fake_first_line)
+    monkeypatch.setattr(budget.os.path, "exists", lambda p: True)
+    budget._iface("wlan0")
+    assert budget.error_summary()["total"] == 0, budget.error_summary()["top"]
+    assert budget._iface_speed("/sys/class/net/wlan0") is None
