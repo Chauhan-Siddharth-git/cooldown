@@ -791,3 +791,27 @@ def test_a_bogus_from_parameter_is_ignored(rdb, client):
     html = client.get("/stats?from=https://evil.example").get_data(as_text=True)
     assert "evil.example" not in html
     assert 'class="back home"' not in html
+
+
+# ---------- 16. found by walking every link, not by reading the code ----------
+
+def test_the_moved_page_redirect_carries_the_query_string(rdb):
+    """Dropping it meant ?from=reddit was lost (landing you on a page with no way back)
+    and ?fmt=json silently returned HTML to something expecting JSON."""
+    rdb.set("monitor_origin", "http://100.64.0.1:5000")
+    for path, expect in [("/budget/stats?from=reddit", "http://100.64.0.1:5000/stats?from=reddit"),
+                         ("/budget/health?fmt=json", "http://100.64.0.1:5000/health?fmt=json"),
+                         ("/budget/devices", "http://100.64.0.1:5000/devices")]:
+        resp = probe(path, NAV)
+        assert resp.status_code == 302
+        assert resp.headers["Location"] == expect, path
+
+
+@pytest.mark.parametrize("page", ["/stats", "/health", "/devices", "/digest"])
+def test_every_dashboard_page_looks_like_the_same_product(rdb, client, page):
+    """/digest was added after _add_bg and skipped it, so it alone had no ambient
+    background and no frosted panels."""
+    html = client.get(page).get_data(as_text=True)
+    assert 'id="bp-bg"' in html, f"{page} has no background canvas"
+    assert "backdrop-filter" in html, f"{page} panels are not frosted"
+    assert 'name="cd-feed"' in html, f"{page} cannot poll the traffic feed"

@@ -758,8 +758,12 @@ class BudgetAddon:
             # an unreadable response and a window it cannot look into.
             if sub in MOVED_TO_BOX:
                 origin = r.get("monitor_origin") or ""
+                # Carry the query string across. Without it "?from=reddit" is dropped and
+                # the page you land on has no way back, and "?fmt=json" silently returns
+                # HTML to something expecting JSON.
+                target = f"{origin}{sub}" + (f"?{parts.query}" if parts.query else "")
                 flow.response = (
-                    http.Response.make(302, b"", {"Location": f"{origin}{sub}",
+                    http.Response.make(302, b"", {"Location": target,
                                                   "Cache-Control": "no-store"})
                     if origin else
                     http.Response.make(404, b"the dashboard now lives on the box itself",

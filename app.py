@@ -2842,6 +2842,9 @@ def _add_bg(page, full=True, token="{{ ui_tok }}", feed="/feed"):
         page = page.replace("</body>", BG_SCRIPT + "\n</body>", 1)
     return page
 
+# /digest was added later and never went through this, so it was the one dashboard page
+# with no ambient background and no frosted panels — visibly a different product.
+DIGEST_PAGE = _add_bg(DIGEST_PAGE)
 STATS_PAGE = _add_bg(STATS_PAGE)
 HEALTH_PAGE = _add_bg(HEALTH_PAGE)
 DEVICES_PAGE = _add_bg(DEVICES_PAGE)
