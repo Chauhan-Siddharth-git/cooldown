@@ -217,8 +217,8 @@ Miss #3 and the site tunnels through un-intercepted. After editing, rebuild:
 | `permission denied ... /var/run/docker.sock` | Your user isn't in the `docker` group. `sudo usermod -aG docker $USER`, then **log out and back in** (a new terminal alone isn't enough). Or prefix commands with `sudo`. |
 | `docker compose: unknown command` or `unknown shorthand flag: 'd'` | The Compose plugin isn't installed. Linux: `sudo apt install docker-compose-v2`. Mac/Windows: use Docker Desktop. |
 | `docker compose logs` shows nothing | If `docker compose ps` says the container is **Up**, it's just fine — nothing has needed to log yet. (Output is unbuffered, so real activity *will* show.) If it says **Exited/Restarting**, the log will have the error. |
-| Browser shows a **certificate warning** on a gated site | The CA isn't installed/trusted. Redo step 3 — visit `http://mitm.it` *through the proxy* and install the cert as trusted. Firefox has its **own** cert store (Settings → Certificates), separate from the OS. |
-| A gated site loads normally instead of the gate | The browser isn't actually using the proxy (recheck step 2), **or** you have an active session — you'd get the gate again after the budget runs out or you restart. |
+| Browser shows a **certificate warning** on a gated site | The CA isn't installed/trusted. Redo step 4 — visit `http://mitm.it` *through the proxy* and install the cert as trusted. Firefox has its **own** cert store (Settings → Certificates), separate from the OS. |
+| A gated site loads normally instead of the gate | The browser isn't actually using the proxy (recheck step 3), **or** you have an active session — you'd get the gate again after the budget runs out or you restart. |
 | `curl` through the proxy returns `503` / no gate | Not a bug — the gate only fires on a real *browser navigation*. See [Verifying from the command line](#verifying-from-the-command-line). |
 
 **Start fresh** if things get weird: `docker compose down -v` (wipes data **and** the
@@ -235,7 +235,20 @@ browser is still pointed at `127.0.0.1:8080`, the browser is aimed at a port wit
 behind it and stops loading anything at all. That's the one way to make this annoying, and
 it's easy to avoid.
 
-**1 · Unset the browser proxy** — back to "no proxy" / "use system settings". Do this first.
+**1 · Unset the browser proxy.** Reverse whatever you did in Quick start step 3 — it lives
+in a different place depending on the browser:
+
+- **Firefox:** *Settings → search "proxy" → Network Settings → Settings →* choose **"No
+  proxy"** (or "Use system proxy settings", if that's what it was before you started).
+- **macOS** (Chrome/Safari): *System Settings → Network → (your connection) → Details →
+  Proxies →* switch **off** both **Web Proxy (HTTP)** and **Secure Web Proxy (HTTPS)**.
+- **Windows** (Chrome/Edge): *Settings → Network & Internet → Proxy → Manual proxy setup →*
+  turn **Use a proxy server** off.
+- **Linux** (Chrome, GNOME): *Settings → Network → Network Proxy →* **Off**.
+
+Quick way to confirm: leave the container running and load a gated site. If it loads
+normally instead of showing the gate, the browser is no longer going through Cooldown and
+it's safe to remove.
 
 **2 · Untrust the certificate.** The step people skip, and the one that matters: a trusted
 CA you no longer control is exactly the risk [SECURITY.md](SECURITY.md) is about.

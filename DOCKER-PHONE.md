@@ -177,9 +177,19 @@ about, and it outlives the container by years.
 - **Android:** Settings → Security → Encryption & credentials → Trusted credentials →
   **User** tab → `mitmproxy` → Remove.
 
-**3 · If you also gated this computer's browser** (step 7): unset the proxy
-`127.0.0.1:8081` and remove the CA from the browser/OS store — the full list is in
-[DOCKER.md](DOCKER.md#removing-it).
+**3 · If you also gated this computer's browser** — that's the optional **step 7 of
+[Setup](#setup) on this page**, the one that pointed a browser at `127.0.0.1:8081` — undo
+that too:
+
+- **Unset the browser proxy.** Firefox: *Settings → search "proxy" → Network Settings →
+  Settings →* **"No proxy"**. Chrome/Safari/Edge use the *system* proxy instead — macOS:
+  *System Settings → Network → (connection) → Details → Proxies →* turn off **Web Proxy**
+  and **Secure Web Proxy**; Windows: *Settings → Network & Internet → Proxy →* turn **Use a
+  proxy server** off.
+- **Remove the CA** from that browser's store — per-browser paths are in
+  [DOCKER.md → Removing it](DOCKER.md#removing-it).
+
+Skip this whole step if you only ever gated the phone.
 
 **4 · Remove the node from your tailnet.** [Admin console](https://login.tailscale.com/admin/machines)
 → Machines → `cooldown-docker` → **Remove**. Then Settings → Keys → **revoke the auth key**
