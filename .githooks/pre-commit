@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# Pre-commit guard for the mistake classes this project has actually made.
+#
+# Enable once, per clone:
+#     git config core.hooksPath .githooks
+# Skip a single commit (rarely the right answer):
+#     git commit --no-verify
+#
+# Two parts:
+#   1. Pattern rules, checked ONLY against lines this commit ADDS — so existing code
+#      never nags you, and the rules stay cheap enough to leave switched on.
+#   2. tests/test_invariants.py, which enforces the structural properties a grep can't
+#      see (every Flask route classified, every reachable mutating endpoint CSRF-checked,
+#      no request path escaping the loopback call).
+#
+# Every rule below maps to a finding in SECURITY-CASESTUDY.md. None of them are generic
+# lint: a stock scanner found none of these, and these would have caught four repeats.
+# NB: deliberately NOT `pipefail`. Every rule below ends in `grep -q`, which exits on
+# the first match and SIGPIPEs whatever is upstream — under pipefail that reads back as
+# "no match", so rules would silently stop firing depending on where the match landed.
+# This hook caught that in its own positive-control run, which is the argument for
+# having one.
+set -u
+
+RED=$'\e[31m'; YEL=$'\e[33m'; GRN=$'\e[32m'; DIM=$'\e[2m'; B=$'\e[1m'; N=$'\e[0m'
+[ -t 1 ] || { RED=""; YEL=""; GRN=""; DIM=""; B=""; N=""; }
+
+fails=0
+note() { printf "  ${RED}✗${N} ${B}%s${N}\n    %s\n    ${DIM}%s${N}\n" "$1" "$2" "$3"; fails=$((fails+1)); }
+# Advisory: worth a second look, not worth blocking a commit. A hook that cries wolf
+# gets switched off, and then none of the rules above run either.
+warn() { printf "  ${YEL}!${N} ${B}%s${N}\n    %s\n    ${DIM}%s${N}\n" "$1" "$2" "$3"; }
+
+staged() { git diff --cached --name-only --diff-filter=ACM -- "$@" 2>/dev/null; }
+# Lines this commit adds, for one file.
+added() { git diff --cached -U0 --diff-filter=ACM -- "$1" | sed -n 's/^+\([^+]\)/\1/p;s/^+$//p'; }
+
+# --- 1. substring host matching (F4, then F18 six lines away) ----------------
+for f in $(staged '*.py'); do
+  if added "$f" | grep -vE '^\s*#' | grep -qE '\bin +host\b'; then
+    note "substring host matching in $f" \
+         "$(added "$f" | grep -nE '\bin +host\b' | head -2 | tr '\n' ' ')" \
+         "F4/F18 — route every host comparison through addon.host_matches()."
+  fi
+done
+
+# --- 2. a new proxy -> Flask hop (F13) ---------------------------------------
+# Every one of these builds a URL from a browser-supplied path. Rare enough that a
+# prompt is cheap, dangerous enough that it should never be added on autopilot.
+if added addon.py | grep -qE '\breq\.(get|post|put|delete)\('; then
+  warn "new proxy->Flask call in addon.py" \
+       "$(added addon.py | grep -nE '\breq\.(get|post|put|delete)\(' | head -1)" \
+       "F13 — the path must be validated against BUDGET_ENDPOINTS before it reaches a URL."
+fi
+
+# --- 3. all-interfaces bind (F1) ---------------------------------------------
+for f in $(staged '*.py' '*.sh' '*.service'); do
+  case "$f" in tests/*) continue ;; esac
+  if added "$f" | grep -vE '^\s*(#|//)' | grep -qE '0\.0\.0\.0' ; then
+    note "all-interfaces bind in $f" \
+         "0.0.0.0 appears in an added line" \
+         "F1 — bind loopback + tailscale0, or set COOLDOWN_LISTEN deliberately (Docker only)."
+  fi
+done
+
+# --- 4. a launcher that skips the decrypt allowlist (F16) --------------------
+for f in $(staged '*.sh' '*.service' '*.yml'); do
+  # Comments are stripped first: the comment in start.sh explaining F16 mentions
+  # --allow-hosts, and was quietly satisfying this rule for the file it is about.
+  body="$(grep -vE '^\s*#' "$f" 2>/dev/null)"
+  # An explicit, greppable exemption beats teaching people --no-verify: it stays in
+  # the diff, carries a reason, and disables one rule for one file.
+  if printf '%s\n' "$body" | grep -q 'mitmdump' \
+     && ! printf '%s\n' "$body" | grep -q -- '--allow-hosts' \
+     && ! grep -q 'hook-exempt: no-allow-hosts' "$f" 2>/dev/null; then
+    note "mitmdump without --allow-hosts in $f" \
+         "this launcher would decrypt every site, not just the gated ones" \
+         "F16 — the convenient path is the real configuration. Use deploy/gen_allow_hosts.py."
+  fi
+done
+
+# --- 5. privileged install staged through a predictable /tmp path (F17) ------
+for f in $(staged '*.sh'); do
+  if added "$f" | grep -qE '(scp|install|cp).*/tmp/[A-Za-z0-9_.*-]*' ; then
+    note "predictable /tmp path in $f" \
+         "$(added "$f" | grep -nE '(scp|install|cp).*/tmp/' | head -1)" \
+         "F17 — /tmp is world-writable; stage in mktemp -d before any sudo install."
+  fi
+done
+
+# --- 6. template built from runtime data (SSTI) ------------------------------
+for f in $(staged '*.py'); do
+  if added "$f" | grep -E 'render_template_string\(' | grep -qvE 'render_template_string\([A-Z_]+[,)]'; then
+    note "render_template_string with a non-constant in $f" \
+         "the template itself must be a module-level constant" \
+         "Anything else is server-side template injection."
+  fi
+done
+
+# --- 7. secrets ---------------------------------------------------------------
+if staged '*' | grep -qE '\.(pem|key|p12|crt)$'; then
+  note "key material staged" "$(staged '*' | grep -E '\.(pem|key|p12|crt)$' | tr '\n' ' ')" \
+       "The CA never leaves the box. See RECOVERY.md if it already has."
+fi
+for f in $(staged '*'); do
+  if added "$f" 2>/dev/null | grep -qE 'tskey-auth-[A-Za-z0-9]|-----BEGIN [A-Z ]*PRIVATE KEY'; then
+    note "credential in $f" "a Tailscale auth key or private key appears in an added line" \
+         "Put it in .env (gitignored). Rotate it — it is in your reflog either way."
+  fi
+done
+
+# --- 8. the structural invariants a grep cannot see --------------------------
+if git diff --cached --name-only --diff-filter=ACM | grep -qE '^(app|addon)\.py$'; then
+  if redis-cli ping >/dev/null 2>&1; then
+    printf "  ${DIM}· running invariant tests…${N}\n"
+    PY=./venv/bin/python; [ -x "$PY" ] || PY=python3
+    if ! out="$("$PY" -m pytest tests/test_invariants.py -q 2>&1)"; then
+      printf "  ${RED}✗${N} ${B}invariant tests failed${N}\n"
+      printf "%s\n" "$out" | tail -20 | sed 's/^/    /'
+      printf "    ${DIM}A broken invariant means a decision was skipped, not that the test is wrong.${N}\n"
+      fails=$((fails+1))
+    fi
+  else
+    printf "  ${YEL}!${N} redis is down — invariant tests skipped. ${DIM}Run them before you push.${N}\n"
+  fi
+fi
+
+if [ "$fails" -gt 0 ]; then
+  printf "\n${RED}${B}%d check(s) failed — commit aborted.${N}\n" "$fails"
+  printf "${DIM}Each maps to a finding in SECURITY-CASESTUDY.md. Override with --no-verify.${N}\n\n"
+  exit 1
+fi
+printf "  ${GRN}✓${N} security checks passed\n"
+exit 0
