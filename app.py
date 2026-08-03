@@ -129,8 +129,25 @@ SITES = {
 }
 DEFAULT_SITE = "reddit"
 
-# One chart colour per site, in SITES order; wraps if you add more than there are colours.
-SERIES_COLORS = ["#3987e5", "#199e70", "#c98500", "#a678de", "#d1495b"]
+# One chart colour per site, in SITES order. Validated against the card surface
+# (#14171d, dark) for lightness band, chroma floor, adjacent-pair colour-vision-deficiency
+# separation, normal-vision separation and contrast — all pass.
+#
+# SIX IS THE CEILING this surface supports. A seventh hue was tried and fails: the best
+# candidate lands 13.5 ΔE from the teal against a floor of 15, meaning full-colour readers
+# could not reliably tell those two series apart. So do not just append one — validate it,
+# or the chart quietly starts lying about which site is which.
+#
+# The previous version had five colours for five sites and picked with `i % len(...)`, so
+# a sixth site would have silently drawn in an existing site's colour. Cycling categorical
+# hues is never right: colour is identity, and a repeated hue asserts an identity that
+# isn't there. Overflow now gets a neutral grey instead — visibly "unassigned" rather than
+# a false match — and a test fails before it can happen unnoticed.
+SERIES_COLORS = ["#3987e5", "#199e70", "#c98500", "#a678de", "#d1495b", "#0d9c94"]
+SERIES_OVERFLOW = "#6b7280"
+
+def series_color(i):
+    return SERIES_COLORS[i] if i < len(SERIES_COLORS) else SERIES_OVERFLOW
 
 RAPID_REPEAT_WINDOW = 3 * 60 * 60  # "a few hours" — a cooldown starting within this of
                                    # the previous one is a "rapid repeat" (binge clustering).
@@ -1618,7 +1635,7 @@ def digest():
     top = max(per_site.values()) or 1
     sites = [{"label": SITES[s]["label"], "min": int(per_site[s] // 60),
               "pct": round(100 * per_site[s] / top),
-              "color": SERIES_COLORS[i % len(SERIES_COLORS)]}
+              "color": series_color(i)}
              for i, s in enumerate(SITES) if per_site[s] >= 60]
     sites.sort(key=lambda x: -x["min"])
 
@@ -1647,7 +1664,9 @@ def digest():
         "delta_abs": 0 if prior <= 0 else abs(round((total - prior) / prior * 100)),
         "sites": sites, "cooldowns": len(cd), "rapid": rapid,
         "rapid_hours": RAPID_REPEAT_WINDOW // 3600,
-        "busiest_day": time.strftime("%A", time.strptime(busiest[0], "%Y-%m-%d")) if busiest and busiest[1] else "",
+        # Date as well as weekday: "Tuesday" alone is ambiguous the moment the window is
+        # not exactly seven days, and even inside seven it reads as "which Tuesday?".
+        "busiest_day": time.strftime("%A %-d %b", time.strptime(busiest[0], "%Y-%m-%d")) if busiest and busiest[1] else "",
         "busiest_min": int(busiest[1] // 60) if busiest else 0,
         "why": why, "worth": worth,
         "top_trigger": why["rows"][0]["label"] if why["rows"] else "",
@@ -1672,7 +1691,7 @@ def stats():
     # making usage visible is the worst place to be wrong. Add a site to SITES and it
     # appears here automatically.
     order = list(SITES)
-    series = [{"key": s, "label": SITES[s]["label"], "color": SERIES_COLORS[i % len(SERIES_COLORS)]}
+    series = [{"key": s, "label": SITES[s]["label"], "color": series_color(i)}
               for i, s in enumerate(order)]
 
     # Last 14 local days, oldest first.

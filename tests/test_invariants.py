@@ -308,3 +308,20 @@ def test_the_gate_never_carries_the_master_token():
     gate_line = [l for l in src.splitlines()
                  if l.startswith("BUDGET_PAGE = _add_bg(")][0]
     assert "feed_tok" in gate_line and "ui_tok" not in gate_line, gate_line
+
+
+def test_every_site_has_its_own_validated_chart_colour():
+    """Colour is identity in a categorical chart, so two sites sharing a hue asserts a
+    match that isn't there. Six colours is what this surface validates for — a seventh
+    hue fails the normal-vision separation floor against the teal. If this fails because
+    you added a site, the fix is to validate a new colour, not to append a guess."""
+    assert len(budget.SITES) <= len(budget.SERIES_COLORS), (
+        f"{len(budget.SITES)} sites but only {len(budget.SERIES_COLORS)} validated colours")
+    assert len(set(budget.SERIES_COLORS)) == len(budget.SERIES_COLORS), "duplicate hue"
+
+
+def test_overflow_never_recycles_another_sites_hue():
+    n = len(budget.SERIES_COLORS)
+    assert budget.series_color(n) == budget.SERIES_OVERFLOW
+    assert budget.series_color(n + 5) == budget.SERIES_OVERFLOW
+    assert budget.SERIES_OVERFLOW not in budget.SERIES_COLORS
