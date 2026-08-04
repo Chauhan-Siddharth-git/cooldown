@@ -1081,3 +1081,59 @@ def test_the_night_gate_can_be_blunt_about_the_hour(rdb):
     noon = time.mktime((2026, 8, 5, 14, 0, 0, 0, 0, -1))
     day_lines = {budget.gate_line("day", now=noon, label="Reddit", entries=n) for n in range(30)}
     assert not any("am." in l or "Go to bed" in l for l in day_lines), "told to sleep at 2pm"
+
+
+# ---------- 21. personal themes must not leak the date ----------
+
+def test_no_personal_date_is_committed_to_the_repository():
+    """A birthday hardcoded here would be public on GitHub forever, in the history and
+    indexed — a certain disclosure, and a far bigger exposure than anything on the box.
+    It comes from the environment on the box alone."""
+    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "app.py")).read()
+    assert 'os.environ.get("COOLDOWN_BIRTHDAY"' in src
+    assert not re.search(r'BIRTHDAY\s*=\s*["\']\d{2}-\d{2}["\']', src), "a date is hardcoded"
+
+
+def test_the_birthday_theme_is_unlabelled_on_the_gated_origin(rdb):
+    """The gate is served on reddit.com, so any script there can fetch it. A cake emoji
+    would hand that script the date once a year; nice colours reveal nothing."""
+    for name in budget.PERSONAL_THEMES:
+        assert budget.THEMES[name]["emoji"] == "", name
+        assert budget.THEMES[name]["label"] == "", name
+
+
+def test_the_greeting_lives_only_on_the_box_origin(rdb, client, monkeypatch):
+    monkeypatch.setattr(budget, "active_theme",
+                        lambda now=None, override=None: ("birthday", budget.THEMES["birthday"]))
+    gate = client.get("/budget?site=reddit").get_data(as_text=True)
+    assert "birthday" not in gate.lower(), "the gate names the occasion"
+    assert "Happy birthday" in client.get("/wrapped").get_data(as_text=True)
+    assert "/wrapped" in addon.MOVED_TO_BOX          # unreachable from a gated site
+
+
+def test_personal_themes_never_appear_at_random(rdb):
+    """They are date-driven; they just carry no season predicate because the date is not
+    in this file. Without the guard your birthday theme turns up on a wet Tuesday."""
+    base = time.mktime((2027, 1, 1, 12, 0, 0, 0, 0, -1))
+    monkey = {budget.active_theme(base + i * 86400)[0] for i in range(365)}
+    assert not (monkey & budget.PERSONAL_THEMES), monkey & budget.PERSONAL_THEMES
+
+
+def test_the_birthday_fires_when_the_env_var_says_so(rdb, monkeypatch):
+    monkeypatch.setattr(budget, "BIRTHDAY", "03-14")
+    on = time.mktime((2027, 3, 14, 12, 0, 0, 0, 0, -1))
+    off = time.mktime((2027, 3, 15, 12, 0, 0, 0, 0, -1))
+    assert budget.active_theme(on)[0] == "birthday"
+    assert budget.active_theme(off)[0] != "birthday"
+
+
+def test_the_two_new_surfaces_keep_the_charts_valid():
+    """Same rule as every other theme: --card stays dark or the validated palettes stop
+    being valid."""
+    def lum(h):
+        r_, g, b = (int(h[i:i + 2], 16) / 255 for i in (1, 3, 5))
+        f = lambda c: c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+        return 0.2126 * f(r_) + 0.7152 * f(g) + 0.0722 * f(b)
+    for n in ("ember", "slate", "birthday", "anniversary"):
+        assert lum(budget.THEMES[n]["vars"]["card"]) <= lum("#14171d") * 1.6, n

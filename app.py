@@ -273,6 +273,35 @@ THEMES = {
                  "wait": "#c9a227", "bad": "#c05a3a", "sleep": "#7a9e2f",
                  "accent": "#7a9e2f", "good": "#7a9e2f", "warn": "#c9a227"},
     },
+    # No emoji on purpose — see the note above _personal_theme.
+    "birthday": {
+        "label": "", "emoji": "", "season": None,
+        "vars": {"bg": "#0f0a14", "card": "#1a1020", "line": "#3a2450", "fg": "#f8f0ff",
+                 "muted": "#b79ccc", "faint": "#7d6390", "go": "#3ecf7c",
+                 "wait": "#e0b458", "bad": "#d1495b", "sleep": "#a678de",
+                 "accent": "#e0b458", "good": "#3ecf7c", "warn": "#e0b458"},
+    },
+    "anniversary": {
+        "label": "", "emoji": "", "season": None,
+        "vars": {"bg": "#080d12", "card": "#101820", "line": "#1e3040", "fg": "#eef6fa",
+                 "muted": "#8fa9bb", "faint": "#5d7788", "go": "#3ecf7c",
+                 "wait": "#5aa8d8", "bad": "#d1495b", "sleep": "#7aa2ff",
+                 "accent": "#5aa8d8", "good": "#3ecf7c", "warn": "#5aa8d8"},
+    },
+    "ember": {
+        "label": "Ember", "emoji": "\U0001F525", "season": None,
+        "vars": {"bg": "#120b08", "card": "#1d1210", "line": "#3a221a", "fg": "#faf0ea",
+                 "muted": "#b8968a", "faint": "#7d6055", "go": "#3ecf7c",
+                 "wait": "#d1732b", "bad": "#d1495b", "sleep": "#c08420",
+                 "accent": "#d1732b", "good": "#3ecf7c", "warn": "#d1732b"},
+    },
+    "slate": {
+        "label": "Slate", "emoji": "\U0001F5FF", "season": None,
+        "vars": {"bg": "#0a0d11", "card": "#12161c", "line": "#232b34", "fg": "#eef1f4",
+                 "muted": "#93a0ad", "faint": "#616d79", "go": "#3ecf7c",
+                 "wait": "#8fa3b8", "bad": "#d1495b", "sleep": "#7aa2ff",
+                 "accent": "#8fa3b8", "good": "#3ecf7c", "warn": "#c98500"},
+    },
     "frost": {
         "label": "Frost", "emoji": "\U00002744", "season": None,
         "vars": {"bg": "#080d12", "card": "#101820", "line": "#1e2f3d", "fg": "#eef5fa",
@@ -281,6 +310,34 @@ THEMES = {
                  "accent": "#5aa8d8", "good": "#3ecf7c", "warn": "#5aa8d8"},
     },
 }
+
+# Two one-day anchors, to put something in the nine months that have no season.
+#
+# NEITHER DATE IS IN THIS FILE, and that is the point. A birthday hardcoded here would be
+# committed to a public repository forever, in the history, indexed — a certain disclosure
+# rather than a hypothetical one, and a far bigger exposure than anything on the box. It
+# comes from an environment variable set on the box alone: COOLDOWN_BIRTHDAY=MM-DD.
+#
+# The birthday theme is also deliberately UNLABELLED on the gate. The gate is served on
+# the gated site's origin, so a script on Reddit can fetch it; a cake emoji there would
+# hand that script the date once a year. Nice colours reveal nothing. The greeting itself
+# lives on the dashboard, which is on the box's own origin and cross-origin to Reddit.
+BIRTHDAY = os.environ.get("COOLDOWN_BIRTHDAY", "")      # "MM-DD", box-local, never in git
+PERSONAL_THEMES = {"birthday", "anniversary"}           # date-driven, never picked at random
+
+def _anniversary_md():
+    """MM-DD the box first ran. Backfilled from the oldest usage day so an existing
+    install gets its real anniversary rather than the day this feature shipped."""
+    v = _try(lambda: r.get("first_run"))
+    return v[5:] if v and len(v) == 10 else None
+
+def _personal_theme(t):
+    md = f"{t.tm_mon:02d}-{t.tm_mday:02d}"
+    if BIRTHDAY and md == BIRTHDAY.strip():
+        return "birthday"
+    if md == (_anniversary_md() or ""):
+        return "anniversary"
+    return None
 
 # How often an unprompted theme turns up. Seeded by the date, never live-random, so a
 # refresh cannot reroll it — same reasoning as the reflection prompt: something that
@@ -293,10 +350,17 @@ def active_theme(now=None, override=None):
     if override is not None:
         return (override, THEMES[override]) if override in THEMES else (None, None)
     t = time.localtime(now)
+    personal = _try(lambda: _personal_theme(t))
+    if personal:
+        return personal, THEMES[personal]
     for name, th in THEMES.items():
         if th["season"] and th["season"](t):
             return name, th
-    spontaneous = [n for n, th in THEMES.items() if not th["season"]]
+    # PERSONAL themes are date-driven like seasonal ones; they just carry no season
+    # predicate because their date isn't in this file. Without this they'd fall into the
+    # random pool and your birthday theme would show up on a wet Tuesday in March.
+    spontaneous = [n for n, th in THEMES.items()
+                   if not th["season"] and n not in PERSONAL_THEMES]
     seed = random.Random("theme:" + time.strftime("%Y-%m-%d", t))
     if seed.random() < SPONTANEOUS_ODDS:
         return (lambda n: (n, THEMES[n]))(seed.choice(sorted(spontaneous)))
@@ -2062,6 +2126,7 @@ WRAPPED_PAGE = """
 <body>
 <div class="wrap">
     <div class="kicker"><span class="dot"></span>Your year</div>
+    {% if personal_note %}<div class="card hero"><div class="sub">{{ personal_note }}</div></div>{% endif %}
     {% if not d.any %}
     <div class="card"><div class="note">No usage recorded yet. This page fills in as the
         history does &mdash; it keeps a rolling 400 days.</div></div>
@@ -2083,7 +2148,7 @@ WRAPPED_PAGE = """
             {{ '&darr;' | safe if d.trend_pct < 0 else '&uarr;' | safe }}{{ d.trend_pct|abs }}%</div>
         <div class="lab">Your last stretch averaged <b>{{ d.late_min }}m</b> a day against
             <b>{{ d.early_min }}m</b> at the start.
-            {% if not d.enough %}Only {{ d.days }} days of data, so treat this as a hint rather
+    {% if not d.enough %}Only {{ d.days }} days of data, so treat this as a hint rather
             than a result.{% elif d.trend_pct < -10 %}That is the number this whole thing exists
             to move.{% elif d.trend_pct > 10 %}Worth knowing rather than worth hiding.{% else %}
             Roughly flat.{% endif %}</div>
@@ -2136,9 +2201,24 @@ WRAPPED_PAGE = """
 </html>
 """
 
+def personal_note(now=None):
+    """A line for the two one-day anchors. Dashboard only — the gate is served on the
+    gated site's origin, and a greeting there would leak the date to any script on it."""
+    now = now if now is not None else time.time()
+    name, _ = active_theme(now)
+    if name == "birthday":
+        return "Happy birthday. Spend today somewhere that isn't a feed."
+    if name == "anniversary":
+        first = _try(lambda: r.get("first_run")) or ""
+        yrs = max(1, time.localtime(now).tm_year - int(first[:4] or 0)) if first[:4].isdigit() else 1
+        return (f"{yrs} year{'' if yrs == 1 else 's'} since you set this box up. "
+                f"Whatever it has saved you, it saved quietly.")
+    return ""
+
 @app.route('/wrapped')
 def wrapped():
-    return render_page(WRAPPED_PAGE, d=wrapped_data())
+    return render_page(WRAPPED_PAGE, d=wrapped_data(),
+                       personal_note=_try(personal_note, ""))
 
 @app.route('/digest')
 def digest():
@@ -3711,6 +3791,17 @@ if __name__ == '__main__':
     else:
         print(f"[MONITOR] no address on {TAILNET_IFACE} — loopback only; "
               f"the gate works, the dashboard links are hidden")
+
+    # Anniversary anchor. Backfilled from the oldest day of usage history so an existing
+    # box gets its real first day rather than the day this shipped.
+    def _seed_first_run():
+        if r.get("first_run"):
+            return
+        days = sorted(k.split(":")[1] for k in r.scan_iter(match="usage:*", count=500)
+                      if len(k.split(":")) == 3 and k.split(":")[1][:2] == "20")
+        r.set("first_run", days[0] if days else time.strftime("%Y-%m-%d"))
+        print(f"[THEME] first run recorded as {r.get('first_run')}")
+    _try(_seed_first_run)
 
     # Publish the origin so addon.py can redirect the old /budget/* dashboard URLs to
     # wherever the pages actually live, instead of just 404ing someone's bookmark.
