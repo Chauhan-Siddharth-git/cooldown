@@ -1125,6 +1125,169 @@ REFLECT_QUESTIONS = [
     "Something sent you here. What was it?",
 ]
 
+# ---------------------------------------------------------------------------
+# What the gate says.
+#
+# The reflection prompt already rotates its wording and shuffles its chips, for a reason
+# stated plainly in the comment above it: anything shown identically every time becomes
+# wallpaper. The gate's own sentences did not rotate — and "Foreground time only, the
+# clock ticks while you're looking" is the line you see more than any other in this
+# product. It was the most-read, least-varied text on the screen.
+#
+# Same seeding rule as the prompt: keyed to the day and the session number, never
+# live-random, so refreshing cannot reroll it. Stable while you are staring at it,
+# different next time.
+# ---------------------------------------------------------------------------
+GATE_LINES = {
+    "day": [
+        "Foreground time only — the clock ticks while you're looking. Make it count.",
+        "The timer runs while you're actually looking. Background tabs are free.",
+        "This is the whole budget. There isn't a second one behind it.",
+        "Time starts when you tap and stops when you look away. Spend it deliberately.",
+        "Nothing refills faster because you'd like it to.",
+        "You get what's on the clock. That's the arrangement you made.",
+    ],
+    "spent": [
+        "You've used your {label} share of the bucket.{steer} It trickles back if you step away.",
+        "That's your {label} allowance.{steer} Walk away for a while and some comes back.",
+        "{label} is done for the moment.{steer} The bucket refills slowly, not on demand.",
+    ],
+    "cooldown": [
+        "That was your session. It reopens when the timer hits zero.",
+        "Nothing to do here but wait. That is the entire point.",
+        "The timer doesn't know you're bored, and wouldn't care.",
+        "Session's over. The clock is the only thing that reopens this.",
+    ],
+    "cooldown_escalated": [
+        "Back-to-back sessions get a longer break — it reopens when the timer hits zero.",
+        "You came straight back, so the wall got taller. It comes down on its own.",
+        "Clustered sessions earn a longer wait. Spread out and it stays short.",
+    ],
+    "soft": [
+        "You've hit your {label} cap a few times in a row — a short pause to break the loop.",
+        "That's three quick rounds on {label}. Brief pause, then it reopens.",
+        "Same site, same loop. A short breather, and it's yours again.",
+    ],
+    "night": [
+        "A small buffer, then closed till {end} AM. No refill overnight — spend it wisely.",
+        "One short buffer left before lights out. It doesn't come back until {end} AM.",
+        "Night mode: a few minutes, then closed till {end} AM. Nothing refills overnight.",
+    ],
+    "night_closed": [
+        "{label} is closed for the night. It reopens at {end} AM.",
+        "It's late. This will still be here at {end} AM, and you'll be better rested.",
+        "Shut till {end} AM. Nothing here improves after midnight.",
+    ],
+    "winddown": [
+        "Your time is shrinking toward bedtime, and there's no refill now.",
+        "The cap is tapering toward lights-out. What's left is what's left.",
+        "Winding down — the allowance shrinks from here, and nothing tops it up.",
+    ],
+    "winddown_spent": [
+        "Easing toward bedtime — back briefly at night mode, then closed.",
+        "Done for now. A short night buffer later, then closed till morning.",
+        "That's the wind-down spent. Time for something that isn't a feed.",
+    ],
+}
+
+# Used when a data moment is picked but there's nothing interesting to say. Dry, not
+# preachy — the tone the reflection chips already set.
+BLUNT_LINES = [
+    "Nothing new has happened in the last four minutes.",
+    "The feed does not miss you.",
+    "Whatever you're avoiding will still be there afterwards.",
+    "Nobody has ever finished the internet.",
+    "You already know roughly how this session goes.",
+    "Refreshing does not create new time.",
+    "This is the deciding part. The rest is drifting.",
+    "You opened this on purpose. Allegedly.",
+    "The interesting thing is not in there.",
+    "Somewhere in this is a thing you actually wanted. Get it and leave.",
+]
+
+# How often the line is a fact about you rather than the standard copy. Rare on purpose:
+# make it frequent and it becomes the new wallpaper.
+MOMENT_ODDS = 1 / 6
+
+# ...and only on states whose sentence is purely atmospheric. "spent" carries the steer
+# to a site that still has time, and "cooldown_escalated" explains why the wall got
+# taller — replacing those with a wisecrack would drop information the screen has nowhere
+# else. On these two the number is already on screen above the text, so the sentence is
+# free to be something else.
+MOMENT_STATES = {"day", "cooldown"}
+
+def _moment_visits(ctx):
+    n = ctx.get("entries", 0)
+    if n >= 2:
+        return f"Visit number {n + 1} today."
+    return None
+
+def _moment_late_cooldowns(ctx, now):
+    hours = []
+    for i in range(7):
+        day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+        for raw in _try(lambda d=day: r.lrange(f"cooldown_events:{d}", 0, -1), []) or []:
+            try:
+                hours.append(time.localtime(float(raw.split()[0])).tm_hour)
+            except (ValueError, IndexError):
+                continue
+    if len(hours) >= 3 and sum(1 for h in hours if h >= 20) >= len(hours) - 1:
+        return f"{len(hours)} cooldowns this week, nearly all after 8pm."
+    if len(hours) >= 3:
+        return f"{len(hours)} times you've hit the wall this week."
+    return None
+
+def _moment_worth(ctx, now):
+    w = worth_summary(30, now)
+    rows = [x for x in w["rows"] if x["n"] >= 3 and x["key"] in REFLECT_TRIGGERS]
+    if not rows:
+        return None
+    worst = min(rows, key=lambda x: x["pct"])
+    if worst["pct"] <= 34:
+        return (f"When you've come here {worst['label'].lower()}, you said afterwards it "
+                f"was worth it {worst['pct']}% of the time.")
+    return None
+
+def _moment_over_usual(ctx, now):
+    today = time.strftime("%Y-%m-%d", time.localtime(now))
+    tot = sum(float(_try(lambda s=s: r.get(f"usage:{today}:{s}"), 0) or 0) for s in SITES)
+    prior = 0.0
+    for i in range(1, 8):
+        d = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+        prior += sum(float(_try(lambda s=s, d=d: r.get(f"usage:{d}:{s}"), 0) or 0) for s in SITES)
+    avg = prior / 7
+    if avg >= 300 and tot > avg:
+        return f"You're already past a usual whole day ({int(tot // 60)}m vs {int(avg // 60)}m)."
+    return None
+
+def _moment_quiet(ctx, now):
+    for i in range(0, 14):
+        day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+        if _try(lambda d=day: r.llen(f"cooldown_events:{d}"), 0):
+            return f"{i} days since you last hit the wall." if i >= 3 else None
+    return None
+
+def gate_line(state, now=None, **ctx):
+    """The sentence under the headline. Rotates; occasionally says something true."""
+    now = now if now is not None else time.time()
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    # A caller-supplied session number must drive the seed too, not just the moments —
+    # otherwise the override is half-honoured and the whole function is untestable.
+    stored = int(_try(lambda: r.get(f"entries:{day}"), 0) or 0)
+    entries = int(ctx.get("entries", stored))
+    ctx["entries"] = entries
+    seed = random.Random(f"gate:{day}:{entries}:{state}")
+    if state in MOMENT_STATES and seed.random() < MOMENT_ODDS:
+        moments = [_moment_visits, _moment_late_cooldowns, _moment_worth,
+                   _moment_over_usual, _moment_quiet]
+        seed.shuffle(moments)
+        for fn in moments:
+            line = _try(lambda f=fn: f(ctx) if f is _moment_visits else f(ctx, now))
+            if line:
+                return line
+        return seed.choice(BLUNT_LINES)
+    return seed.choice(GATE_LINES[state]).format(**ctx)
+
 def reflect_decision(now=None):
     """(show_it, which_question). Skips your first entry of the day, then appears
     unpredictably — the point is that it can't be anticipated and tapped through."""
@@ -1342,31 +1505,29 @@ def budget_page():
                 return render_gate(site, label, overline=f"{label} · Bedtime", mood="sleep",
                     countdown=secs_until_hour(NIGHT_END_HOUR), show_study=study_ok,
                     title="Get some sleep",
-                    message=f"{label} is closed for the night. It reopens at {NIGHT_END_HOUR} AM.")
+                    message=gate_line("night_closed", label=label, end=NIGHT_END_HOUR))
             nshow, nq = reflect_decision()
             return render_gate(site, label, overline=f"{label} · Night mode", mood="sleep",
                 headline=clock(remaining), can_enter=True, show_study=study_ok, next_url=nxt,
                 show_reflect=nshow, reflect_q=nq,
-                message=f"A small buffer, then closed till {NIGHT_END_HOUR} AM. No refill overnight — spend it wisely.")
+                message=gate_line("night", label=label, end=NIGHT_END_HOUR))
         # wind-down
         if remaining <= 0:
             return render_gate(site, label, overline=f"{label} · Winding down", mood="wait",
                 countdown=secs_until_hour(NIGHT_START_HOUR), show_study=study_ok,
                 title="Paused for now",
-                message="Easing toward bedtime — back briefly at night mode, then closed. Time for something calmer.")
+                message=gate_line("winddown_spent", label=label))
         wshow, wq = reflect_decision()
         return render_gate(site, label, overline=f"{label} · Winding down", mood="wait",
             headline=clock(remaining), can_enter=True, show_study=study_ok, next_url=nxt,
             show_reflect=wshow, reflect_q=wq,
-            message="Your time is shrinking toward bedtime, and there's no refill now.")
+            message=gate_line("winddown", label=label))
 
     # Daytime.
     cooldown_remaining = get_cooldown_remaining(site)
     if cooldown_remaining > 0:
         escalated = float(r.get(f"cooldown_secs:{p}") or COOLDOWN_SECONDS) > COOLDOWN_SECONDS
-        msg = ("Back-to-back sessions get a longer break — it reopens when the timer hits zero."
-               if escalated else
-               "That was your session. It reopens when the timer hits zero.")
+        msg = gate_line("cooldown_escalated" if escalated else "cooldown", label=label)
         if study_ok:
             msg += " Put the break to work — the course is one tap away."
         return render_gate(site, label, overline=f"{label} · Cooldown", mood="wait",
@@ -1379,7 +1540,7 @@ def budget_page():
         return render_gate(site, label, overline=f"{label} · Short break", mood="wait",
             countdown=soft_cd, show_study=study_ok, study_primary=study_ok,
             title="Take a breather",
-            message=f"You've hit your {label} cap a few times in a row — a short pause to break the loop, then it reopens.")
+            message=gate_line("soft", label=label))
 
     spent = get_spent(site)
     remaining = max(0, SITES[site]["budget_seconds"] - spent)
@@ -1387,7 +1548,7 @@ def budget_page():
     # Whole bucket drained -> start the hard cooldown.
     if spent >= pool_max_budget(p):
         start_cooldown(p, site)
-        msg = "Cooling down — back when the timer hits zero."
+        msg = gate_line("cooldown", label=label)
         if study_ok:
             msg += " Or turn the break into progress: the course is one tap away."
         return render_gate(site, label, overline=f"{label} · Time's up", mood="wait",
@@ -1402,14 +1563,14 @@ def budget_page():
         return render_gate(site, label, overline=f"{label} · Spent", mood="wait",
             title=f"{label} is done for now", button_text=f"{label} used up",
             show_study=study_ok, refresh=15, ask_worth=ask_worth,
-            message=f"You've used your {label} share of the bucket.{steer} It trickles back if you step away.")
+            message=gate_line("spent", label=label, steer=steer))
 
     # Enter.
     show_reflect, reflect_q = reflect_decision()
     return render_gate(site, label, overline=f"{label} · Time left", mood="go",
         headline=clock(remaining), can_enter=True, show_study=study_ok, next_url=nxt,
         show_reflect=show_reflect, reflect_q=reflect_q,
-        message="Foreground time only — the clock ticks while you're looking. Make it count.")
+        message=gate_line("day", label=label))
 
 @app.route('/reflect', methods=['POST'])
 def reflect():

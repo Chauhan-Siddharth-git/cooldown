@@ -230,7 +230,10 @@ def test_cooldown_screen_shows_escalation_note(client, rdb, day):
     rdb.set("cooldown:main", time.time() - 100)
     rdb.set("cooldown_secs:main", 7200)              # an escalated (2h) wall
     html = gate(client, "reddit")
-    assert "Back-to-back sessions get a longer break" in html
+    # The wording rotates now, so assert the meaning is present rather than one phrasing —
+    # and that it came from the escalated bank, not the plain one.
+    assert any(v.format(label="Reddit") in html for v in budget.GATE_LINES["cooldown_escalated"])
+    assert not any(v.format(label="Reddit") in html for v in budget.GATE_LINES["cooldown"])
 
 
 def test_reddit_cooldown_has_no_study_button(client, rdb, day):

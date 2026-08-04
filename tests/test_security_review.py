@@ -966,3 +966,64 @@ def test_theme_override_and_off(rdb, client):
 @pytest.mark.parametrize("page", ["/stats", "/health", "/devices", "/digest", "/wrapped"])
 def test_every_page_carries_the_theme_hook(rdb, client, page):
     assert 'id="cd-theme"' in client.get(page).get_data(as_text=True)
+
+
+# ---------- 19. the gate's own copy ----------
+
+def test_a_data_moment_never_replaces_a_line_carrying_information(rdb):
+    """The 'spent' line names the site that still has time; 'cooldown_escalated' explains
+    why the wall got taller. Both were briefly replaceable by a wisecrack, which dropped
+    information the screen has nowhere else. Only lines whose number is already on screen
+    above them may be swapped."""
+    assert budget.MOMENT_STATES == {"day", "cooldown"}
+    for state in ("spent", "cooldown_escalated", "night", "night_closed",
+                  "winddown", "winddown_spent", "soft"):
+        seen = {budget.gate_line(state, label="Reddit", steer=" Still time on YouTube.",
+                                 end=7, entries=n) for n in range(40)}
+        bank = {v.format(label="Reddit", steer=" Still time on YouTube.", end=7)
+                for v in budget.GATE_LINES[state]}
+        assert seen <= bank, f"{state} produced a line outside its bank: {seen - bank}"
+
+
+def test_the_steer_survives_every_variant(rdb):
+    """Whichever wording comes up, 'you still have time on YouTube' must reach the user."""
+    for v in budget.GATE_LINES["spent"]:
+        assert "{steer}" in v
+
+
+def test_gate_copy_rotates_but_cannot_be_rerolled_by_refreshing(rdb):
+    """Same rule as the reflection prompt: stable while you stare at it, different next
+    session. Something that changes on refresh is a slot machine."""
+    day = time.strftime("%Y-%m-%d")
+    rdb.set(f"entries:{day}", 3)
+    fixed = {budget.gate_line("day", label="Reddit") for _ in range(15)}
+    assert len(fixed) == 1, "the line changed on refresh"
+    varied = {budget.gate_line("day", label="Reddit", entries=n) for n in range(25)}
+    assert len(varied) > 3, "the line barely rotates across sessions"
+
+
+def test_every_bank_is_non_empty_and_formats_cleanly(rdb):
+    for state, bank in budget.GATE_LINES.items():
+        assert bank, state
+        for v in bank:
+            v.format(label="Reddit", steer=" x", end=7)      # must not raise
+
+
+def test_data_moments_say_something_true_or_nothing(rdb):
+    now = time.time()
+    assert budget._moment_visits({"entries": 0}) is None      # nothing to report
+    assert "3" in budget._moment_visits({"entries": 2})
+    assert budget._moment_late_cooldowns({}, now) is None     # no history yet
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    for h in (21, 22, 23):
+        rdb.rpush(f"cooldown_events:{day}", f"{now - (24 - h) * 3600:.0f} reddit")
+    line = budget._moment_late_cooldowns({}, now)
+    assert line and "3" in line
+
+
+def test_blunt_lines_are_a_fallback_not_the_default(rdb):
+    """If a moment fires but there is nothing true to say, you get a dry one-liner —
+    never an empty line, never a fabricated statistic."""
+    assert len(budget.BLUNT_LINES) >= 8
+    for line in budget.BLUNT_LINES:
+        assert not any(ch.isdigit() for ch in line), f"blunt line implies data: {line}"
