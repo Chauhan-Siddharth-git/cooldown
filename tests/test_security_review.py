@@ -879,3 +879,20 @@ def test_wrapped_is_box_origin_only(rdb):
     rdb.set("monitor_origin", "http://100.64.0.1:5000")
     for hdrs in (FETCH, IFRAME, NAV):
         assert probe("/budget/wrapped", hdrs).status_code == 302
+
+
+def test_wide_binds_are_only_flagged_when_they_are_actually_wrong(rdb, client, monkeypatch):
+    """mitmproxy binds every interface and cannot be told otherwise in transparent mode;
+    sshd likewise. Both are contained by the interface-scoped firewall — that is what F1
+    fixed. Painting them red would train you to ignore the colour, and then miss the case
+    that matters: the dashboard port going wide."""
+    monkeypatch.setattr(budget, "_listening_ports", lambda: [
+        {"port": 8080, "scope": "all interfaces", "rank": 0, "what": "proxy"},
+        {"port": 5000, "scope": "all interfaces", "rank": 0, "what": "dashboard"},
+    ])
+    monkeypatch.setattr(budget, "_HEALTH_CACHE", {})
+    html = client.get("/health").get_data(as_text=True)
+    rows = re.findall(r'<td>(\d+)[^<]*</td>\s*<td class="([a-z]*)"', html)
+    flags = dict(rows)
+    assert flags.get("8080") == "dim", flags       # expected, firewalled
+    assert flags.get("5000") == "wide", flags      # bound narrowly on purpose — alarm

@@ -262,9 +262,22 @@ def test_no_listener_is_hardcoded_to_all_interfaces():
     deliberate act with a comment attached — not a literal someone typed while
     debugging."""
     for name in ("app.py", "addon.py"):
-        lits = [n.value for n in ast.walk(_tree(name))
+        tree = _tree(name)
+        # Docstrings are prose, not configuration. Excluding them keeps the check strict
+        # about VALUES while letting the code explain why the value is forbidden — which
+        # is exactly what the port-listing helper's docstring does.
+        docstrings = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.ClassDef,
+                                 ast.FunctionDef, ast.AsyncFunctionDef)):
+                body = getattr(node, "body", None)
+                if body and isinstance(body[0], ast.Expr) \
+                   and isinstance(body[0].value, ast.Constant) \
+                   and isinstance(body[0].value.value, str):
+                    docstrings.add(id(body[0].value))
+        lits = [n.value for n in ast.walk(tree)
                 if isinstance(n, ast.Constant) and isinstance(n.value, str)
-                and "0.0.0.0" in n.value]
+                and "0.0.0.0" in n.value and id(n) not in docstrings]
         assert not lits, f"{name} hardcodes an all-interfaces bind: {lits}"
 
 

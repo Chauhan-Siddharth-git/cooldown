@@ -2120,6 +2120,23 @@ scheduler.start()
 # ---------------------------------------------------------------------------
 
 _TEMP_HIST = deque(maxlen=90)   # recent CPU temps for the sparkline (~6 min at 4s polls)
+_CPU_HIST = deque(maxlen=45)    # recent per-core CPU%, one list per sample, for the trend lines
+
+# Per-core line colours. Retro/outrun on purpose — the page is near-black with a hex
+# matrix behind it, so saturated pink/cyan/purple/amber belongs here in a way it wouldn't
+# on white. Straight neon (#ff6ec7, #00f0ff) is far too light to read on this surface, so
+# these are the same hues darkened into the legible band.
+#
+# Validated as a set against the card surface: lightness, chroma, contrast and
+# normal-vision separation all pass. Cyan vs pink sits at 6.4 ΔE under deuteranopia,
+# which is the floor band — legal ONLY with a second, non-colour cue. That is why the
+# legend shows each core's live percentage next to its swatch rather than relying on
+# the colour alone. Do not drop those numbers.
+CPU_LINE_COLORS = ["#d9548f", "#0fa8b8", "#8f57d4", "#c08420"]
+# Four is enough for the Pi. On a machine with more cores the colours repeat, and that is
+# fine HERE though it is forbidden for the site chart: cores are interchangeable. Nobody
+# reads "core 6 is busy" — you read the level, the spread and the trend. Colour is not
+# carrying identity, so a repeat asserts nothing false. For SERIES_COLORS it would.
 _NET_PREV = {}                  # iface -> (monotonic_t, rx_bytes, tx_bytes) for throughput
 _CPU_PREV = {}                  # {"v": /proc/stat snapshot} — CPU% is measured between calls
 _HEALTH_CACHE = {}              # {"t": monotonic, "d": payload} — collapses concurrent pollers
@@ -2347,6 +2364,97 @@ def _iface(name):
         _NET_PREV[name] = (now, rx, tx)
     return {"up": up, "state": state, "speed": speed, "rx_bps": rx_bps, "tx_bps": tx_bps}
 
+_PROC_PREV = {}          # pid -> (cpu ticks, monotonic) so CPU% is measured between polls
+
+def _top_processes(n=6):
+    """The few processes actually using the box, biggest first.
+
+    Not a process list. There are 172 processes on this Pi and 127 are kernel threads —
+    a full list is noise nobody opens twice. What the dashboard could not answer before
+    is "what is eating the box", and six rows answers it. Read straight from /proc, so no
+    subprocess and no privilege: this runs as an unprivileged account and the one sudo
+    rule it has stays the one sudo rule it has.
+    """
+    now = time.monotonic()
+    hz = os.sysconf("SC_CLK_TCK") or 100
+    page = os.sysconf("SC_PAGE_SIZE") or 4096
+    rows, seen = [], {}
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                st = f.read()
+            close = st.rindex(")")                     # comm may contain spaces or parens
+            name = st[st.index("(") + 1:close]
+            f2 = st[close + 2:].split()
+            ticks = int(f2[11]) + int(f2[12])          # utime + stime
+            rss_mb = int(f2[21]) * page / 1048576
+        except (OSError, ValueError, IndexError):
+            continue                                    # process exited mid-read; fine
+        if rss_mb < 1:
+            continue                                    # kernel threads and noise
+        seen[pid] = (ticks, now)
+        prev = _PROC_PREV.get(pid)
+        pct = 0.0
+        if prev and now > prev[1]:
+            pct = 100.0 * (ticks - prev[0]) / hz / (now - prev[1])
+        rows.append({"name": name[:18], "mb": round(rss_mb),
+                     "pct": round(max(0.0, min(100.0 * (os.cpu_count() or 1), pct)), 1)})
+    _PROC_PREV.clear()
+    _PROC_PREV.update(seen)
+    rows.sort(key=lambda r: -r["mb"])
+    return rows[:n]
+
+
+def _listening_ports():
+    """TCP sockets in LISTEN, and crucially WHICH address they are bound to.
+
+    This is the F1 invariant made visible: the proxy ports must answer on the tailnet and
+    loopback, never on 0.0.0.0. Parsed from /proc/net/tcp because `ss -tlnp` would only
+    name the owning process as root, and a second sudo rule to prettify a status page is
+    exactly the trade F6 and F7 were about. Ports are labelled from a static map instead.
+    """
+    known = {5000: "dashboard", 8080: "proxy · transparent", 8081: "proxy · regular",
+             6379: "redis", 22: "ssh", 53: "dns"}
+    out = {}
+    for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(path) as f:
+                lines = f.read().splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            f2 = line.split()
+            if len(f2) < 4 or f2[3] != "0A":            # 0A = LISTEN
+                continue
+            hexaddr, _, hexport = f2[1].rpartition(":")
+            try:
+                port = int(hexport, 16)
+            except ValueError:
+                continue
+            # Detect the wildcard bind from the raw hex rather than by comparing the
+            # decoded string. Structurally simpler, and it keeps the literal out of this
+            # file — an invariant test forbids it, because the one legitimate reason to
+            # write that address here is the one thing that must never happen.
+            wildcard = set(hexaddr) == {"0"}
+            if len(hexaddr) == 8:                        # IPv4, little-endian words
+                addr = ".".join(str(int(hexaddr[i:i + 2], 16)) for i in (6, 4, 2, 0))
+            else:
+                addr = "::" if wildcard else "[v6]"
+            if wildcard:
+                scope, rank = "all interfaces", 0
+            elif addr.startswith("127.") or addr == "::1":
+                scope, rank = "loopback only", 2
+            else:
+                scope, rank = addr, 1
+            cur = out.get(port)
+            if cur is None or rank < cur["rank"]:
+                out[port] = {"port": port, "scope": scope, "rank": rank,
+                             "what": known.get(port, "")}
+    return sorted(out.values(), key=lambda r: (r["rank"], r["port"]))
+
+
 def _services(names):
     def one(s):
         return subprocess.run(["systemctl", "is-active", s],
@@ -2373,6 +2481,30 @@ def _temp_class(t):
 def _pct_class(p):
     # Shared green/amber/red for utilisation gauges (memory, and the RAM chip glow).
     return "cool" if p < 70 else ("warm" if p < 85 else "hot")
+
+def _cpu_lines(hist, w=100, h=40):
+    """One SVG polyline per core, oldest sample on the left.
+
+    Bars showed the instantaneous value and nothing else — you could not see whether a
+    spike was a blip or a climb. Same data, plotted against time, answers that.
+    """
+    pts = [row for row in hist if row]
+    if not pts:
+        return []
+    ncores = max(len(row) for row in pts)
+    if len(pts) == 1:
+        pts = pts * 2
+    n = len(pts)
+    lines = []
+    for c in range(ncores):
+        coords = []
+        for i, row in enumerate(pts):
+            v = row[c] if c < len(row) else 0.0
+            x = w * i / (n - 1)
+            y = h - max(0.0, min(100.0, v)) / 100.0 * h
+            coords.append(f"{x:.1f},{y:.1f}")
+        lines.append(" ".join(coords))
+    return lines
 
 def _spark_points(hist, w=100, h=32, lo=30, hi=85):
     # Map a temperature history to an SVG polyline "x,y x,y ..." over a w×h box.
@@ -2431,12 +2563,15 @@ def collect_health(max_age=2.0):
         return hit
     svc = _services(["cooldown-app", "cooldown-proxy", "cooldown-redirect", "redis-server", "tailscaled"])
     agg, per_core = _try(_cpu_stats, (0.0, []))
+    if per_core:
+        _CPU_HIST.append(list(per_core))
     temp = _try(_temp_c)
     if temp is not None:
         _TEMP_HIST.append(temp)
     out = {
         "model": _try(lambda: _first_line("/proc/device-tree/model").replace("\x00", ""), "Raspberry Pi"),
-        "cpu": {"pct": agg, "per_core": per_core, "load": _try(_loadavg, [0, 0, 0]), "cores": os.cpu_count() or 1},
+        "cpu": {"pct": agg, "per_core": per_core, "load": _try(_loadavg, [0, 0, 0]),
+                "cores": os.cpu_count() or 1, "hist": [list(x) for x in _CPU_HIST]},
         "temp_c": temp,
         "temp_hist": list(_TEMP_HIST),
         "mem": _try(_mem, {"used_mb": 0, "total_mb": 0, "pct": 0}),
@@ -2447,6 +2582,8 @@ def collect_health(max_age=2.0):
         "services": svc,
         "services_ok": all(v == "active" for v in svc.values()),
         "errors": error_summary(),
+        "procs": _try(_top_processes, []),
+        "ports": _try(_listening_ports, []),
         "enforcement": enforcement_status(),
     }
     _HEALTH_CACHE.update(t=time.monotonic(), d=out)
@@ -2523,9 +2660,14 @@ HEALTH_PAGE = """
         .bar i{display:block;height:100%;width:0;background:var(--go);border-radius:6px;transition:width .5s,background .5s}
         .metric.warm .bar i{background:var(--wait)} .metric.hot .bar i{background:var(--bad)}
         .msub{font-size:11.5px;color:var(--faint);margin-top:8px}
-        .cores{display:flex;gap:3px;align-items:flex-end;height:26px;margin-top:9px}
-        .core{flex:1;height:100%;background:#0e1116;border-radius:2px;display:flex;align-items:flex-end;overflow:hidden}
-        .core i{width:100%;background:var(--go);border-radius:2px;transition:height .4s}
+        .cpul{display:block;width:100%;height:44px;margin:8px 0 5px}
+        .cpul .gl{stroke:#232732;stroke-width:.5;vector-effect:non-scaling-stroke}
+        .cpul polyline{fill:none;stroke-width:1.6;vector-effect:non-scaling-stroke;
+            stroke-linejoin:round;stroke-linecap:round}
+        .cpukey{display:flex;flex-wrap:wrap;gap:3px 9px;font-size:10.5px;color:var(--muted);
+            font-variant-numeric:tabular-nums}
+        .cpukey span{display:inline-flex;align-items:center;gap:4px}
+        .cpukey i{width:8px;height:2.5px;border-radius:2px;flex:none}
         .spark{display:block;width:100%;height:32px;margin-top:9px}
         .spark polyline{stroke:var(--go);stroke-width:2;fill:none;vector-effect:non-scaling-stroke;stroke-linejoin:round;stroke-linecap:round}
         .metric.warm .spark polyline{stroke:var(--wait)} .metric.hot .spark polyline{stroke:var(--bad)}
@@ -2541,6 +2683,19 @@ HEALTH_PAGE = """
         .enfbad{margin-top:12px;padding:11px 13px;border-radius:11px;background:#2a1416;
             border:1px solid #7a1f1f;color:#ffd9d9;font-size:12.5px;line-height:1.5;text-align:center}
         .enfbad b{color:#fff}
+        .whatsup{margin-top:14px}
+        .whatsup summary{font-size:11.5px;color:var(--faint);cursor:pointer;text-align:center;
+            list-style:none;padding:6px}
+        .whatsup summary::-webkit-details-marker{display:none}
+        .plist{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+        .plist th{color:var(--faint);font-weight:600;font-size:10.5px;text-align:right;
+            padding:4px 6px;border-bottom:1px solid var(--line)}
+        .plist td{padding:5px 6px;text-align:right;color:var(--muted);
+            font-variant-numeric:tabular-nums}
+        .plist th:first-child,.plist td:first-child{text-align:left;color:var(--fg)}
+        .plist td.wide{color:var(--bad);font-weight:600}
+        .plist td.dim{color:var(--faint)}      /* wide, but firewalled by design */
+        .phint{font-size:11px;color:var(--faint);line-height:1.5;margin-top:7px}
         .errline{text-align:center;font-size:11.5px;color:var(--faint);margin-top:10px;line-height:1.5}
         .errline b{color:var(--wait)}
         .errlast{display:block;font-size:11px;color:#4a515c;word-break:break-word}
@@ -2625,10 +2780,18 @@ HEALTH_PAGE = """
     <div class="grid">
       <div class="metric" id="cpuCard">
         <div class="mtop"><span class="mk">CPU</span><span class="mv" id="cpuPct">{{ d.cpu.pct }}%</span></div>
-        <div class="cores" id="cpuCores">
-          {% for c in d.cpu.per_core %}<div class="core"><i style="height:{{ c }}%"></i></div>{% endfor %}
+        <svg class="cpul" viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true">
+          <line class="gl" x1="0" y1="10" x2="100" y2="10"/>
+          <line class="gl" x1="0" y1="20" x2="100" y2="20"/>
+          <line class="gl" x1="0" y1="30" x2="100" y2="30"/>
+          <g id="cpuLines">{% for pts in cpu_lines %}<polyline points="{{ pts }}" style="stroke:{{ cpu_colors[loop.index0 % cpu_colors|length] }}"/>{% endfor %}</g>
+        </svg>
+        <!-- The live number beside each swatch is the required second cue: cyan and pink
+             sit in the CVD floor band, so colour alone must not carry identity. -->
+        <div class="cpukey" id="cpuKey">
+          {% for c in d.cpu.per_core %}<span><i style="background:{{ cpu_colors[loop.index0 % cpu_colors|length] }}"></i><b>{{ c|round|int }}%</b></span>{% endfor %}
         </div>
-        <div class="msub">load <span id="cpuLoad">{{ '%.2f'|format(d.cpu.load[0]) }}</span> · {{ d.cpu.cores }} cores</div>
+        <div class="msub">load <span id="cpuLoad">{{ '%.2f'|format(d.cpu.load[0]) }}</span> · {{ d.cpu.cores }} cores · last 3 min</div>
       </div>
       <div class="metric {{ tclass }}" id="tempCard">
         <div class="mtop"><span class="mk">Temp</span><span class="mv" id="temp">{% if d.temp_c is not none %}{{ d.temp_c }}&deg;C{% else %}&mdash;{% endif %}</span></div>
@@ -2673,6 +2836,32 @@ HEALTH_PAGE = """
       The injected timer is not reporting &mdash; your budget is not draining.</div>
     {% endif %}
 
+    <!-- Collapsed by default: on a good day none of this needs looking at, and the page
+         is already dense. One tap when something feels wrong. -->
+    <details class="whatsup">
+      <summary>What's running</summary>
+      <table class="plist">
+        <tr><th>Process</th><th>Mem</th><th>CPU</th></tr>
+        {% for pr in d.procs %}
+        <tr><td>{{ pr.name }}</td><td>{{ pr.mb }} MB</td><td>{{ pr.pct }}%</td></tr>
+        {% endfor %}
+      </table>
+      <div class="phint">Biggest by memory. 172 processes exist; all but a handful are kernel
+        threads doing nothing.</div>
+      <table class="plist">
+        <tr><th>Listening</th><th>Reachable from</th></tr>
+        {% for pt in d.ports %}
+        <tr><td>{{ pt.port }}{% if pt.what %} · {{ pt.what }}{% endif %}</td>
+            <td class="{{ 'wide' if pt.rank == 0 and pt.port not in firewalled else 'dim' if pt.rank == 0 else '' }}">{{ pt.scope }}</td></tr>
+        {% endfor %}
+      </table>
+      <div class="phint"><b>Wide is not automatically wrong here.</b> mitmproxy binds every
+        interface and cannot be told otherwise in transparent mode, and sshd does the same —
+        both are contained by the interface-scoped firewall rules, which is what F1 actually
+        fixed. What <i>would</i> be worth chasing: the dashboard (5000) going wide, since it is
+        bound narrowly on purpose, or a port here you do not recognise.</div>
+    </details>
+
     <!-- Swallowed errors. Silence here used to mean "fine" and "broken" equally. -->
     <div class="errline">
       {%- if d.errors.total or d.errors.proxy -%}
@@ -2710,11 +2899,36 @@ HEALTH_PAGE = """
     }
     function update(d){
         set("cpuPct", d.cpu.pct+"%"); set("cpuLoad", d.cpu.load[0].toFixed(2));
-        var cores=$("cpuCores");
-        if(cores && d.cpu.per_core){
-            if(cores.children.length!==d.cpu.per_core.length)
-                cores.innerHTML=d.cpu.per_core.map(function(){ return '<div class="core"><i></i></div>'; }).join("");
-            d.cpu.per_core.forEach(function(c,i){ var b=cores.children[i]; if(b) b.firstElementChild.style.height=Math.max(0,Math.min(100,c))+"%"; });
+        var COL=__CPU_COLORS__;
+        var g=$("cpuLines"), rows=((d.cpu&&d.cpu.hist)||[]).filter(function(r){return r&&r.length;});
+        if(g && rows.length){
+            if(rows.length===1) rows=rows.concat(rows);
+            var nc=Math.max.apply(null, rows.map(function(r){return r.length;}));
+            if(g.children.length!==nc){
+                g.innerHTML="";
+                for(var c=0;c<nc;c++){
+                    var pl=document.createElementNS("http://www.w3.org/2000/svg","polyline");
+                    pl.style.stroke=COL[c%COL.length]; g.appendChild(pl);
+                }
+            }
+            for(var c=0;c<nc;c++){
+                var pts=[];
+                for(var i=0;i<rows.length;i++){
+                    var v=Math.max(0,Math.min(100, rows[i][c]||0));
+                    pts.push((100*i/(rows.length-1)).toFixed(1)+","+(40-v/100*40).toFixed(1));
+                }
+                g.children[c].setAttribute("points", pts.join(" "));
+            }
+        }
+        var key=$("cpuKey");
+        if(key && d.cpu.per_core){
+            if(key.children.length!==d.cpu.per_core.length)
+                key.innerHTML=d.cpu.per_core.map(function(_,i){
+                    return '<span><i style="background:'+COL[i%COL.length]+'"></i><b></b></span>'; }).join("");
+            d.cpu.per_core.forEach(function(c,i){
+                var b=key.children[i]&&key.children[i].querySelector("b");
+                if(b) b.textContent=Math.round(c)+"%";
+            });
         }
         if(d.temp_c!=null){
             set("temp", d.temp_c+"°C");
@@ -2765,6 +2979,10 @@ def health():
     boot_alert = time.strftime("%a %-d %b, %-I:%M %p", time.localtime(float(ts))) if ts else None
     return render_page(HEALTH_PAGE,
         d=d, boot_alert=boot_alert,
+        cpu_lines=_cpu_lines(d["cpu"].get("hist", [])), cpu_colors=CPU_LINE_COLORS,
+        # Ports the redirect script scopes to tailscale0 + loopback. Wide here is the
+        # documented design, not a finding, so it must not render as an alarm.
+        firewalled={8080, 8081, 22},
         tclass=_temp_class(d["temp_c"]),
         eth_state=eth_state,
         ram_class=_pct_class(mem_pct),
@@ -3096,6 +3314,7 @@ def _add_bg(page, full=True, token="{{ ui_tok }}", feed="/feed"):
 DIGEST_PAGE = _add_bg(DIGEST_PAGE)
 WRAPPED_PAGE = _add_bg(WRAPPED_PAGE)
 STATS_PAGE = _add_bg(STATS_PAGE)
+HEALTH_PAGE = HEALTH_PAGE.replace("__CPU_COLORS__", json.dumps(CPU_LINE_COLORS))
 HEALTH_PAGE = _add_bg(HEALTH_PAGE)
 DEVICES_PAGE = _add_bg(DEVICES_PAGE)
 # The gate is script-readable from the gated site (it replaces that site's page), so it

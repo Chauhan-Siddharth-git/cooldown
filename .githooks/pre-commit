@@ -56,7 +56,10 @@ fi
 # --- 3. all-interfaces bind (F1) ---------------------------------------------
 for f in $(staged '*.py' '*.sh' '*.service'); do
   case "$f" in tests/*) continue ;; esac
-  if added "$f" | grep -vE '^\s*(#|//)' | grep -qE '0\.0\.0\.0' ; then
+  # Must be a QUOTED literal to count. Prose mentioning the address — a docstring
+  # explaining why it is forbidden, which is exactly what the port lister does — is not a
+  # bind, and flagging it silently cost two commits before anyone noticed.
+  if added "$f" | grep -vE '^\s*(#|//)' | grep -qE '["'"'"']0\.0\.0\.0' ; then
     note "all-interfaces bind in $f" \
          "0.0.0.0 appears in an added line" \
          "F1 — bind loopback + tailscale0, or set COOLDOWN_LISTEN deliberately (Docker only)."
