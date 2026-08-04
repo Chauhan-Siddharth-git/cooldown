@@ -227,6 +227,9 @@ THEMES = {
     "christmas": {
         "label": "Christmas", "emoji": "\U0001F384",
         "season": lambda t: (t.tm_mon == 12 and 18 <= t.tm_mday <= 26),
+        "lines": ["The whole internet is doing this today. Doesn't make it interesting.",
+                  "Everyone you'd be reading is also just scrolling. Go and be somewhere.",
+                  "It'll still be here on the 27th. So will the feed."],
         "vars": {"bg": "#0a1410", "card": "#10201a", "line": "#1e3a2c", "fg": "#f2f8f4",
                  "muted": "#8fa89a", "faint": "#5d7568", "go": "#3ecf7c",
                  "wait": "#e0b458", "bad": "#d1495b", "sleep": "#7fb3a0",
@@ -235,6 +238,9 @@ THEMES = {
     "halloween": {
         "label": "Halloween", "emoji": "\U0001F383",
         "season": lambda t: (t.tm_mon == 10 and t.tm_mday >= 25),
+        "lines": ["Nothing in here is scarier than the screen-time report.",
+                  "The feed is a haunted house with no exit. You know this one.",
+                  "You can leave. That's the twist."],
         "vars": {"bg": "#100a14", "card": "#19111f", "line": "#2e2038", "fg": "#f5f1f8",
                  "muted": "#a294ad", "faint": "#6b5c78", "go": "#8f57d4",
                  "wait": "#e8892b", "bad": "#d1495b", "sleep": "#8f57d4",
@@ -244,6 +250,9 @@ THEMES = {
         "label": "New Year", "emoji": "\U00002728",
         "season": lambda t: ((t.tm_mon == 12 and t.tm_mday >= 30)
                              or (t.tm_mon == 1 and t.tm_mday <= 2)),
+        "lines": ["Whatever you resolved, this probably wasn't it.",
+                  "New year, same feed. It didn't change over the holiday.",
+                  "One of your resolutions is currently watching you scroll."],
         "vars": {"bg": "#0a0a0f", "card": "#15151d", "line": "#2b2b3a", "fg": "#f8f5ee",
                  "muted": "#a39c8b", "faint": "#6d6758", "go": "#3ecf7c",
                  "wait": "#d9b45c", "bad": "#d1495b", "sleep": "#7aa2ff",
@@ -425,6 +434,11 @@ BUDGET_PAGE = """
             </form>
             {% elif can_enter %}
             <button class="enter" type="button" id="beginBtn">Enter {{ label }}</button>
+            <div id="passMsg" hidden>
+              <div class="kicker"><span class="dot"></span>{{ pass_line.0 }}</div>
+              <h1>{{ pass_line.1 }}</h1>
+              <p>{{ pass_line.2 }}</p>
+            </div>
             <div id="reflect" hidden>
                 <p class="r-q">{{ reflect_q }}</p>
                 <div class="chips" id="chips"></div>
@@ -541,10 +555,8 @@ BUDGET_PAGE = """
         pass.addEventListener("click",function(){
             if(picked){ var fd=new FormData(); fd.append("trigger",picked);
               fetch("/budget/reflect",{method:"POST",body:fd,keepalive:true}).catch(function(){}); }
-            document.querySelector(".card").innerHTML =
-              '<div class="kicker"><span class="dot"></span>Good call</div>'+
-              '<h1>Put it down.</h1>'+
-              '<p>Part of you already knew. Close this tab and go do the thing \\u2014 future-you says thanks.</p>';
+            var msg=document.getElementById("passMsg");
+            document.querySelector(".card").innerHTML = msg ? msg.innerHTML : "";
         });
     })();
     </script>
@@ -1190,6 +1202,31 @@ GATE_LINES = {
     ],
 }
 
+# The screen you get when the prompt talks you out of it. This is the one moment the tool
+# actually worked, and it said the same three sentences every time — the most repeated
+# text at the highest-value moment in the product.
+PASS_LINES = [
+    ("Good call", "Put it down.",
+     "Part of you already knew. Close this tab and go do the thing \u2014 future-you says thanks."),
+    ("Nice", "That's the one.",
+     "You caught it before it caught you. That gets easier every time you do it."),
+    ("Good call", "Nothing in there.",
+     "You checked, and the answer was no. Go and do the thing you actually meant to."),
+    ("Well played", "Saved yourself twenty minutes.",
+     "That is roughly what this would have cost. Spend it on something you'd remember."),
+    ("Good", "Put the phone down.",
+     "The urge passes on its own in about a minute. You just proved it."),
+    ("Nice one", "You didn't need it.",
+     "Most of the time you don't. Knowing that is the whole trick."),
+]
+
+def pass_line(now=None):
+    """Rotates like everything else, seeded so a refresh can't reroll it."""
+    now = now if now is not None else time.time()
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    entries = int(_try(lambda: r.get(f"entries:{day}"), 0) or 0)
+    return random.Random(f"pass:{day}:{entries}").choice(PASS_LINES)
+
 # Used when a data moment is picked but there's nothing interesting to say. Dry, not
 # preachy — the tone the reflection chips already set.
 BLUNT_LINES = [
@@ -1267,6 +1304,23 @@ def _moment_quiet(ctx, now):
             return f"{i} days since you last hit the wall." if i >= 3 else None
     return None
 
+# --- 4. blunt about the hour ------------------------------------------------
+# Not random — true. At 2am "It's 2am" lands harder than anything a bank could produce,
+# and the night states are exactly where it applies, because night mode runs 23:00-07:00.
+def _time_line(state, hour, seed):
+    if state in ("night", "night_closed") and 0 <= hour < 5:
+        return seed.choice([
+            f"It's {hour or 12}am. Nothing worth reading was posted in the last hour.",
+            f"It's {hour or 12}am. Go to bed — this is the same feed it was yesterday.",
+            f"{hour or 12}am. Whatever this is, it isn't rest.",
+        ])
+    if state == "winddown" and hour >= 22:
+        return seed.choice([
+            "It's nearly bedtime and the allowance knows it.",
+            "Late enough that tomorrow-you has an opinion about this.",
+        ])
+    return None
+
 def gate_line(state, now=None, **ctx):
     """The sentence under the headline. Rotates; occasionally says something true."""
     now = now if now is not None else time.time()
@@ -1277,6 +1331,16 @@ def gate_line(state, now=None, **ctx):
     entries = int(ctx.get("entries", stored))
     ctx["entries"] = entries
     seed = random.Random(f"gate:{day}:{entries}:{state}")
+    # The hour, when the hour is the point.
+    hour = time.localtime(now).tm_hour
+    timed = _time_line(state, hour, seed)
+    if timed and seed.random() < 0.5:
+        return timed
+    # A seasonal theme gets a say on the most-seen screen.
+    if state == "day":
+        _, th = active_theme(now)
+        if th and th.get("lines") and seed.random() < 0.34:
+            return seed.choice(th["lines"])
     if state in MOMENT_STATES and seed.random() < MOMENT_ODDS:
         moments = [_moment_visits, _moment_late_cooldowns, _moment_worth,
                    _moment_over_usual, _moment_quiet]
@@ -1474,7 +1538,7 @@ def render_gate(site, label, *, overline, message, title="", mood="wait",
     # the Enter button return to the original link instead of the site home.
     # `study_primary` promotes the Study button to the main CTA — used on the cooldown
     # screens, turning the enforced break into a one-tap redirect to the course.
-    return render_page(BUDGET_PAGE,
+    return render_page(BUDGET_PAGE, pass_line=_try(pass_line, PASS_LINES[0]),
         site=site, label=label, overline=overline, title=title, message=message, mood=mood,
         can_enter=can_enter, button_text=button_text, headline=headline,
         countdown=int(countdown), show_study=show_study, study_primary=study_primary,
@@ -2444,7 +2508,9 @@ def _inject_theme():
     name, th = (None, None) if q == "off" else active_theme(override=q)
     return {"theme_css": theme_css(th),
             "theme_label": th["label"] if th else "",
-            "theme_emoji": th["emoji"] if th else ""}
+            "theme_emoji": th["emoji"] if th else "",
+            "theme_bg": th["vars"]["bg"] if th else "#070b0e",
+            "theme_name": name or ""}
 
 @app.context_processor
 def _inject_back():
@@ -3566,7 +3632,10 @@ def _add_bg(page, full=True, token="{{ ui_tok }}", feed="/feed"):
     # the route is just /feed. The background script reads it from the meta tag so one
     # copy of that script works on both.
     page = page.replace("</head>",
-        '<meta name="theme-color" content="#070b0e">'
+        # The tint iOS paints above the page. Hardcoded, it left Christmas repainting the
+        # whole gate and then sitting under a cold grey bar — the one bit of chrome a
+        # phone user looks at most and the only bit the theme could not reach.
+        '<meta name="theme-color" content="{{ theme_bg }}">'
         f'<meta name="cd-feed" content="{feed}">'
         f'<meta name="cd-tok" content="{token}"></head>', 1)    # dark iOS bars + poll token
     page = page.replace("</style>", BG_STYLE + "</style>", 1)   # frost + canvas layer + z-index

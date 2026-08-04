@@ -1027,3 +1027,57 @@ def test_blunt_lines_are_a_fallback_not_the_default(rdb):
     assert len(budget.BLUNT_LINES) >= 8
     for line in budget.BLUNT_LINES:
         assert not any(ch.isdigit() for ch in line), f"blunt line implies data: {line}"
+
+
+# ---------- 20. the four spontaneity touches ----------
+
+def test_the_status_bar_tint_follows_the_theme(rdb, client):
+    """Hardcoded, it left Christmas repainting the whole gate and then sitting under a
+    cold grey bar — the one piece of chrome a phone user always has in frame."""
+    for theme, expect in [("off", "#070b0e"), ("christmas", "#0a1410"),
+                          ("terminal", "#080a07")]:
+        html = client.get(f"/budget?site=reddit&theme={theme}").get_data(as_text=True)
+        assert f'name="theme-color" content="{expect}"' in html, theme
+
+
+def test_the_pass_screen_rotates(rdb):
+    seen = set()
+    day = time.strftime("%Y-%m-%d")
+    for n in range(20):
+        rdb.set(f"entries:{day}", n)
+        seen.add(budget.pass_line())
+    assert len(seen) > 3, "the highest-value screen in the product barely varies"
+    assert all(len(v) == 3 for v in seen)                 # kicker, title, body
+
+
+def test_the_pass_copy_is_rendered_server_side_not_smuggled_into_script(rdb, client, monkeypatch):
+    """It lives in HTML where Jinja escapes it, rather than as JSON inside a <script>.
+    Only rendered when the reflection prompt is — there is no 'you passed' screen
+    without a prompt to pass on."""
+    monkeypatch.setattr(budget, "reflect_decision", lambda now=None: (True, "Why now?"))
+    html = client.get("/budget?site=reddit").get_data(as_text=True)
+    assert 'id="passMsg"' in html
+    assert any(t in html for _, t, _ in budget.PASS_LINES)
+    assert "PASS_LINES" not in html and "JSON.parse" not in html
+
+
+def test_no_pass_screen_when_there_is_no_prompt(rdb, client):
+    assert 'id="passMsg"' not in client.get("/budget?site=reddit").get_data(as_text=True)
+
+
+def test_a_seasonal_theme_can_speak_but_does_not_take_over(rdb):
+    xmas = time.mktime((2026, 12, 24, 14, 0, 0, 0, 0, -1))
+    lines = {budget.gate_line("day", now=xmas, label="Reddit", entries=n) for n in range(40)}
+    themed = set(budget.THEMES["christmas"]["lines"])
+    assert lines & themed, "the season never gets a word in"
+    assert lines - themed, "the season drowned out the normal copy"
+
+
+def test_the_night_gate_can_be_blunt_about_the_hour(rdb):
+    night = time.mktime((2026, 8, 5, 2, 0, 0, 0, 0, -1))
+    lines = {budget.gate_line("night_closed", now=night, label="Reddit", end=7, entries=n)
+             for n in range(30)}
+    assert any("2am" in l for l in lines), "2am is the one fact worth stating at 2am"
+    noon = time.mktime((2026, 8, 5, 14, 0, 0, 0, 0, -1))
+    day_lines = {budget.gate_line("day", now=noon, label="Reddit", entries=n) for n in range(30)}
+    assert not any("am." in l or "Go to bed" in l for l in day_lines), "told to sleep at 2pm"
