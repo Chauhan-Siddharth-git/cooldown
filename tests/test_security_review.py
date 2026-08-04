@@ -896,3 +896,73 @@ def test_wide_binds_are_only_flagged_when_they_are_actually_wrong(rdb, client, m
     flags = dict(rows)
     assert flags.get("8080") == "dim", flags       # expected, firewalled
     assert flags.get("5000") == "wide", flags      # bound narrowly on purpose — alarm
+
+
+# ---------- 18. themes ----------
+
+def test_no_theme_may_lighten_the_surface_the_charts_sit_on():
+    """SERIES_COLORS and CPU_LINE_COLORS were validated for contrast and colour-vision
+    separation against a #14171d card. A theme that lightened the card would silently
+    invalidate all of it, and the charts would stop being readable for exactly the people
+    the validation protects. Themes repaint the backdrop and the accents, never the
+    surface the data sits on."""
+    def luminance(hexstr):
+        r, g, bl = (int(hexstr[i:i + 2], 16) / 255 for i in (1, 3, 5))
+        f = lambda c: c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+        return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(bl)
+    base = luminance("#14171d")
+    for name, th in budget.THEMES.items():
+        card = th["vars"]["card"]
+        assert luminance(card) <= base * 1.6, f"{name} card {card} is too light for the charts"
+
+
+def test_every_theme_keeps_body_text_readable():
+    """Contrast of --fg against --card, WCAG-style. Below 7:1 and the smallest labels on
+    these pages start to go."""
+    def lum(h):
+        r, g, b = (int(h[i:i + 2], 16) / 255 for i in (1, 3, 5))
+        f = lambda c: c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+        return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+    for name, th in budget.THEMES.items():
+        a, bg = lum(th["vars"]["fg"]), lum(th["vars"]["card"])
+        ratio = (max(a, bg) + 0.05) / (min(a, bg) + 0.05)
+        assert ratio >= 7, f"{name}: fg on card is only {ratio:.1f}:1"
+
+
+def test_seasonal_themes_own_their_dates(rdb):
+    import time as _t
+    for date, expect in [("2026-12-25", "christmas"), ("2026-10-31", "halloween"),
+                         ("2027-01-01", "newyear"), ("2026-12-19", "christmas")]:
+        got, _ = budget.active_theme(_t.mktime(_t.strptime(date, "%Y-%m-%d")))
+        assert got == expect, f"{date} -> {got}"
+
+
+def test_a_spontaneous_theme_cannot_be_rerolled_by_refreshing(rdb):
+    """Something that changes when you look at it is a slot machine, not a surprise —
+    same reasoning as the reflection prompt being seeded rather than live-random."""
+    import time as _t
+    day = _t.mktime(_t.strptime("2026-08-04", "%Y-%m-%d"))
+    picks = {budget.active_theme(day + n)[0] for n in range(0, 3600, 300)}
+    assert len(picks) == 1, f"theme changed within the same day: {picks}"
+
+
+def test_spontaneous_themes_are_occasional_not_constant(rdb):
+    import time as _t
+    base = _t.mktime(_t.strptime("2026-03-01", "%Y-%m-%d"))
+    days = [budget.active_theme(base + i * 86400)[0] for i in range(200)]
+    themed = [d for d in days if d and not budget.THEMES[d]["season"]]
+    assert 10 < len(themed) < 80, f"{len(themed)} themed days out of 200"
+
+
+def test_theme_override_and_off(rdb, client):
+    plain = client.get("/budget?site=reddit&theme=off").get_data(as_text=True)
+    assert '<style id="cd-theme"></style>' in plain
+    xmas = client.get("/budget?site=reddit&theme=christmas").get_data(as_text=True)
+    assert "--bg:#0a1410" in xmas
+    junk = client.get("/budget?site=reddit&theme=../../etc/passwd").get_data(as_text=True)
+    assert "passwd" not in junk and '<style id="cd-theme"></style>' in junk
+
+
+@pytest.mark.parametrize("page", ["/stats", "/health", "/devices", "/digest", "/wrapped"])
+def test_every_page_carries_the_theme_hook(rdb, client, page):
+    assert 'id="cd-theme"' in client.get(page).get_data(as_text=True)

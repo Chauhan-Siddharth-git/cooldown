@@ -207,6 +207,97 @@ WINDDOWN_SECONDS = 60 * 60
 # nowhere, and because the feature only earns its keep if you'll genuinely use it.
 STUDY_PLAYLISTS = []
 
+# ---------------------------------------------------------------------------
+# THEMES. Every page declares the same core CSS variables, so a theme is just a second
+# :root block appended after the page's own — no per-page work, and removing the feature
+# is deleting this section.
+#
+# ONE HARD RULE: --card stays dark. The chart palettes (SERIES_COLORS, CPU_LINE_COLORS)
+# were validated for contrast and colour-vision separation against a #14171d surface. A
+# theme that lightened the cards would silently invalidate all of that, and the charts
+# would stop being readable for exactly the people the validation protects. Themes may
+# repaint the backdrop, the accents and the chrome; they may not lighten the surface the
+# data sits on. There is a test.
+#
+# The traffic canvas is also deliberately left alone: its green/red is *semantic* —
+# encrypted versus in-the-clear — so recolouring it to match a theme would be making a
+# meaningful signal decorative.
+# ---------------------------------------------------------------------------
+THEMES = {
+    "christmas": {
+        "label": "Christmas", "emoji": "\U0001F384",
+        "season": lambda t: (t.tm_mon == 12 and 18 <= t.tm_mday <= 26),
+        "vars": {"bg": "#0a1410", "card": "#10201a", "line": "#1e3a2c", "fg": "#f2f8f4",
+                 "muted": "#8fa89a", "faint": "#5d7568", "go": "#3ecf7c",
+                 "wait": "#e0b458", "bad": "#d1495b", "sleep": "#7fb3a0",
+                 "accent": "#d1495b", "good": "#3ecf7c", "warn": "#e0b458"},
+    },
+    "halloween": {
+        "label": "Halloween", "emoji": "\U0001F383",
+        "season": lambda t: (t.tm_mon == 10 and t.tm_mday >= 25),
+        "vars": {"bg": "#100a14", "card": "#19111f", "line": "#2e2038", "fg": "#f5f1f8",
+                 "muted": "#a294ad", "faint": "#6b5c78", "go": "#8f57d4",
+                 "wait": "#e8892b", "bad": "#d1495b", "sleep": "#8f57d4",
+                 "accent": "#e8892b", "good": "#8f57d4", "warn": "#e8892b"},
+    },
+    "newyear": {
+        "label": "New Year", "emoji": "\U00002728",
+        "season": lambda t: ((t.tm_mon == 12 and t.tm_mday >= 30)
+                             or (t.tm_mon == 1 and t.tm_mday <= 2)),
+        "vars": {"bg": "#0a0a0f", "card": "#15151d", "line": "#2b2b3a", "fg": "#f8f5ee",
+                 "muted": "#a39c8b", "faint": "#6d6758", "go": "#3ecf7c",
+                 "wait": "#d9b45c", "bad": "#d1495b", "sleep": "#7aa2ff",
+                 "accent": "#d9b45c", "good": "#3ecf7c", "warn": "#d9b45c"},
+    },
+    # Spontaneous — no season, so they only ever turn up unannounced.
+    "retro": {
+        "label": "Outrun", "emoji": "\U0001F31E", "season": None,
+        "vars": {"bg": "#0d0916", "card": "#170f24", "line": "#33204a", "fg": "#f4eeff",
+                 "muted": "#a892c0", "faint": "#6f5c8a", "go": "#0fa8b8",
+                 "wait": "#d9548f", "bad": "#d9548f", "sleep": "#8f57d4",
+                 "accent": "#d9548f", "good": "#0fa8b8", "warn": "#d9548f"},
+    },
+    "terminal": {
+        "label": "Phosphor", "emoji": "\U0001F4DF", "season": None,
+        "vars": {"bg": "#080a07", "card": "#11140e", "line": "#26301c", "fg": "#e6e4c4",
+                 "muted": "#96a077", "faint": "#616a4c", "go": "#7a9e2f",
+                 "wait": "#c9a227", "bad": "#c05a3a", "sleep": "#7a9e2f",
+                 "accent": "#7a9e2f", "good": "#7a9e2f", "warn": "#c9a227"},
+    },
+    "frost": {
+        "label": "Frost", "emoji": "\U00002744", "season": None,
+        "vars": {"bg": "#080d12", "card": "#101820", "line": "#1e2f3d", "fg": "#eef5fa",
+                 "muted": "#8ba3b5", "faint": "#5a7183", "go": "#3ecf7c",
+                 "wait": "#5aa8d8", "bad": "#d1495b", "sleep": "#7aa2ff",
+                 "accent": "#5aa8d8", "good": "#3ecf7c", "warn": "#5aa8d8"},
+    },
+}
+
+# How often an unprompted theme turns up. Seeded by the date, never live-random, so a
+# refresh cannot reroll it — same reasoning as the reflection prompt: something that
+# changes when you look at it is a slot machine, not a surprise.
+SPONTANEOUS_ODDS = 0.22
+
+def active_theme(now=None, override=None):
+    """(name, theme) for right now, or (None, None) for the standard look."""
+    now = now if now is not None else time.time()
+    if override is not None:
+        return (override, THEMES[override]) if override in THEMES else (None, None)
+    t = time.localtime(now)
+    for name, th in THEMES.items():
+        if th["season"] and th["season"](t):
+            return name, th
+    spontaneous = [n for n, th in THEMES.items() if not th["season"]]
+    seed = random.Random("theme:" + time.strftime("%Y-%m-%d", t))
+    if seed.random() < SPONTANEOUS_ODDS:
+        return (lambda n: (n, THEMES[n]))(seed.choice(sorted(spontaneous)))
+    return None, None
+
+def theme_css(theme):
+    if not theme:
+        return ""
+    return ":root{" + "".join(f"--{k}:{v};" for k, v in theme["vars"].items()) + "}"
+
 BUDGET_PAGE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -322,7 +413,7 @@ BUDGET_PAGE = """
 <body>
     <canvas id="bp-bg" aria-hidden="true"></canvas>
     <div class="card {{ mood }}">
-        <div class="kicker"><span class="dot"></span>{{ overline }}</div>
+        <div class="kicker"><span class="dot"></span>{% if theme_emoji %}{{ theme_emoji }} {% endif %}{{ overline }}</div>
         {% if countdown %}<div id="cd" class="big" data-secs="{{ countdown }}">·</div>
         {% elif headline %}<div class="big">{{ headline }}</div>{% endif %}
         {% if title %}<h1>{{ title }}</h1>{% endif %}
@@ -2186,6 +2277,15 @@ def back_to_gate():
             "qs": f"?from={site}"}
 
 @app.context_processor
+def _inject_theme():
+    """?theme=<name> previews one, ?theme=off forces the standard look."""
+    q = _try(lambda: request.args.get("theme"), None)
+    name, th = (None, None) if q == "off" else active_theme(override=q)
+    return {"theme_css": theme_css(th),
+            "theme_label": th["label"] if th else "",
+            "theme_emoji": th["emoji"] if th else ""}
+
+@app.context_processor
 def _inject_back():
     return back_to_gate()
 
@@ -3294,6 +3394,11 @@ BG_STYLE = ("html,body{background:#070b0e!important}"
             ".card,.tile,.board,.metric,.dcard{background:rgba(18,21,27,0.4)!important;"
             "-webkit-backdrop-filter:blur(5px);backdrop-filter:blur(5px)}")
 
+def _add_theme(page):
+    """One extra :root block per page, appended after the page's own styles."""
+    return page.replace("</head>",
+        '<style id="cd-theme">{{ theme_css }}</style></head>', 1)
+
 def _add_bg(page, full=True, token="{{ ui_tok }}", feed="/feed"):
     # `feed` differs by origin: the gate lives on the gated site and reaches the app
     # through the proxy at /budget/feed; the dashboard is served by the box itself, where
@@ -3311,6 +3416,10 @@ def _add_bg(page, full=True, token="{{ ui_tok }}", feed="/feed"):
 
 # /digest was added later and never went through this, so it was the one dashboard page
 # with no ambient background and no frosted panels — visibly a different product.
+BUDGET_PAGE, STATS_PAGE, HEALTH_PAGE, DEVICES_PAGE, DIGEST_PAGE, WRAPPED_PAGE = (
+    _add_theme(x) for x in
+    (BUDGET_PAGE, STATS_PAGE, HEALTH_PAGE, DEVICES_PAGE, DIGEST_PAGE, WRAPPED_PAGE))
+
 DIGEST_PAGE = _add_bg(DIGEST_PAGE)
 WRAPPED_PAGE = _add_bg(WRAPPED_PAGE)
 STATS_PAGE = _add_bg(STATS_PAGE)
