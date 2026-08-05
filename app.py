@@ -1351,12 +1351,10 @@ def _moment_worth(ctx, now):
 
 def _moment_over_usual(ctx, now):
     today = time.strftime("%Y-%m-%d", time.localtime(now))
-    tot = sum(float(_try(lambda s=s: r.get(f"usage:{today}:{s}"), 0) or 0) for s in SITES)
-    prior = 0.0
-    for i in range(1, 8):
-        d = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
-        prior += sum(float(_try(lambda s=s, d=d: r.get(f"usage:{d}:{s}"), 0) or 0) for s in SITES)
-    avg = prior / 7
+    sites = list(SITES)
+    vals = _mget_floats(_day_keys("usage", 8, now, sites))   # 7 prior days + today
+    tot = sum(vals[7 * len(sites):])
+    avg = sum(vals[:7 * len(sites)]) / 7
     if avg >= 300 and tot > avg:
         return f"You're already past a usual whole day ({int(tot // 60)}m vs {int(avg // 60)}m)."
     return None
@@ -1438,9 +1436,8 @@ def reflection_summary(days=30, now=None):
     """Per-trigger counts and how often naming it was enough to stop you."""
     now = now if now is not None else time.time()
     rows, passes, total = {}, 0, 0
-    for i in range(days):
-        day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
-        for raw in r.lrange(f"reflect:{day}", 0, -1):
+    for entries in _mlrange(_day_keys("reflect", days, now)):
+        for raw in entries:
             parts = raw.split()
             if len(parts) < 3 or parts[1] not in REFLECT_TRIGGERS:
                 continue
@@ -1492,9 +1489,8 @@ def worth_summary(days=30, now=None):
     """Per-trigger: how often the time was judged worth it afterwards."""
     now = now if now is not None else time.time()
     rows, yes, total = {}, 0, 0
-    for i in range(days):
-        day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
-        for raw in r.lrange(f"worth:{day}", 0, -1):
+    for entries in _mlrange(_day_keys("worth", days, now)):
+        for raw in entries:
             parts = raw.split()
             if len(parts) < 3:
                 continue
@@ -2006,14 +2002,15 @@ def wrapped_data(now=None):
     a full year.
     """
     now = now if now is not None else time.time()
+    sites = list(SITES)
+    vals = _mget_floats(_day_keys("usage", 365, now, sites))       # one MGET per 512 keys
     days, per_site, daily = [], {s: 0.0 for s in SITES}, []
-    for i in range(364, -1, -1):
-        key_day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
-        tot = 0.0
-        for site in SITES:
-            v = float(_try(lambda s=site, k=key_day: r.get(f"usage:{k}:{s}"), 0) or 0)
+    for i in range(365):
+        key_day = time.strftime("%Y-%m-%d", time.localtime(now - (364 - i) * 86400))
+        row = vals[i * len(sites):(i + 1) * len(sites)]
+        for site, v in zip(sites, row):
             per_site[site] += v
-            tot += v
+        tot = sum(row)
         if tot:
             days.append(key_day)
             daily.append((key_day, tot))
@@ -2040,10 +2037,7 @@ def wrapped_data(now=None):
         months[d[:7]] += t
     top_month = max(months.items(), key=lambda kv: kv[1]) if months else None
 
-    cds = 0
-    for i in range(365):
-        key_day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
-        cds += len(_try(lambda k=key_day: r.lrange(f"cooldown_events:{k}", 0, -1), []) or [])
+    cds = sum(len(x) for x in _mlrange(_day_keys("cooldown_events", 365, now)))
 
     why = reflection_summary(365, now)
     worth = worth_summary(365, now)
@@ -2230,22 +2224,17 @@ def digest():
     invisible visible" shouldn't need you to remember to go and look.
     """
     now = time.time()
+    sites = list(SITES)
+    recent = _mget_floats(_day_keys("usage", 14, now, sites))      # both weeks, one go
     days_secs, per_site = [], {s: 0.0 for s in SITES}
-    for i in range(6, -1, -1):
-        key_day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
-        tot = 0.0
-        for s in SITES:
-            v = float(_try(lambda s=s, k=key_day: r.get(f"usage:{k}:{s}"), 0) or 0)
+    for i in range(7, 14):                                          # last 7 days
+        key_day = time.strftime("%Y-%m-%d", time.localtime(now - (13 - i) * 86400))
+        row = recent[i * len(sites):(i + 1) * len(sites)]
+        for s, v in zip(sites, row):
             per_site[s] += v
-            tot += v
-        days_secs.append((key_day, tot))
+        days_secs.append((key_day, sum(row)))
     total = sum(t for _, t in days_secs)
-
-    prior = 0.0
-    for i in range(13, 6, -1):
-        key_day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
-        for s in SITES:
-            prior += float(_try(lambda s=s, k=key_day: r.get(f"usage:{k}:{s}"), 0) or 0)
+    prior = sum(recent[:7 * len(sites)])                            # the week before
 
     top = max(per_site.values()) or 1
     sites = [{"label": SITES[s]["label"], "min": int(per_site[s] // 60),
@@ -2255,9 +2244,8 @@ def digest():
     sites.sort(key=lambda x: -x["min"])
 
     cd = []
-    for i in range(6, -1, -1):
-        key_day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
-        for raw in _try(lambda k=key_day: r.lrange(f"cooldown_events:{k}", 0, -1), []) or []:
+    for entries in _mlrange(_day_keys("cooldown_events", 7, now)):
+        for raw in entries:
             try:
                 cd.append(float(raw.split()[0]))
             except (ValueError, IndexError):
@@ -2310,12 +2298,14 @@ def stats():
               for i, s in enumerate(order)]
 
     # Last 14 local days, oldest first.
+    vals = _mget_floats(_day_keys("usage", 14, now, order))
     days = []
     totals = []
     for i in range(13, -1, -1):
         t = time.localtime(now - i * 86400)
         key_day = time.strftime("%Y-%m-%d", t)
-        secs = {s: float(r.get(f"usage:{key_day}:{s}") or 0) for s in order}
+        row = vals[(13 - i) * len(order):(14 - i) * len(order)]
+        secs = dict(zip(order, row))
         total = sum(secs.values())
         totals.append(total)
         days.append({
@@ -2351,9 +2341,8 @@ def stats():
     # signal the escalating-cooldown idea targets — high daily *totals* don't imply
     # it. Gather the last 7 days of "<epoch> <site>" events, ordered.
     cd_events = []
-    for i in range(6, -1, -1):
-        key_day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
-        for raw in r.lrange(f"cooldown_events:{key_day}", 0, -1):
+    for entries in _mlrange(_day_keys("cooldown_events", 7, now)):
+        for raw in entries:
             try:
                 cd_events.append(float(raw.split()[0]))
             except (ValueError, IndexError):
@@ -2462,14 +2451,16 @@ def shadow_comparison(days=7, now=None):
         t += 3600
     hours_list = hours_list[-days * 24:]
 
+    stamps = [(time.strftime("%Y-%m-%d", time.localtime(t)),
+               time.strftime("%H", time.localtime(t))) for t in hours_list]
+    sites = list(SITES)
+    hb_all = _mget_floats([f"usage_hour:{d}:{h}:{s}" for s in sites for d, h in stamps])
+    sh_all = _mget_floats([f"shadow_hour:{d}:{h}:{s}" for s in sites for d, h in stamps])
+    n = len(stamps)
     rows, hb_tot, sh_tot = [], 0.0, 0.0
-    for site in SITES:
-        hb = sh = 0.0
-        for t in hours_list:
-            lt = time.localtime(t)
-            d, h = time.strftime("%Y-%m-%d", lt), time.strftime("%H", lt)
-            hb += float(_try(lambda: r.get(f"usage_hour:{d}:{h}:{site}"), 0) or 0)
-            sh += float(_try(lambda: r.get(f"shadow_hour:{d}:{h}:{site}"), 0) or 0)
+    for idx, site in enumerate(sites):
+        hb = sum(hb_all[idx * n:(idx + 1) * n])
+        sh = sum(sh_all[idx * n:(idx + 1) * n])
         hb_tot += hb
         sh_tot += sh
         if hb >= 60 or sh >= 60:
@@ -2617,6 +2608,56 @@ def _note_error(exc):
     where = tb[-1].name if tb else "?"
     _ERRORS[f"{where}:{type(exc).__name__}"] += 1
     _LAST_ERROR.update(what=f"{where}: {type(exc).__name__}: {exc}"[:180], when=time.time())
+
+# ---------------------------------------------------------------------------
+# Batched reads.
+#
+# Every history page walks a range of days and reads one key per day per site. Done one
+# at a time that is a network round-trip each: /wrapped issued 2,924 of them for a single
+# render, and a profile showed two thirds of the page's time was socket wait rather than
+# any computation. Nothing about that is fixed by faster code — the fix is asking for
+# many keys at once.
+#
+# MGET for plain keys, a non-transactional pipeline for LRANGE (which has no multi-key
+# form). Chunked, so a year of keys doesn't become one enormous command. Both degrade to
+# empty rather than raising: a dashboard is not worth a 500.
+# ---------------------------------------------------------------------------
+BATCH = 512
+
+def _mget(keys):
+    out = []
+    for i in range(0, len(keys), BATCH):
+        chunk = keys[i:i + BATCH]
+        vals = _try(lambda c=chunk: r.mget(c))
+        out.extend(vals if vals is not None else [None] * len(chunk))
+    return out
+
+def _mget_floats(keys):
+    return [float(v or 0) for v in _mget(keys)]
+
+def _mlrange(keys):
+    out = []
+    for i in range(0, len(keys), BATCH):
+        chunk = keys[i:i + BATCH]
+        def run(c=chunk):
+            pipe = r.pipeline(transaction=False)
+            for k in c:
+                pipe.lrange(k, 0, -1)
+            return pipe.execute()
+        vals = _try(run)
+        out.extend(vals if vals is not None else [[] for _ in chunk])
+    return out
+
+def _day_keys(prefix, days, now, suffixes=None):
+    """['usage:2026-08-04:reddit', ...] for `days` days back, newest last."""
+    out = []
+    for i in range(days - 1, -1, -1):
+        d = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+        if suffixes is None:
+            out.append(f"{prefix}:{d}")
+        else:
+            out.extend(f"{prefix}:{d}:{sfx}" for sfx in suffixes)
+    return out
 
 def _try(fn, default=None):
     try:

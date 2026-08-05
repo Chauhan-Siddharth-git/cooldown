@@ -976,13 +976,26 @@ def test_a_data_moment_never_replaces_a_line_carrying_information(rdb):
     information the screen has nowhere else. Only lines whose number is already on screen
     above them may be swapped."""
     assert budget.MOMENT_STATES == {"day", "cooldown"}
+    # Pinned to midday. Without a fixed clock this test passes by day and fails after
+    # 22:00, when the wind-down time-line legitimately fires — a test that depends on the
+    # hour it runs at is worse than no test.
+    noon = time.mktime((2026, 6, 15, 12, 0, 0, 0, 0, -1))
     for state in ("spent", "cooldown_escalated", "night", "night_closed",
                   "winddown", "winddown_spent", "soft"):
-        seen = {budget.gate_line(state, label="Reddit", steer=" Still time on YouTube.",
+        seen = {budget.gate_line(state, now=noon, label="Reddit",
+                                 steer=" Still time on YouTube.",
                                  end=7, entries=n) for n in range(40)}
         bank = {v.format(label="Reddit", steer=" Still time on YouTube.", end=7)
                 for v in budget.GATE_LINES[state]}
         assert seen <= bank, f"{state} produced a line outside its bank: {seen - bank}"
+
+
+def test_the_hour_may_speak_over_the_bank_but_only_at_night(rdb):
+    """The time-aware lines deliberately sit outside the banks — that is the point of
+    them. Asserted separately so the bank check above can stay strict."""
+    late = time.mktime((2026, 6, 15, 22, 30, 0, 0, 0, -1))
+    lines = {budget.gate_line("winddown", now=late, label="R", entries=n) for n in range(30)}
+    assert any(l not in budget.GATE_LINES["winddown"] for l in lines), "hour never speaks"
 
 
 def test_the_steer_survives_every_variant(rdb):
@@ -1137,3 +1150,60 @@ def test_the_two_new_surfaces_keep_the_charts_valid():
         return 0.2126 * f(r_) + 0.7152 * f(g) + 0.0722 * f(b)
     for n in ("ember", "slate", "birthday", "anniversary"):
         assert lum(budget.THEMES[n]["vars"]["card"]) <= lum("#14171d") * 1.6, n
+
+
+# ---------- 22. history pages read in batches, not one key at a time ----------
+
+def _count_roundtrips(client, page):
+    import redis as _r
+    calls = {"n": 0}
+    real = _r.Redis.execute_command
+    def counting(self, *a, **k):
+        calls["n"] += 1
+        return real(self, *a, **k)
+    _r.Redis.execute_command = counting
+    try:
+        client.get(page)
+    finally:
+        _r.Redis.execute_command = real
+    return calls["n"]
+
+
+@pytest.mark.parametrize("page,ceiling", [
+    ("/wrapped", 30), ("/stats", 25), ("/digest", 20), ("/health", 15),
+])
+def test_history_pages_do_not_read_one_key_per_day(rdb, client, page, ceiling):
+    """/wrapped walked a year one key at a time: 2,924 sequential round-trips for one
+    render, two thirds of the page's time spent in socket wait. MGET and pipelines took
+    it to 8. The ceilings here are generous — they exist to catch a reintroduced loop,
+    not to police an exact number."""
+    now = time.time()
+    pipe = rdb.pipeline(transaction=False)
+    for i in range(365):
+        d = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+        for s in budget.SITES:
+            pipe.set(f"usage:{d}:{s}", 600)
+        pipe.rpush(f"cooldown_events:{d}", f"{now:.0f} reddit")
+        pipe.rpush(f"reflect:{d}", f"{now:.0f} tired enter")
+        pipe.rpush(f"worth:{d}", f"{now:.0f} tired no")
+    pipe.execute()
+    n = _count_roundtrips(client, page)
+    assert n <= ceiling, f"{page} made {n} round-trips for a year of history"
+
+
+def test_batched_reads_survive_a_dead_redis(rdb, monkeypatch):
+    """A dashboard is not worth a 500. Both helpers degrade to empty."""
+    class Dead:
+        def mget(self, *a, **k): raise ConnectionError("down")
+        def pipeline(self, *a, **k): raise ConnectionError("down")
+    monkeypatch.setattr(budget, "r", Dead())
+    assert budget._mget(["a", "b", "c"]) == [None, None, None]
+    assert budget._mget_floats(["a", "b"]) == [0.0, 0.0]
+    assert budget._mlrange(["a", "b"]) == [[], []]
+
+
+def test_day_keys_are_ordered_oldest_first(rdb):
+    now = time.mktime((2026, 6, 15, 12, 0, 0, 0, 0, -1))
+    keys = budget._day_keys("usage", 3, now, ["reddit"])
+    assert keys == ["usage:2026-06-13:reddit", "usage:2026-06-14:reddit",
+                    "usage:2026-06-15:reddit"], keys
