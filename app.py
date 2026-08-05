@@ -2278,6 +2278,157 @@ def digest():
     }
     return render_page(DIGEST_PAGE, d=d)
 
+CPU_PAGE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>CPU · Countdown</title>
+    <style>
+        :root{--bg:#0b0d10;--card:#14171d;--line:#232732;--fg:#f4f6f8;--muted:#8b93a0;
+              --faint:#5f6773;--go:#3ecf7c;--wait:#f0a63a;--bad:#e5484d}
+        *{box-sizing:border-box}
+        body{margin:0;background:var(--bg);color:var(--fg);
+            font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+            -webkit-font-smoothing:antialiased;padding:26px 16px max(26px,env(safe-area-inset-bottom));
+            display:flex;justify-content:center}
+        .wrap{width:100%;max-width:560px}
+        .kicker{display:flex;align-items:center;gap:8px;justify-content:center;font-size:11.5px;
+            font-weight:700;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
+        .kicker .dot{width:7px;height:7px;border-radius:50%;background:var(--go)}
+        .now{text-align:center;font-size:40px;font-weight:700;letter-spacing:-1.5px;line-height:1;margin:6px 0 2px}
+        .sub{text-align:center;font-size:12.5px;color:var(--faint);margin-bottom:16px}
+        .card{background:var(--card);border:1px solid var(--line);border-radius:16px;
+            padding:16px 14px;margin-bottom:12px}
+        .card h2{font-size:12.5px;font-weight:600;color:var(--muted);margin:0 0 12px;letter-spacing:.02em}
+        /* The chart. A real plot area with room for an axis, which the card sparkline has not. */
+        .plot{display:flex;gap:8px}
+        .yax{display:flex;flex-direction:column;justify-content:space-between;
+            font-size:10px;color:var(--faint);font-variant-numeric:tabular-nums;
+            text-align:right;width:26px;padding:1px 0}
+        .cpubig{flex:1;display:block;height:190px}
+        .cpubig .gl{stroke:var(--line);stroke-width:.5;vector-effect:non-scaling-stroke}
+        .cpubig .gl.mid{stroke-dasharray:2 3}
+        .cpubig polyline{fill:none;stroke-width:1.8;vector-effect:non-scaling-stroke;
+            stroke-linejoin:round;stroke-linecap:round}
+        .xax{display:flex;justify-content:space-between;font-size:10px;color:var(--faint);
+            margin:5px 0 0 34px}
+        table{width:100%;border-collapse:collapse;font-size:13px;margin-top:2px}
+        th{color:var(--faint);font-weight:600;font-size:10.5px;text-align:right;
+            padding:5px 6px;border-bottom:1px solid var(--line)}
+        td{padding:7px 6px;text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
+        th:first-child,td:first-child{text-align:left;color:var(--fg)}
+        .sw{display:inline-block;width:10px;height:3px;border-radius:2px;margin-right:7px;vertical-align:3px}
+        .meta{display:flex;gap:10px}
+        .meta .m{flex:1;background:var(--card);border:1px solid var(--line);border-radius:14px;
+            padding:13px 10px;text-align:center}
+        .meta .v{font-size:20px;font-weight:700;letter-spacing:-.4px}
+        .meta .k{font-size:10.5px;color:var(--faint);margin-top:4px;text-transform:uppercase;letter-spacing:.04em}
+        .back{display:block;text-align:center;margin-top:18px;font-size:12.5px;color:var(--faint);text-decoration:none}
+        .back.home{margin-top:20px;padding:11px;border:1px solid var(--line);border-radius:11px;
+            color:var(--fg);font-size:13.5px;font-weight:600}
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <div class="kicker"><span class="dot"></span>CPU</div>
+    <div class="now" id="cpuNow">{{ d.cpu.pct }}%</div>
+    <div class="sub">{{ d.cpu.cores }} cores &middot; last {{ window_min }} minutes &middot; updates every 4s</div>
+
+    <div class="card">
+        <div class="plot">
+            <div class="yax"><span>100%</span><span>75</span><span>50</span><span>25</span><span>0</span></div>
+            <svg class="cpubig" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                <line class="gl" x1="0" y1="25" x2="100" y2="25"/>
+                <line class="gl mid" x1="0" y1="50" x2="100" y2="50"/>
+                <line class="gl" x1="0" y1="75" x2="100" y2="75"/>
+                <line class="gl" x1="0" y1="100" x2="100" y2="100"/>
+                <g id="cpuBigLines">{% for pts in cpu_lines %}<polyline points="{{ pts }}" style="stroke:{{ cpu_colors[loop.index0 % cpu_colors|length] }}"/>{% endfor %}</g>
+            </svg>
+        </div>
+        <div class="xax"><span>{{ window_min }} min ago</span><span>now</span></div>
+    </div>
+
+    <div class="card">
+        <h2>Per core</h2>
+        <table id="coreTable">
+            <tr><th>Core</th><th>Now</th><th>Average</th><th>Peak</th></tr>
+            {% for c in cpu_rows %}
+            <tr><td><span class="sw" style="background:{{ c.color }}"></span>Core {{ c.core }}</td>
+                <td>{{ c.now }}%</td><td>{{ c.avg }}%</td><td>{{ c.peak }}%</td></tr>
+            {% endfor %}
+        </table>
+    </div>
+
+    <div class="meta">
+        <div class="m"><div class="v" id="load1">{{ '%.2f'|format(d.cpu.load[0]) }}</div><div class="k">load 1m</div></div>
+        <div class="m"><div class="v">{{ '%.2f'|format(d.cpu.load[1]) }}</div><div class="k">load 5m</div></div>
+        <div class="m"><div class="v">{% if d.temp_c is not none %}{{ d.temp_c }}&deg;{% else %}&mdash;{% endif %}</div><div class="k">temp</div></div>
+    </div>
+
+    <a class="back" href="/health{{ qs }}">&larr; Pi health</a>
+    {% if back_url %}<a class="back home" href="{{ back_url }}">&larr; Back to {{ back_label }}</a>{% endif %}
+</div>
+{% raw %}
+<script>
+(function(){
+  var COL=__CPU_COLORS__;
+  function draw(d){
+    var rows=((d.cpu&&d.cpu.hist)||[]).filter(function(r){return r&&r.length;});
+    var g=document.getElementById("cpuBigLines");
+    if(!g||!rows.length) return;
+    if(rows.length===1) rows=rows.concat(rows);
+    var nc=Math.max.apply(null, rows.map(function(r){return r.length;}));
+    if(g.children.length!==nc){
+      g.innerHTML="";
+      for(var c=0;c<nc;c++){
+        var pl=document.createElementNS("http://www.w3.org/2000/svg","polyline");
+        pl.style.stroke=COL[c%COL.length]; g.appendChild(pl);
+      }
+    }
+    for(var c=0;c<nc;c++){
+      var pts=[];
+      for(var i=0;i<rows.length;i++){
+        var v=Math.max(0,Math.min(100, rows[i][c]||0));
+        pts.push((100*i/(rows.length-1)).toFixed(2)+","+(100-v).toFixed(2));
+      }
+      g.children[c].setAttribute("points", pts.join(" "));
+    }
+    var t=document.getElementById("coreTable");
+    if(t){
+      for(var c=0;c<nc;c++){
+        var vals=rows.map(function(r){return r[c]||0;});
+        var tr=t.rows[c+1]; if(!tr) continue;
+        tr.cells[1].textContent=Math.round(vals[vals.length-1])+"%";
+        tr.cells[2].textContent=Math.round(vals.reduce(function(a,b){return a+b;},0)/vals.length)+"%";
+        tr.cells[3].textContent=Math.round(Math.max.apply(null,vals))+"%";
+      }
+    }
+    var n=document.getElementById("cpuNow"); if(n&&d.cpu) n.textContent=d.cpu.pct+"%";
+    var l=document.getElementById("load1"); if(l&&d.cpu) l.textContent=d.cpu.load[0].toFixed(2);
+  }
+  function poll(){ fetch("/health?fmt=json&_="+Date.now(),{cache:"no-store"})
+    .then(function(r){return r.json();}).then(draw).catch(function(){}); }
+  setInterval(poll, 4000);
+  document.addEventListener("visibilitychange", function(){ if(!document.hidden) poll(); });
+})();
+</script>
+{% endraw %}
+</body>
+</html>
+"""
+
+@app.route('/cpu')
+def cpu_detail():
+    d = collect_health()
+    hist = d["cpu"].get("hist", [])
+    return render_page(CPU_PAGE, d=d,
+        cpu_lines=_cpu_lines(hist, w=100, h=100),
+        cpu_rows=_cpu_stat_rows(hist),
+        cpu_colors=CPU_LINE_COLORS,
+        window_min=max(1, round(CPU_HIST_LEN * 4 / 60)))
+
 @app.route('/')
 def index():
     """The dashboard's front door. Since the monitoring pages moved to the box's own
@@ -2507,7 +2658,11 @@ scheduler.start()
 # ---------------------------------------------------------------------------
 
 _TEMP_HIST = deque(maxlen=90)   # recent CPU temps for the sparkline (~6 min at 4s polls)
-_CPU_HIST = deque(maxlen=45)    # recent per-core CPU%, one list per sample, for the trend lines
+# ~12 minutes at the 4s poll. The card still draws only the last 45 samples (~3 min) —
+# a sparkline that thin cannot carry more — but /cpu has the room to show all of it.
+CPU_HIST_LEN = 180
+CPU_CARD_SAMPLES = 45
+_CPU_HIST = deque(maxlen=CPU_HIST_LEN)   # per-core CPU%, one list per sample
 
 # Per-core line colours. Retro/outrun on purpose — the page is near-black with a hex
 # matrix behind it, so saturated pink/cyan/purple/amber belongs here in a way it wouldn't
@@ -2930,6 +3085,24 @@ def _pct_class(p):
     # Shared green/amber/red for utilisation gauges (memory, and the RAM chip glow).
     return "cool" if p < 70 else ("warm" if p < 85 else "hot")
 
+def _cpu_stat_rows(hist):
+    """Per-core now / mean / peak over the window. The table view the chart needs: it
+    carries identity without colour, which the palette requires (cyan and pink sit in the
+    colour-vision floor band), and it beats a hover tooltip on a touchscreen."""
+    rows = [r for r in hist if r]
+    if not rows:
+        return []
+    n = max(len(r) for r in rows)
+    out = []
+    for c in range(n):
+        vals = [r[c] for r in rows if c < len(r)]
+        if not vals:
+            continue
+        out.append({"core": c, "color": CPU_LINE_COLORS[c % len(CPU_LINE_COLORS)],
+                    "now": round(vals[-1]), "avg": round(sum(vals) / len(vals)),
+                    "peak": round(max(vals))})
+    return out
+
 def _cpu_lines(hist, w=100, h=40):
     """One SVG polyline per core, oldest sample on the left.
 
@@ -3112,7 +3285,11 @@ HEALTH_PAGE = """
         .cpul .gl{stroke:#232732;stroke-width:.5;vector-effect:non-scaling-stroke}
         .cpul polyline{fill:none;stroke-width:1.6;vector-effect:non-scaling-stroke;
             stroke-linejoin:round;stroke-linecap:round}
-        .cpukey{display:flex;flex-wrap:wrap;gap:3px 9px;font-size:10.5px;color:var(--muted);
+        a.cpulink{display:block;text-decoration:none;color:inherit}
+    a.cpulink:hover{border-color:var(--accent)}
+    a.cpulink:hover .more{opacity:1}
+    .more{opacity:.55;white-space:nowrap}
+    .cpukey{display:flex;flex-wrap:wrap;gap:3px 9px;font-size:10.5px;color:var(--muted);
             font-variant-numeric:tabular-nums}
         .cpukey span{display:inline-flex;align-items:center;gap:4px}
         .cpukey i{width:8px;height:2.5px;border-radius:2px;flex:none}
@@ -3226,7 +3403,7 @@ HEALTH_PAGE = """
     </div>
 
     <div class="grid">
-      <div class="metric" id="cpuCard">
+      <a class="metric cpulink" id="cpuCard" href="/cpu{{ qs }}">
         <div class="mtop"><span class="mk">CPU</span><span class="mv" id="cpuPct">{{ d.cpu.pct }}%</span></div>
         <svg class="cpul" viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true">
           <line class="gl" x1="0" y1="10" x2="100" y2="10"/>
@@ -3239,8 +3416,8 @@ HEALTH_PAGE = """
         <div class="cpukey" id="cpuKey">
           {% for c in d.cpu.per_core %}<span><i style="background:{{ cpu_colors[loop.index0 % cpu_colors|length] }}"></i><b>{{ c|round|int }}%</b></span>{% endfor %}
         </div>
-        <div class="msub">load <span id="cpuLoad">{{ '%.2f'|format(d.cpu.load[0]) }}</span> · {{ d.cpu.cores }} cores · last 3 min</div>
-      </div>
+        <div class="msub">load <span id="cpuLoad">{{ '%.2f'|format(d.cpu.load[0]) }}</span> · {{ d.cpu.cores }} cores · last {{ card_min }} min <span class="more">detail &rsaquo;</span></div>
+      </a>
       <div class="metric {{ tclass }}" id="tempCard">
         <div class="mtop"><span class="mk">Temp</span><span class="mv" id="temp">{% if d.temp_c is not none %}{{ d.temp_c }}&deg;C{% else %}&mdash;{% endif %}</span></div>
         <svg class="spark" viewBox="0 0 100 32" preserveAspectRatio="none"><polyline id="tempLine" points="{{ spark_points }}"/></svg>
@@ -3348,7 +3525,7 @@ HEALTH_PAGE = """
     function update(d){
         set("cpuPct", d.cpu.pct+"%"); set("cpuLoad", d.cpu.load[0].toFixed(2));
         var COL=__CPU_COLORS__;
-        var g=$("cpuLines"), rows=((d.cpu&&d.cpu.hist)||[]).filter(function(r){return r&&r.length;});
+        var g=$("cpuLines"), rows=((d.cpu&&d.cpu.hist)||[]).filter(function(r){return r&&r.length;}).slice(-__CPU_CARD__);
         if(g && rows.length){
             if(rows.length===1) rows=rows.concat(rows);
             var nc=Math.max.apply(null, rows.map(function(r){return r.length;}));
@@ -3427,7 +3604,9 @@ def health():
     boot_alert = time.strftime("%a %-d %b, %-I:%M %p", time.localtime(float(ts))) if ts else None
     return render_page(HEALTH_PAGE,
         d=d, boot_alert=boot_alert,
-        cpu_lines=_cpu_lines(d["cpu"].get("hist", [])), cpu_colors=CPU_LINE_COLORS,
+        cpu_lines=_cpu_lines(d["cpu"].get("hist", [])[-CPU_CARD_SAMPLES:]),
+        cpu_colors=CPU_LINE_COLORS,
+        card_min=max(1, round(CPU_CARD_SAMPLES * 4 / 60)),
         # Ports the redirect script scopes to tailscale0 + loopback. Wide here is the
         # documented design, not a finding, so it must not render as an alarm.
         firewalled={8080, 8081, 22},
@@ -3774,7 +3953,9 @@ BUDGET_PAGE, STATS_PAGE, HEALTH_PAGE, DEVICES_PAGE, DIGEST_PAGE, WRAPPED_PAGE = 
 DIGEST_PAGE = _add_bg(DIGEST_PAGE)
 WRAPPED_PAGE = _add_bg(WRAPPED_PAGE)
 STATS_PAGE = _add_bg(STATS_PAGE)
-HEALTH_PAGE = HEALTH_PAGE.replace("__CPU_COLORS__", json.dumps(CPU_LINE_COLORS))
+HEALTH_PAGE = (HEALTH_PAGE.replace("__CPU_COLORS__", json.dumps(CPU_LINE_COLORS))
+                          .replace("__CPU_CARD__", str(CPU_CARD_SAMPLES)))
+CPU_PAGE = _add_bg(_add_theme(CPU_PAGE.replace("__CPU_COLORS__", json.dumps(CPU_LINE_COLORS))))
 HEALTH_PAGE = _add_bg(HEALTH_PAGE)
 DEVICES_PAGE = _add_bg(DEVICES_PAGE)
 # The gate is script-readable from the gated site (it replaces that site's page), so it

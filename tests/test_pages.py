@@ -351,3 +351,66 @@ def test_service_restart_alone_is_not_a_reboot(rdb):
     budget.boot_watch()
     for _ in range(3):
         assert budget.boot_watch() is None
+
+
+# --- /cpu detail page ---------------------------------------------------------------
+
+def _hist(monkeypatch, n, cores=4, v=50.0):
+    """Install a known CPU history.
+
+    collect_health() caches for 2s, so patching _CPU_HIST alone is not enough -- the
+    route serves the previous test's payload and the fixture is silently ignored.
+    Every one of these tests passed against real machine data before this cleared.
+    """
+    import collections
+    monkeypatch.setattr(budget, "_CPU_HIST",
+                        collections.deque([[v + c for c in range(cores)] for _ in range(n)],
+                                          maxlen=budget.CPU_HIST_LEN))
+    budget._HEALTH_CACHE.clear()
+
+
+def test_cpu_page_renders_axis_labels_and_a_line_per_core(client, monkeypatch):
+    _hist(monkeypatch, 60)
+    r = client.get("/cpu")
+    assert r.status_code == 200
+    html = r.data.decode()
+    # The whole point of the page: a percentage axis you can actually read a value off.
+    for label in ("100%", "75", "50", "25", "0"):
+        assert f">{label}</span>" in html
+    assert html.count("<polyline") >= 4          # one per core
+    for colour in budget.CPU_LINE_COLORS:
+        assert colour in html
+
+
+def test_cpu_page_survives_an_empty_history(client, monkeypatch):
+    """First request after a restart has no samples. It must render, not 500."""
+    _hist(monkeypatch, 0)
+    assert client.get("/cpu").status_code == 200
+
+
+def test_cpu_card_shows_a_shorter_window_than_the_detail_page(client, monkeypatch):
+    """The card is a glance, the page is the record. If the card silently grew to the
+    full buffer its own 'last N min' label would start lying."""
+    assert budget.CPU_CARD_SAMPLES < budget.CPU_HIST_LEN
+    _hist(monkeypatch, budget.CPU_HIST_LEN)
+    # Assert on what the routes actually emit. Calling _cpu_lines() directly here
+    # passed even with the route's slice deleted -- it tested the helper, not the page.
+    def first_polyline(html):
+        body = html.split('<polyline', 1)[1].split('points="', 1)[1].split('"', 1)[0]
+        return len(body.split())
+
+    assert first_polyline(client.get("/health").data.decode()) == budget.CPU_CARD_SAMPLES
+    budget._HEALTH_CACHE.clear()
+    assert first_polyline(client.get("/cpu").data.decode()) == budget.CPU_HIST_LEN
+
+
+def test_health_card_links_to_the_cpu_page_keeping_the_referrer_crumb(client, monkeypatch):
+    _hist(monkeypatch, 10)
+    html = client.get("/health?from=reddit").data.decode()
+    assert 'href="/cpu?from=reddit"' in html
+
+
+def test_cpu_stat_rows_report_now_avg_and_peak_per_core(monkeypatch):
+    rows = budget._cpu_stat_rows([[10.0, 0.0], [90.0, 0.0], [50.0, 0.0]])
+    assert rows[0]["now"] == 50 and rows[0]["avg"] == 50 and rows[0]["peak"] == 90
+    assert rows[0]["color"] != rows[1]["color"]

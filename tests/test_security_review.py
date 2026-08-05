@@ -642,7 +642,10 @@ def test_shadow_ignores_gaps_that_mean_you_left(rdb):
     """Same rule the heartbeat uses: a gap bigger than the cap is idleness, not use.
     Without it, opening a tab on Monday and again on Friday would bill you four days."""
     addon._SHADOW.clear()
-    t = time.time()
+    # Fixed midday clock: with time.time() the +3600 crosses midnight for an hour every
+    # night, the meter correctly banks the old day, and the assertion reads half the
+    # total. A test that fails only between 23:00 and midnight is worse than no test.
+    t = time.mktime((2026, 6, 15, 12, 0, 0, 0, 0, -1))
     addon.shadow_note("reddit", t)
     addon.shadow_note("reddit", t + 5)        # counted
     addon.shadow_note("reddit", t + 5 + 3600) # an hour later: not counted
