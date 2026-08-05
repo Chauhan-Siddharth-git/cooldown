@@ -2658,10 +2658,12 @@ scheduler.start()
 # ---------------------------------------------------------------------------
 
 _TEMP_HIST = deque(maxlen=90)   # recent CPU temps for the sparkline (~6 min at 4s polls)
-# ~12 minutes at the 4s poll. The card still draws only the last 45 samples (~3 min) —
-# a sparkline that thin cannot carry more — but /cpu has the room to show all of it.
-CPU_HIST_LEN = 180
-CPU_CARD_SAMPLES = 45
+# ~4 minutes at the 4s poll. 180 samples fit the buffer but not the eye: across a
+# 100-unit viewBox that put a point every 0.55 units and the lines read as noise.
+# The card draws the last 30 (~2 min) — far enough below the page's window that the
+# two are visibly different views, not the same picture at two sizes.
+CPU_HIST_LEN = 60
+CPU_CARD_SAMPLES = 30
 _CPU_HIST = deque(maxlen=CPU_HIST_LEN)   # per-core CPU%, one list per sample
 
 # Per-core line colours. Retro/outrun on purpose — the page is near-black with a hex
