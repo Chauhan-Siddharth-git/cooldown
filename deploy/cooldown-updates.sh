@@ -35,7 +35,13 @@ for t in apt-daily.timer apt-daily-upgrade.timer; do
     # advances again. `systemctl restart` does NOT fix it -- verified on the live box; it
     # re-triggers the unit and leaves the same stale point. The stamp file has to go so
     # systemd recomputes from scratch.
-    if [ -z "$(systemctl show "$t" -p NextElapseUSecRealtime --value 2>/dev/null)" ]; then
+    # Check BOTH elapse fields. Calendar timers populate Realtime and monotonic ones
+    # (OnBootSec/OnUnitActiveSec) populate Monotonic; testing only Realtime would call
+    # every healthy monotonic timer wedged and reset it once an hour, forever. Both
+    # entries in this loop are calendar timers today -- this is for whoever adds a third.
+    next_rt="$(systemctl show "$t" -p NextElapseUSecRealtime --value 2>/dev/null)"
+    next_mono="$(systemctl show "$t" -p NextElapseUSecMonotonic --value 2>/dev/null)"
+    if [ -z "$next_rt" ] && { [ -z "$next_mono" ] || [ "$next_mono" = "0" ]; }; then
         logger -t cooldown-updates "$t has no next elapse; clearing stamp and restarting"
         systemctl stop "$t"
         rm -f "/var/lib/systemd/timers/stamp-$t"
