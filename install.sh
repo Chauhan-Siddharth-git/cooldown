@@ -214,10 +214,11 @@ OnCalendar=
 OnCalendar=*-*-* 03:00
 RandomizedDelaySec=30m
 TEOF
-    # A Pi has no battery-backed RTC: the clock is wrong at boot and jumps when NTP
-    # syncs. A Persistent= timer that computed its elapse point before the jump keeps it
-    # forever -- that is how both apt timers went silent for ten days while reporting
-    # enabled/active/running. Ordering after time-sync stops it recurring.
+    # Ordering after time-sync is ordinary hygiene for Persistent= timers on a board
+    # with no battery-backed RTC. It is NOT what fixed the 2026-08 outage on the
+    # reference box -- that was a first-boot wizard blocking multi-user.target, so the
+    # timers fired and their jobs queued forever. Kept because it is correct, not
+    # because it was the cure.
     for t in apt-daily apt-daily-upgrade; do
       sudo tee /etc/systemd/system/$t.timer.d/cooldown-timesync.conf >/dev/null <<'TSEOF'
 [Unit]

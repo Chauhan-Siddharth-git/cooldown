@@ -3250,12 +3250,17 @@ def _updates(now=None):
             d = json.load(fh)
     except Exception:
         return {"fresh": False, "pending": None, "security": None,
-                "reboot_required": False, "checked_ago": None}
+                "reboot_required": False, "boot_ok": True, "stuck_jobs": 0,
+                "checked_ago": None}
     checked = float(d.get("checked", 0))
     return {"fresh": (now - checked) < UPDATES_STALE_AFTER,
             "pending": int(d.get("pending", 0)),
             "security": int(d.get("security", 0)),
             "reboot_required": bool(d.get("reboot_required")),
+            # boot_ok defaults True so an older state file does not read as broken; the
+            # writer always emits it now.
+            "boot_ok": bool(d.get("boot_ok", True)),
+            "stuck_jobs": int(d.get("stuck_jobs", 0)),
             "last_result": d.get("last_result", "unknown"),
             "last_run_ago": int(now - float(d["last_run"])) if d.get("last_run") else None,
             "checked_ago": int(now - checked) if checked else None}
@@ -3590,7 +3595,11 @@ HEALTH_PAGE = """
     <!-- Patch state. Previously answerable only by SSHing in, which is why nobody
          noticed apt's timer had been dead for ten days. -->
     <div class="errline">
-      {%- if not d.updates.fresh -%}
+      {%- if d.updates.fresh and (not d.updates.get('boot_ok', True) or d.updates.get('stuck_jobs', 0)) -%}
+      <span class="upd-bad">Boot never completed</span> &mdash; scheduled jobs are queued
+      and will not run{% if d.updates.get('stuck_jobs', 0) %} ({{ d.updates.stuck_jobs }} timer{{ '' if d.updates.stuck_jobs == 1 else 's' }} fired without executing){% endif %}.
+      Patch counts below are not to be trusted.
+      {%- elif not d.updates.fresh -%}
       <span class="upd-bad">Update status unknown</span> &mdash; the hourly check has not
       reported{% if d.updates.checked_ago %} for {{ (d.updates.checked_ago // 3600) }}h{% endif %}.
       {%- elif d.updates.reboot_required -%}

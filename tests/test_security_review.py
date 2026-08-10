@@ -391,6 +391,7 @@ _HEALTH_BASE = {
     "errors": {"total": 0, "proxy": 0, "top": [], "last": "", "last_ago": None},
     "enforcement": {"ok": True, "browsing": False, "nav_ago": None, "charge_ago": None},
     "updates": {"fresh": True, "pending": 0, "security": 0, "reboot_required": False,
+                "boot_ok": True, "stuck_jobs": 0,
                 "last_result": "success", "last_run_ago": 3600, "checked_ago": 60},
 }
 
@@ -1390,3 +1391,48 @@ def test_health_page_says_fully_patched_when_it_is(client, monkeypatch):
                               "reboot_required": False, "last_result": "success",
                               "last_run_ago": 60, "checked_ago": 60})
     assert "Fully patched" in html
+
+
+def test_updates_reports_a_boot_that_never_completed(tmp_path, monkeypatch):
+    """The signal the watchdog was missing for eleven days.
+
+    A timer can fire exactly on schedule and achieve nothing if its job then queues
+    behind a target that is never reached -- which is what happened, while every other
+    check here read healthy.
+    """
+    f = tmp_path / "u.json"
+    f.write_text(json.dumps({"pending": 0, "security": 0, "reboot_required": False,
+                             "boot_ok": False, "stuck_jobs": 2,
+                             "checked": time.time() - 60}))
+    monkeypatch.setattr(budget, "UPDATES_STATE", str(f))
+    u = budget._updates()
+    assert u["boot_ok"] is False and u["stuck_jobs"] == 2
+
+
+def test_updates_assumes_boot_is_fine_when_an_old_report_lacks_the_field(tmp_path, monkeypatch):
+    """A state file written before this field existed must not read as a broken boot."""
+    f = tmp_path / "u.json"
+    f.write_text(json.dumps({"pending": 3, "checked": time.time() - 60}))
+    monkeypatch.setattr(budget, "UPDATES_STATE", str(f))
+    assert budget._updates()["boot_ok"] is True
+
+
+def test_health_page_reports_a_jammed_boot_above_everything_else(client, monkeypatch):
+    """When jobs cannot run, the patch counts are meaningless -- 'Fully patched' would be
+    actively misleading, because nothing can install. The jam has to outrank them."""
+    html = _health_html_with(client, monkeypatch,
+                             {"fresh": True, "pending": 0, "security": 0,
+                              "reboot_required": False, "boot_ok": False, "stuck_jobs": 2,
+                              "last_result": "success", "last_run_ago": 60, "checked_ago": 60})
+    assert "Boot never completed" in html
+    assert "2 timers fired without executing" in html
+    assert "Fully patched" not in html
+
+
+def test_health_page_reports_stuck_jobs_even_when_boot_looks_fine(client, monkeypatch):
+    """multi-user.target can be active while an individual job is still wedged."""
+    html = _health_html_with(client, monkeypatch,
+                             {"fresh": True, "pending": 0, "security": 0,
+                              "reboot_required": False, "boot_ok": True, "stuck_jobs": 1,
+                              "last_result": "success", "last_run_ago": 60, "checked_ago": 60})
+    assert "1 timer fired without executing" in html
