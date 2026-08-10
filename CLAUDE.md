@@ -34,25 +34,42 @@ usually need checking against both.
   allowlist (`python3 deploy/gen_allow_hosts.py`) and restart the proxy. Three places
   must agree: `app.py`, `addon.py`, and the unit's `--allow-hosts`.
 
-## Running experiment: the shadow meter (started 2026-08-03)
+## The shadow meter: read out 2026-08-10, still running
 
 `addon.shadow_note()` measures foreground time a second way — passively, by watching the
 requests gated sites make on their own, with nothing injected. It writes only
 `shadow_usage:*`, never budget state, and `/stats` shows both columns side by side.
 
-The question it answers: **can the injected heartbeat go away?** That injection is the
-largest item in the threat model (see SECURITY.md), and if passive tracks it with a
-steady multiplier, passive plus a correction could replace it. Passive is *expected* to
-read high — background tabs and autoplaying video keep making requests.
+**Result after 7 days (332 heartbeat minutes, 42 paired hours): passive tracks the
+heartbeat at 1.03x**, daily 0.96x–1.08x. Both original predictions were wrong. The
+undercount hypothesis — client-side feeds mean reading is invisible to the network — is
+dead: zero hours where the heartbeat charged and passive saw nothing. Error is
+one-directional (6.1 min of YouTube over-count, likely background audio); it never goes
+blind. Verified non-circular: `/budget/*` returns before `shadow_note()`, checked by
+sending a heartbeat POST through `request()` and watching the buffer stay empty.
 
-**It is an experiment with an end.** If it is still here months later with nobody having
-looked at the ratio, delete it: `shadow_note`, its two constants, the call site in
-`request()`, `shadow_comparison()` and the `/stats` card. Roughly 90 lines.
+**Do not read that as "the injection can go."** Two blockers, neither about accuracy:
+
+- **Passive cannot observe visibility and never will** — that fact lives in the browser.
+  It agrees only because sites throttle themselves when hidden, which is third-party
+  behaviour nobody here controls. If YouTube changes background polling, passive
+  over-counts and nothing announces it. The heartbeat *knows*; passive *infers*.
+- **The injection also draws the UI** — countdown, wind-down bar, last-minute warning.
+  Passive replaces the measuring only.
+
+Next step if resumed: shadow-*enforcement* (let passive drive a parallel budget and log
+when it would have cut you off), which tests the thing you would rely on. Aggregate
+minutes do not. A visibility-only beacon — a few lines, no per-second POSTs, no UI —
+would keep ground truth while shrinking the injected surface to almost nothing.
+
+**It is still an experiment with an end.** If nobody acts on the above, delete it:
+`shadow_note`, its two constants, the call site in `request()`, `shadow_comparison()`
+and the `/stats` card. Roughly 90 lines.
 
 ## Commands
 
 ```bash
-python3 -m pytest tests/ -q              # 378 tests; needs local redis (uses db 15)
+python3 -m pytest tests/ -q              # 541 tests; needs local redis (uses db 15)
 python3 -m pytest tests/test_invariants.py -q   # the structural properties
 git config core.hooksPath .githooks      # enable the pre-commit checks (once per clone)
 ./start.sh                               # local dev: loopback-only proxy, separate dev CA

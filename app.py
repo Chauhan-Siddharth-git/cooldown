@@ -2574,13 +2574,37 @@ def shadow_comparison(days=7, now=None):
     watching the requests those sites make on their own. If the two numbers track each
     other, the injection could eventually go; if they don't, this says by how much.
 
-    The original prediction was that passive would read HIGH — background tabs,
-    autoplaying video and prefetching all keep requesting while you are not looking. Early
-    data suggests the opposite may dominate: modern feeds render client-side, so *reading*
-    generates no network traffic at all. Sit on one Reddit thread for two minutes and
-    passive sees a gap it must discard, while the heartbeat counts every second. If that
-    holds, passive undercounts exactly the behaviour this tool exists to catch, and it
-    cannot replace the injection. Either way the ratio is the finding, not the raw number.
+    RESULT, 2026-08-10 (7 days, 332 heartbeat minutes over 42 paired hours). Both
+    predictions were wrong. Passive tracks the heartbeat at 1.03x overall — reddit 1.05x,
+    youtube 1.01x — with daily ratios between 0.96x and 1.08x.
+
+    The prediction that passive would UNDERCOUNT (client-side feeds mean reading generates
+    no traffic) is specifically dead: across those 42 hours there were ZERO in which the
+    heartbeat charged time and passive saw nothing. The error is one-directional and
+    small — passive counted 6.1 minutes across 4 hours where the heartbeat charged
+    nothing, all YouTube, most likely background audio. It never goes blind; when wrong it
+    over-counts, which fails toward charging you rather than gifting you time.
+
+    Checked for circularity before believing it: a 3% agreement between two supposedly
+    independent meters is more easily explained by one watching the other's traffic. It is
+    not. The /budget/* handler returns before shadow_note() is reached, verified by
+    sending a heartbeat POST through request() and confirming the shadow buffer stays
+    empty.
+
+    TWO THINGS THIS DOES NOT SETTLE.
+
+    Passive cannot observe visibility, and never will — that fact lives in the browser.
+    It agrees with the heartbeat because sites throttle themselves when hidden, which is
+    third-party behaviour nobody here controls. If YouTube changes how a backgrounded tab
+    polls, passive starts over-counting and nothing announces it.
+
+    The injection does two jobs. It measures time AND draws the countdown, the wind-down
+    bar and the last-minute warning. Passive replaces the measuring only; removing the
+    script removes the on-page UI with it. That is a product decision, not a measurement
+    one.
+
+    Sample is thin: 5.5 hours of real use, and per-hour ratios spread 0.72x-1.28x even
+    though daily aggregates hold within 8%.
     """
     now = now if now is not None else time.time()
     started = _try(lambda: r.get("shadow_started"))
