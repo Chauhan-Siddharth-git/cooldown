@@ -1,0 +1,13 @@
+[Unit]
+Description=Hourly apt timer watchdog + pending-update report
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+# Persistent so a box that was off overnight still checks promptly on the next boot,
+# rather than waiting a full hour to notice it is behind.
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

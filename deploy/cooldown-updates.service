@@ -1,0 +1,11 @@
+[Unit]
+Description=Budget: apt timer watchdog + pending-update report
+Documentation=man:unattended-upgrade(8)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cooldown-updates.sh
+# Simulated apt only; it restarts timers but never installs anything.
+Nice=10
+IOSchedulingClass=idle

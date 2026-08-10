@@ -179,15 +179,63 @@ elif [ "$DRY" = 1 ]; then
   would "install unattended-upgrades and enable daily security updates"
 else
   echo "  ${DIM}A box you never log into again is exactly the thing that needs to patch"
-  echo "  itself. Auto-REBOOT stays off — a gateway restarting itself would drop every"
-  echo "  routed device mid-browse.${N}"
+  echo "  itself. Kernel updates need a restart to take effect, so one is scheduled for"
+  echo "  04:00 — a gateway restarting mid-browse only matters while someone browses.${N}"
   if ask "Enable automatic security updates?"; then
     dpkg -s unattended-upgrades >/dev/null 2>&1 || { run apt-get update -qq; run apt-get install -y unattended-upgrades; }
     # AutocleanInterval too: without it the downloaded .deb files just accumulate
     # (426 MB on a box that had been patching itself for a few weeks).
     printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\nAPT::Periodic::AutocleanInterval "7";\n' \
       | sudo tee /etc/apt/apt.conf.d/20auto-upgrades >/dev/null
-    ok "security updates will install themselves; reboots stay manual"
+    # The periodic flags alone are not enough. Debian's stock origins allow origin=Debian
+    # only, so on a Pi the kernel, firmware, rpi-eeprom -- and tailscaled, which this
+    # box's remote access depends on -- were silently never upgraded. Found ten days
+    # after shipping "automatic security updates are on", which was true and useless.
+    sudo tee /etc/apt/apt.conf.d/51cooldown-unattended >/dev/null <<'APTEOF'
+// APT appends to an existing list rather than replacing it, so this is additive.
+Unattended-Upgrade::Origins-Pattern {
+        "origin=Raspberry Pi Foundation,codename=${distro_codename}";
+        "origin=Tailscale";
+};
+// Kernel updates need a restart to take effect. 04:00 sits inside the night window and
+// after the 03:00 upgrade run below.
+Unattended-Upgrade::Automatic-Reboot "true";
+Unattended-Upgrade::Automatic-Reboot-WithUsers "true";
+Unattended-Upgrade::Automatic-Reboot-Time "04:00";
+// Automatic kernel updates without this fill a small /boot within a few releases.
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+APTEOF
+    # Upgrade at 03:00 so a required reboot lands at 04:00 the same night; stock 06:00
+    # +/-60m can miss the slot and leave the flag sitting for 22 hours.
+    sudo mkdir -p /etc/systemd/system/apt-daily-upgrade.timer.d /etc/systemd/system/apt-daily.timer.d
+    sudo tee /etc/systemd/system/apt-daily-upgrade.timer.d/cooldown-schedule.conf >/dev/null <<'TEOF'
+[Timer]
+OnCalendar=
+OnCalendar=*-*-* 03:00
+RandomizedDelaySec=30m
+TEOF
+    # A Pi has no battery-backed RTC: the clock is wrong at boot and jumps when NTP
+    # syncs. A Persistent= timer that computed its elapse point before the jump keeps it
+    # forever -- that is how both apt timers went silent for ten days while reporting
+    # enabled/active/running. Ordering after time-sync stops it recurring.
+    for t in apt-daily apt-daily-upgrade; do
+      sudo tee /etc/systemd/system/$t.timer.d/cooldown-timesync.conf >/dev/null <<'TSEOF'
+[Unit]
+Wants=time-sync.target
+After=time-sync.target
+TSEOF
+    done
+    # Patching a library on disk does nothing for a process holding the old copy in
+    # memory. needrestart restarts what actually needs it -- except ssh, the tailnet and
+    # dbus, where losing the service costs more than the delay to the 04:00 reboot.
+    dpkg -s needrestart >/dev/null 2>&1 || run apt-get install -y needrestart
+    sudo mkdir -p /etc/needrestart/conf.d
+    sudo tee /etc/needrestart/conf.d/50-cooldown.conf >/dev/null <<'NREOF'
+$nrconf{restart} = 'a';
+$nrconf{override_rc} = { qr(^(ssh|sshd|tailscaled|dbus)$) => 0 };
+NREOF
+    sudo systemctl daemon-reload
+    ok "security updates install themselves; kernel reboots at 04:00"
   else
     warn "skipped — run 'sudo unattended-upgrades --dry-run' occasionally, or the box rots"
   fi

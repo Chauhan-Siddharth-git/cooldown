@@ -6,6 +6,7 @@ rather than just describing it.
 import os
 import re
 import sys
+import json
 import time
 
 import pytest
@@ -381,17 +382,32 @@ def test_error_reporting_never_raises(rdb, monkeypatch):
     assert budget.error_summary()["proxy"] == 0
 
 
+_HEALTH_BASE = {
+    "model": "Raspberry Pi", "cpu": {"pct": 0, "per_core": [], "load": [0, 0, 0], "cores": 1},
+    "temp_c": 40, "temp_hist": [40], "mem": {"used_mb": 1, "total_mb": 2, "pct": 50},
+    "disk": {"used_gb": 1, "total_gb": 2, "pct": 50}, "uptime": "1h",
+    "net": {"eth0": None, "tailscale0": None, "wlan0": None},
+    "power": {"ok": True}, "services": {}, "services_ok": True,
+    "errors": {"total": 0, "proxy": 0, "top": [], "last": "", "last_ago": None},
+    "enforcement": {"ok": True, "browsing": False, "nav_ago": None, "charge_ago": None},
+    "updates": {"fresh": True, "pending": 0, "security": 0, "reboot_required": False,
+                "last_result": "success", "last_run_ago": 3600, "checked_ago": 60},
+}
+
+
 def _health_html(client, monkeypatch, errors):
     """Render /health against a fixed payload. Collecting it for real is
     environment-dependent — on a non-Pi host vcgencmd and /proc/device-tree/model are
     genuinely missing, which is two swallowed errors before the test does anything."""
-    base = {"model": "Raspberry Pi", "cpu": {"pct": 0, "per_core": [], "load": [0, 0, 0], "cores": 1},
-            "temp_c": 40, "temp_hist": [40], "mem": {"used_mb": 1, "total_mb": 2, "pct": 50},
-            "disk": {"used_gb": 1, "total_gb": 2, "pct": 50}, "uptime": "1h",
-            "net": {"eth0": None, "tailscale0": None, "wlan0": None},
-            "power": {"ok": True}, "services": {}, "services_ok": True, "errors": errors,
-            "enforcement": {"ok": True, "browsing": False, "nav_ago": None, "charge_ago": None}}
-    monkeypatch.setattr(budget, "collect_health", lambda *a, **k: base)
+    monkeypatch.setattr(budget, "collect_health",
+                        lambda *a, **k: dict(_HEALTH_BASE, errors=errors))
+    return client.get("/health").get_data(as_text=True)
+
+
+def _health_html_with(client, monkeypatch, updates):
+    """Same fixed payload, with only the patch-state block swapped."""
+    monkeypatch.setattr(budget, "collect_health",
+                        lambda *a, **k: dict(_HEALTH_BASE, updates=updates))
     return client.get("/health").get_data(as_text=True)
 
 
@@ -1305,3 +1321,72 @@ def test_day_keys_are_ordered_oldest_first(rdb):
     keys = budget._day_keys("usage", 3, now, ["reddit"])
     assert keys == ["usage:2026-06-13:reddit", "usage:2026-06-14:reddit",
                     "usage:2026-06-15:reddit"], keys
+
+
+# ---------- patch state on /health ----------
+
+def test_updates_reports_unknown_when_the_hourly_check_has_not_run(tmp_path, monkeypatch):
+    """A missing report must not read as a clean one. The watchdog that reports on apt's
+    timers can stall exactly the way apt's timers did."""
+    monkeypatch.setattr(budget, "UPDATES_STATE", str(tmp_path / "nope.json"))
+    u = budget._updates()
+    assert u["fresh"] is False and u["pending"] is None
+
+
+def test_updates_goes_stale_rather_than_reporting_old_counts(tmp_path, monkeypatch):
+    f = tmp_path / "u.json"
+    f.write_text(json.dumps({"pending": 4, "security": 1, "reboot_required": False,
+                             "checked": time.time() - 9 * 3600}))
+    monkeypatch.setattr(budget, "UPDATES_STATE", str(f))
+    assert budget._updates()["fresh"] is False
+
+
+def test_updates_reads_a_fresh_report(tmp_path, monkeypatch):
+    f = tmp_path / "u.json"
+    f.write_text(json.dumps({"pending": 19, "security": 3, "reboot_required": True,
+                             "last_run": time.time() - 7200, "last_result": "success",
+                             "checked": time.time() - 120}))
+    monkeypatch.setattr(budget, "UPDATES_STATE", str(f))
+    u = budget._updates()
+    assert u["fresh"] is True and u["pending"] == 19 and u["security"] == 3
+    assert u["reboot_required"] is True and u["last_run_ago"] >= 7200
+
+
+def test_updates_survives_a_corrupt_report(tmp_path, monkeypatch):
+    """It sits in the health path. Garbage on disk must not 500 the dashboard."""
+    f = tmp_path / "u.json"
+    f.write_text("{not json at all")
+    monkeypatch.setattr(budget, "UPDATES_STATE", str(f))
+    assert budget._updates()["fresh"] is False
+
+
+def test_health_page_shows_reboot_required(client, monkeypatch):
+    html = _health_html_with(client, monkeypatch,
+                             {"fresh": True, "pending": 19, "security": 3,
+                              "reboot_required": True, "last_result": "success",
+                              "last_run_ago": 60, "checked_ago": 60})
+    assert "Reboot required" in html
+
+
+def test_health_page_shows_pending_security_count(client, monkeypatch):
+    html = _health_html_with(client, monkeypatch,
+                             {"fresh": True, "pending": 19, "security": 3,
+                              "reboot_required": False, "last_result": "success",
+                              "last_run_ago": 60, "checked_ago": 60})
+    assert "3 security" in html and "19</b> updates pending" in html
+
+
+def test_health_page_says_when_it_cannot_tell(client, monkeypatch):
+    html = _health_html_with(client, monkeypatch,
+                             {"fresh": False, "pending": None, "security": None,
+                              "reboot_required": False, "checked_ago": 4 * 3600})
+    assert "Update status unknown" in html
+    assert "Fully patched" not in html
+
+
+def test_health_page_says_fully_patched_when_it_is(client, monkeypatch):
+    html = _health_html_with(client, monkeypatch,
+                             {"fresh": True, "pending": 0, "security": 0,
+                              "reboot_required": False, "last_result": "success",
+                              "last_run_ago": 60, "checked_ago": 60})
+    assert "Fully patched" in html

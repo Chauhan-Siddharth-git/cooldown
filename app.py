@@ -3229,6 +3229,38 @@ def boot_ack():
     r.delete("unacked_boot")
     return redirect('/health')
 
+UPDATES_STATE = "/var/lib/cooldown-updates.json"
+UPDATES_STALE_AFTER = 3 * 3600   # the writer runs hourly; three misses means it stopped
+
+
+def _updates(now=None):
+    """Pending-update state, written hourly by deploy/cooldown-updates.sh.
+
+    Read from a file rather than shelling out to apt: `apt-get -s dist-upgrade` takes a
+    second or two, and /health is polled every four. A worker blocked on apt is a worker
+    not serving the gate.
+
+    Returns fresh=False when the file is missing or stale, which is itself the useful
+    signal -- the watchdog that reports on apt's timers can stall the same way apt's
+    timers did, and a stale report must not read as a clean one.
+    """
+    now = now if now is not None else time.time()
+    try:
+        with open(UPDATES_STATE) as fh:
+            d = json.load(fh)
+    except Exception:
+        return {"fresh": False, "pending": None, "security": None,
+                "reboot_required": False, "checked_ago": None}
+    checked = float(d.get("checked", 0))
+    return {"fresh": (now - checked) < UPDATES_STALE_AFTER,
+            "pending": int(d.get("pending", 0)),
+            "security": int(d.get("security", 0)),
+            "reboot_required": bool(d.get("reboot_required")),
+            "last_result": d.get("last_result", "unknown"),
+            "last_run_ago": int(now - float(d["last_run"])) if d.get("last_run") else None,
+            "checked_ago": int(now - checked) if checked else None}
+
+
 def collect_health(max_age=2.0):
     """Snapshot of the box. Cached briefly: the page polls every 4s and several tabs (or a
     hostile same-origin script) would otherwise each spawn ~5 `systemctl` subprocesses per
@@ -3249,6 +3281,8 @@ def collect_health(max_age=2.0):
                 "cores": os.cpu_count() or 1, "hist": [list(x) for x in _CPU_HIST]},
         "temp_c": temp,
         "temp_hist": list(_TEMP_HIST),
+        "updates": _try(_updates, {"fresh": False, "pending": None, "security": None,
+                                   "reboot_required": False, "checked_ago": None}),
         "mem": _try(_mem, {"used_mb": 0, "total_mb": 0, "pct": 0}),
         "disk": _try(_disk, {"used_gb": 0, "total_gb": 0, "avail_gb": 0, "pct": 0}),
         "uptime": _try(_uptime, "?"),
@@ -3343,6 +3377,7 @@ HEALTH_PAGE = """
     a.cpulink:hover{border-color:var(--accent)}
     a.cpulink:hover .more{opacity:1}
     .more{opacity:.55;white-space:nowrap}
+    .upd-bad{color:var(--wait);font-weight:600}
     .cpukey{display:flex;flex-wrap:wrap;gap:3px 9px;font-size:10.5px;color:var(--muted);
             font-variant-numeric:tabular-nums}
         .cpukey span{display:inline-flex;align-items:center;gap:4px}
@@ -3550,6 +3585,25 @@ HEALTH_PAGE = """
       {%- else -%}
       No handled errors since boot.
       {%- endif -%}
+    </div>
+
+    <!-- Patch state. Previously answerable only by SSHing in, which is why nobody
+         noticed apt's timer had been dead for ten days. -->
+    <div class="errline">
+      {%- if not d.updates.fresh -%}
+      <span class="upd-bad">Update status unknown</span> &mdash; the hourly check has not
+      reported{% if d.updates.checked_ago %} for {{ (d.updates.checked_ago // 3600) }}h{% endif %}.
+      {%- elif d.updates.reboot_required -%}
+      <span class="upd-bad">Reboot required</span> to finish a kernel update.
+      {%- if d.updates.pending %} <b>{{ d.updates.pending }}</b> package{{ '' if d.updates.pending == 1 else 's' }} still pending.{% endif -%}
+      {%- elif d.updates.pending -%}
+      <b>{{ d.updates.pending }}</b> update{{ '' if d.updates.pending == 1 else 's' }} pending{%
+        if d.updates.security %}, <span class="upd-bad">{{ d.updates.security }} security</span>{% endif %}.
+      {%- else -%}
+      Fully patched.
+      {%- endif -%}
+      {%- if d.updates.fresh and d.updates.last_result and d.updates.last_result != 'success' %}
+      <span class="errlast">Last unattended run: {{ d.updates.last_result }}</span>{% endif -%}
     </div>
 
     <div class="foot">{% if back_url %}<a class="home" href="{{ back_url }}">&larr; {{ back_label }}</a>{% endif %}<a href="/stats{{ qs }}">Usage stats</a><a href="/devices{{ qs }}">Devices</a><a href="/health{{ qs }}">Refresh</a></div>

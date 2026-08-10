@@ -37,9 +37,14 @@ case "${1:-code}" in
     STAGE="$("${SSH[@]}" 'mktemp -d /tmp/cooldown-deploy.XXXXXXXX')"
     [ -n "$STAGE" ] || { echo "could not create a staging dir on $PI" >&2; exit 1; }
     trap '"${SSH[@]}" "rm -rf $STAGE" >/dev/null 2>&1 || true' EXIT
-    scp -o BatchMode=yes deploy/cooldown-*.service deploy/cooldown-redirect.sh "$PI:$STAGE/"
-    "${SSH[@]}" "sudo install -m644 $STAGE/cooldown-*.service /etc/systemd/system/ &&
+    # .timer as well as .service: the glob was *.service only, so cooldown-backup.timer sat
+    # in the repo while the box ran whatever had been installed by hand. A deploy that
+    # silently skips a file is worse than one that fails.
+    scp -o BatchMode=yes deploy/cooldown-*.service deploy/cooldown-*.timer \
+        deploy/cooldown-redirect.sh deploy/cooldown-updates.sh "$PI:$STAGE/"
+    "${SSH[@]}" "sudo install -m644 $STAGE/cooldown-*.service $STAGE/cooldown-*.timer /etc/systemd/system/ &&
                  sudo install -m755 $STAGE/cooldown-redirect.sh /usr/local/sbin/cooldown-redirect.sh &&
+                 sudo install -m755 $STAGE/cooldown-updates.sh /usr/local/sbin/cooldown-updates.sh &&
                  rm -rf $STAGE &&
                  sudo systemctl daemon-reload && echo 'units installed + daemon-reloaded'"
     echo "NOTE: restart services yourself if a unit changed (sudo systemctl restart <svc>)."
