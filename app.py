@@ -2858,17 +2858,40 @@ def enforcement_status():
     now = time.time()
     nav = _try(lambda: r.get("last_active_nav"))
     charge = _try(lambda: r.get("last_charge"))
-    burst = _try(lambda: r.get("nav_burst_start"))
     nav_ago = int(now - float(nav)) if nav else None
     charge_ago = int(now - float(charge)) if charge else None
-    burst_ago = int(now - float(burst)) if burst else None
     browsing = nav_ago is not None and nav_ago <= 5 * 60
-    # Same burst rule addon.py uses, so the banner and this card cannot disagree. Without
-    # it both called the first page load of every session a failure.
-    settled = burst_ago is not None and burst_ago >= 8 * 60
-    dead = browsing and settled and (charge_ago is None or charge_ago > 8 * 60)
+    # Same comparison addon.py makes, so the banner and this card cannot disagree: the
+    # passive meter's minutes against the heartbeat's over the same recent hours.
+    hb, sh = _try(lambda: _meter_totals(now), (0.0, 0.0))
+    judged = sh >= ENFORCEMENT_MIN_PASSIVE
+    dead = judged and hb < sh * ENFORCEMENT_RATIO
     return {"ok": not dead, "browsing": browsing,
-            "nav_ago": nav_ago, "charge_ago": charge_ago, "burst_ago": burst_ago}
+            "nav_ago": nav_ago, "charge_ago": charge_ago,
+            "hb_min": round(hb / 60, 1), "passive_min": round(sh / 60, 1),
+            "judged": judged}
+
+ENFORCEMENT_WINDOW_HOURS = 2
+ENFORCEMENT_MIN_PASSIVE  = 5 * 60
+ENFORCEMENT_RATIO        = 0.4
+
+
+def _meter_totals(now, hours=ENFORCEMENT_WINDOW_HOURS):
+    """Heartbeat vs passive seconds over the last `hours` clock hours.
+
+    Deliberately duplicated from addon.py rather than shared: these are two processes
+    that must agree on a judgement, and the tests assert they reach the same verdict on
+    the same data. An import across the proxy/app boundary would be the tighter coupling.
+    """
+    keys_h, keys_s = [], []
+    for i in range(hours):
+        t = time.localtime(now - i * 3600)
+        day, hour = time.strftime("%Y-%m-%d", t), time.strftime("%H", t)
+        for site in SITES:
+            keys_h.append(f"usage_hour:{day}:{hour}:{site}")
+            keys_s.append(f"shadow_hour:{day}:{hour}:{site}")
+    return (sum(_mget_floats(keys_h)), sum(_mget_floats(keys_s)))
+
 
 def error_summary():
     """Counts for /health. `proxy` comes from addon.py, which has its own swallowed

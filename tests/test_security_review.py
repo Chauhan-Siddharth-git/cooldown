@@ -426,75 +426,116 @@ def test_navigation_during_a_live_session_is_recorded(rdb):
     assert rdb.get("last_active_nav")               # ...and the moment is recorded
 
 
-def test_switch_fires_when_pages_load_but_nothing_is_charged(rdb):
+def _meters(rdb, hb_secs, sh_secs, site="reddit", now=None):
+    """Seed the two meters for the current clock hour.
+
+    The switch reads hourly buckets written by app.py (usage_hour) and addon.py
+    (shadow_hour). Tests state both numbers explicitly, because the entire judgement is
+    now the relationship between them rather than the age of either one.
+    """
+    now = now if now is not None else time.time()
+    t = time.localtime(now)
+    day, hour = time.strftime("%Y-%m-%d", t), time.strftime("%H", t)
+    if hb_secs:
+        rdb.set(f"usage_hour:{day}:{hour}:{site}", hb_secs)
+    if sh_secs:
+        rdb.set(f"shadow_hour:{day}:{hour}:{site}", sh_secs)
+
+
+def test_switch_fires_when_the_heartbeat_stops_but_the_site_keeps_being_used(rdb):
     """The exact F20 shape: a CSP blocks the injected script, so the site works, the
-    heartbeat never posts, and the budget silently stops draining."""
-    now = time.time()
-    rdb.set("last_active_nav", now - 30)            # browsing right now...
-    rdb.set("nav_burst_start", now - 1800)          # ...and have been for half an hour
-    rdb.set("last_charge", now - 3600)              # nothing charged for an hour
+    heartbeat never posts, and the budget silently stops draining. The passive meter is
+    unaffected -- it watches Reddit's own traffic -- so the two diverge sharply."""
+    _meters(rdb, hb_secs=20, sh_secs=25 * 60)
     assert addon.enforcement_looks_dead() is True
 
 
 def test_switch_is_quiet_when_the_heartbeat_is_working(rdb):
-    now = time.time()
-    rdb.set("last_active_nav", now - 30)
-    rdb.set("nav_burst_start", now - 1800)
-    rdb.set("last_charge", now - 20)
+    _meters(rdb, hb_secs=24 * 60, sh_secs=25 * 60)   # the 1.03x the meters actually show
     assert addon.enforcement_looks_dead() is False
 
 
 def test_switch_is_quiet_when_you_simply_are_not_browsing(rdb):
-    """A quiet week is not a broken pipeline. Idling does not navigate."""
-    now = time.time()
-    rdb.set("last_active_nav", now - 6 * 3600)
-    rdb.set("last_charge", now - 6 * 3600)
+    """A quiet week is not a broken pipeline. No use means nothing to disagree about."""
+    assert addon.enforcement_looks_dead() is False   # fresh install, no keys at all
+    _meters(rdb, hb_secs=0, sh_secs=90)              # under the floor: cannot judge
     assert addon.enforcement_looks_dead() is False
-    rdb.delete("last_active_nav", "last_charge")
-    assert addon.enforcement_looks_dead() is False   # fresh install
 
 
-def test_switch_is_quiet_on_the_first_page_of_a_session(rdb):
-    """The false alarm that fired on nearly every visit.
+def test_switch_cannot_warn_on_the_first_page_of_a_session(rdb):
+    """The false alarm that fired on nearly every visit, now impossible by construction.
 
-    You open Reddit after a few hours away. The request handler stamps last_active_nav,
-    the response handler then asks whether enforcement is dead, and last_charge is from
-    this morning -- so both conditions read true. But the heartbeat that would set
-    last_charge ships *inside* that same response and cannot have run yet. One refresh
-    later it has, and the banner vanishes, which is exactly what made it look flaky
-    rather than wrong.
+    The old design asked "how long since a charge?" and on arrival the answer was always
+    "hours", so it warned every session until a refresh. The ratio test cannot reach that
+    state: at the start of a session both meters read zero, and zero is not a
+    disagreement. The bug is gone because the question changed, not because a special
+    case was bolted on to suppress it.
     """
-    now = time.time()
-    rdb.set("last_active_nav", now)                 # just landed
-    rdb.set("nav_burst_start", now)                 # this run started this instant
-    rdb.set("last_charge", now - 6 * 3600)          # last session was this morning
+    _meters(rdb, hb_secs=0, sh_secs=0)
+    assert addon.enforcement_looks_dead() is False
+    _meters(rdb, hb_secs=3, sh_secs=4)               # a few seconds in
     assert addon.enforcement_looks_dead() is False
 
 
-def test_switch_still_fires_once_browsing_outlasts_the_window(rdb):
-    """The other half: the fix must not simply mute the alarm. Ten minutes of page loads
-    with nothing charged is the real F20 failure and still has to be caught."""
-    now = time.time()
-    rdb.set("last_active_nav", now - 5)
-    rdb.set("nav_burst_start", now - 10 * 60)
-    rdb.set("last_charge", now - 6 * 3600)
+def test_switch_needs_enough_observed_use_before_it_will_judge(rdb):
+    """Below the floor, one stray background request looks like a 100% shortfall."""
+    _meters(rdb, hb_secs=0, sh_secs=addon.ENFORCEMENT_MIN_PASSIVE - 1)
+    assert addon.enforcement_looks_dead() is False
+    _meters(rdb, hb_secs=0, sh_secs=addon.ENFORCEMENT_MIN_PASSIVE + 60)
     assert addon.enforcement_looks_dead() is True
 
 
-def test_navigation_after_a_gap_starts_a_new_burst(rdb):
-    """Coming back after a break must reset the clock, or the first page of the second
-    session inherits the first session's burst and warns immediately again."""
-    rdb.delete("last_active_nav", "nav_burst_start")
-    t0 = time.time() - 3600
-    addon._note_navigation(t0)
-    assert float(rdb.get("nav_burst_start")) == t0
+def test_switch_tolerates_the_disagreement_the_meters_actually_show(rdb):
+    """Seven days of paired data put the two within 0.72x to 1.28x of each other per
+    hour. The threshold has to sit well outside that or ordinary noise becomes an alarm,
+    and an alarm that fires on ordinary noise is one you learn to ignore."""
+    for ratio in (0.72, 0.9, 1.0, 1.28):
+        rdb.flushdb()
+        _meters(rdb, hb_secs=int(30 * 60 / ratio), sh_secs=30 * 60)
+        assert addon.enforcement_looks_dead() is False, f"false alarm at {ratio}x"
 
-    addon._note_navigation(t0 + 60)                 # still the same run
-    assert float(rdb.get("nav_burst_start")) == t0
 
-    t1 = t0 + 3600                                  # an hour later: a new run
-    addon._note_navigation(t1)
-    assert float(rdb.get("nav_burst_start")) == t1
+def test_switch_looks_back_beyond_the_current_clock_hour(rdb):
+    """Use that began in the previous hour still counts.
+
+    At 14:05 the current bucket holds five minutes. A switch that read only the current
+    hour would go quiet for the first few minutes of every hour, and would never judge
+    at all if you browsed 13:30-14:02. Seeding the previous hour also walks the
+    day-rollover path when this runs shortly after midnight.
+    """
+    prev = time.time() - 3600
+    _meters(rdb, hb_secs=20, sh_secs=25 * 60, now=prev)
+    assert addon.enforcement_looks_dead() is True
+
+
+def test_switch_is_blind_not_broken_without_the_shadow_meter(rdb):
+    """CLAUDE.md says the shadow meter may one day be deleted. If that happens this has
+    to fall silent, not start warning about a disagreement it can no longer measure."""
+    _meters(rdb, hb_secs=25 * 60, sh_secs=0)
+    assert addon.enforcement_looks_dead() is False
+
+
+def test_both_processes_reach_the_same_verdict(rdb):
+    """addon.py draws the banner, app.py draws the /health card. Separate processes,
+    duplicated logic, one Redis. On identical data they must not disagree."""
+    # 0.6x sits between the real threshold and any plausible wrong one, so a drift in
+    # either copy shows up here. Without a case in that gap both agree on everything.
+    for hb, sh in ((20, 25 * 60), (24 * 60, 25 * 60), (0, 0), (0, 90), (0, 30 * 60),
+                   (int(0.6 * 30 * 60), 30 * 60), (int(0.3 * 30 * 60), 30 * 60)):
+        rdb.flushdb()
+        _meters(rdb, hb_secs=hb, sh_secs=sh)
+        banner = addon.enforcement_looks_dead()
+        card = budget.enforcement_status()["ok"] is False
+        assert banner is card, f"banner={banner} card={card} at hb={hb} sh={sh}"
+
+
+def test_switch_survives_a_redis_outage_without_crying_wolf(rdb, monkeypatch):
+    """It sits in the response path of every gated page. A broken reporter must not
+    break browsing, and must not invent an alarm out of an error."""
+    def boom(*a, **k):
+        raise RuntimeError("redis down")
+    monkeypatch.setattr(addon.r, "mget", boom)
+    assert addon.enforcement_looks_dead() is False
 
 
 def test_warning_needs_no_javascript(rdb):
@@ -507,9 +548,7 @@ def test_warning_needs_no_javascript(rdb):
 
 def test_warning_is_injected_into_the_page_when_the_switch_fires(rdb):
     _live_session(rdb)
-    now = time.time()
-    rdb.set("last_active_nav", now - 30); rdb.set("last_charge", now - 3600)
-    rdb.set("nav_burst_start", now - 1800)          # browsing for half an hour
+    _meters(rdb, hb_secs=20, sh_secs=25 * 60)        # heartbeat flatlined, passive did not
     f = tflow.tflow(resp=True)
     f.request.host, f.request.path = "www.reddit.com", "/r/python"
     f.response.headers["content-type"] = "text/html"
@@ -521,8 +560,7 @@ def test_warning_is_injected_into_the_page_when_the_switch_fires(rdb):
 
 def test_no_warning_when_enforcement_is_healthy(rdb):
     _live_session(rdb)
-    now = time.time()
-    rdb.set("last_active_nav", now - 30); rdb.set("last_charge", now - 10)
+    _meters(rdb, hb_secs=24 * 60, sh_secs=25 * 60)   # both meters agree
     f = tflow.tflow(resp=True)
     f.request.host, f.request.path = "www.reddit.com", "/r/python"
     f.response.headers["content-type"] = "text/html"
@@ -533,23 +571,20 @@ def test_no_warning_when_enforcement_is_healthy(rdb):
 
 
 def test_health_is_quiet_on_the_first_page_of_a_session(rdb):
-    """/health must apply the same burst rule as the banner. When it did not, the card
-    called every fresh session a failure -- and a dashboard that is wrong on arrival is
-    worse than one that says nothing, because you learn to discount it."""
-    now = time.time()
-    rdb.set("last_active_nav", now)
-    rdb.set("nav_burst_start", now)
-    rdb.set("last_charge", now - 6 * 3600)
+    """/health must apply the same rule as the banner. When it did not, the card called
+    every fresh session a failure -- and a dashboard that is wrong on arrival is worse
+    than one that says nothing, because you learn to discount it."""
+    _meters(rdb, hb_secs=0, sh_secs=0)
     st = budget.enforcement_status()
     assert st["ok"] is True
-    assert st["burst_ago"] is not None      # and it reports what it judged on
+    assert st["judged"] is False                     # and it says it could not judge
 
 
 def test_health_reports_a_dead_heartbeat(rdb, client, monkeypatch):
-    now = time.time()
-    rdb.set("last_active_nav", now - 30); rdb.set("last_charge", now - 3600)
-    rdb.set("nav_burst_start", now - 1800)          # browsing for half an hour
-    assert budget.enforcement_status()["ok"] is False
+    _meters(rdb, hb_secs=20, sh_secs=25 * 60)
+    st = budget.enforcement_status()
+    assert st["ok"] is False
+    assert st["passive_min"] > st["hb_min"]          # and shows the numbers it judged on
     html = _health_html(client, monkeypatch,
                         {"total": 0, "proxy": 0, "top": [], "last": "", "last_ago": None})
     assert "No handled errors" in html               # fixture forces enforcement ok

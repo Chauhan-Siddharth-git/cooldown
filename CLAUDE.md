@@ -48,7 +48,8 @@ one-directional (6.1 min of YouTube over-count, likely background audio); it nev
 blind. Verified non-circular: `/budget/*` returns before `shadow_note()`, checked by
 sending a heartbeat POST through `request()` and watching the buffer stay empty.
 
-**Do not read that as "the injection can go."** Two blockers, neither about accuracy:
+**The injection cannot go, and that question is closed.** Two reasons, neither about
+accuracy:
 
 - **Passive cannot observe visibility and never will** — that fact lives in the browser.
   It agrees only because sites throttle themselves when hidden, which is third-party
@@ -57,19 +58,23 @@ sending a heartbeat POST through `request()` and watching the buffer stay empty.
 - **The injection also draws the UI** — countdown, wind-down bar, last-minute warning.
   Passive replaces the measuring only.
 
-Next step if resumed: shadow-*enforcement* (let passive drive a parallel budget and log
-when it would have cut you off), which tests the thing you would rely on. Aggregate
-minutes do not. A visibility-only beacon — a few lines, no per-second POSTs, no UI —
-would keep ground truth while shrinking the injected surface to almost nothing.
+**So the meter was repurposed rather than retired: it now feeds the dead-man's switch.**
+`enforcement_looks_dead()` no longer guesses from page-load timing; it compares the two
+meters over the last two hours and warns when the heartbeat falls below 40% of passive.
+That is the job passive is actually suited for — it is a poor stopwatch and a good
+witness, and a witness only needs to notice a large disagreement. Its 0.72x–1.28x
+hourly scatter is nowhere near the threshold, and nothing is ever *charged* from it.
 
-**It is still an experiment with an end.** If nobody acts on the above, delete it:
-`shadow_note`, its two constants, the call site in `request()`, `shadow_comparison()`
-and the `/stats` card. Roughly 90 lines.
+**This makes the shadow meter load-bearing.** Deleting it no longer costs 90 lines and
+nothing else: the switch would go blind. It fails safe rather than loud (no passive data
+→ `enforcement_looks_dead()` returns False, tested), so nothing breaks — but F20 would
+stop being detectable. If you delete it, delete the ratio switch too, or give it another
+second clock.
 
 ## Commands
 
 ```bash
-python3 -m pytest tests/ -q              # 541 tests; needs local redis (uses db 15)
+python3 -m pytest tests/ -q              # 545 tests; needs local redis (uses db 15)
 python3 -m pytest tests/test_invariants.py -q   # the structural properties
 git config core.hooksPath .githooks      # enable the pre-commit checks (once per clone)
 ./start.sh                               # local dev: loopback-only proxy, separate dev CA

@@ -453,11 +453,15 @@ def site_for_host(host):
             return site
     return None
 
-# How far apart the two clocks may drift before we call the heartbeat dead. A page load
-# with no charge for this long, during a live session, is not idling: idling does not
-# navigate. Generous enough that a slow page or a paused tab cannot trip it.
-ENFORCEMENT_STALE_AFTER = 8 * 60      # no charge for this long...
-ENFORCEMENT_NAV_WINDOW  = 5 * 60      # ...while pages were still being loaded this recently
+# The switch compares the two meters against each other rather than guessing from page
+# loads. The heartbeat and the passive shadow meter measure the same quantity by
+# independent means; only one of them can be blocked from inside the page, so a large
+# disagreement identifies which. Seven days of paired data put them at 1.03x of each
+# other (see shadow_comparison), so the threshold below sits nowhere near normal noise.
+ENFORCEMENT_WINDOW_HOURS = 2          # how far back to compare
+ENFORCEMENT_MIN_PASSIVE  = 5 * 60     # need this much observed use before judging at all
+ENFORCEMENT_RATIO        = 0.4        # heartbeat below this share of passive = dead
+ENFORCEMENT_NAV_WINDOW   = 5 * 60     # still recorded, for the /health "browsing" flag
 
 
 def _try_redis(fn, default=None):
@@ -468,41 +472,60 @@ def _try_redis(fn, default=None):
 
 
 def _note_navigation(now):
-    """Record this page load, and when the current run of browsing began.
+    """Record this page load. Informational only now — the switch no longer reads it.
 
-    The burst start is the fix for a false alarm that fired on nearly every session: at
-    the moment you open the first page, nothing has been charged for hours and nothing
-    *should* have been, because the script that does the charging is being delivered by
-    this very response. Comparing against "when did you start browsing" instead of
-    "how long since a charge" tells those two apart.
+    nav_burst_start used to live here, to stop the old switch warning on the first page
+    of every session. The ratio test below cannot have that bug: at the start of a
+    session both meters read zero, and zero is not a disagreement. The workaround went
+    away with the design that needed it.
     """
-    prev = r.get("last_active_nav")
-    if not prev or now - float(prev) > ENFORCEMENT_NAV_WINDOW:
-        r.set("nav_burst_start", now)     # a gap this long means this is a fresh run
     r.set("last_active_nav", now)
 
 
+def _meter_totals(now, hours=ENFORCEMENT_WINDOW_HOURS):
+    """(heartbeat_seconds, passive_seconds) over the last `hours` whole clock hours.
+
+    Two MGETs rather than one round trip per key: this runs on every HTML response from a
+    gated site, and the old version's two GETs should not become forty.
+    """
+    keys_h, keys_s = [], []
+    for i in range(hours):
+        t = time.localtime(now - i * 3600)
+        day, hour = time.strftime("%Y-%m-%d", t), time.strftime("%H", t)
+        for site in SITES:
+            keys_h.append(f"usage_hour:{day}:{hour}:{site}")
+            keys_s.append(f"shadow_hour:{day}:{hour}:{site}")
+
+    def total(keys):
+        return sum(float(v) for v in (r.mget(keys) or []) if v)
+
+    return total(keys_h), total(keys_s)
+
+
 def enforcement_looks_dead():
-    """True when pages are loading during a live session but nothing is being charged.
+    """True when the passive meter sees real use that the heartbeat is not charging for.
 
     The failure this catches is the one the injected script cannot report, because the
     injected script is what is broken: a CSP that blocks it (F20), a service worker that
     swallows the fetch, a network path that eats the POST. In every case the sites keep
     working, the budget stops draining, and nothing anywhere says so.
+
+    The passive meter is a poor stopwatch — it cannot see tab visibility, and its
+    per-hour agreement with the heartbeat scatters 0.72x-1.28x — but that does not matter
+    here. Nothing is charged from it and nothing is blocked by it. It is only ever asked
+    whether the other clock has stopped, and for that a loose threshold is plenty.
+
+    Returns False whenever it cannot tell, including when the shadow meter is absent.
+    Deleting the shadow meter therefore does not break this; it makes it blind.
     """
     now = time.time()
-    nav = _try_redis(lambda: r.get("last_active_nav"))
-    if not nav or now - float(nav) > ENFORCEMENT_NAV_WINDOW:
-        return False                      # not actively browsing a gated site: no signal
-    # Has this run of browsing lasted long enough that a working heartbeat would
-    # certainly have reported by now? On the first page of a session it has not, and
-    # warning there cries wolf every single time you sit down -- which is how a real
-    # alarm gets learned as noise and stops being read.
-    burst = _try_redis(lambda: r.get("nav_burst_start"))
-    if not burst or now - float(burst) < ENFORCEMENT_STALE_AFTER:
+    totals = _try_redis(lambda: _meter_totals(now))
+    if totals is None:
         return False
-    charge = _try_redis(lambda: r.get("last_charge"))
-    return charge is None or (now - float(charge)) > ENFORCEMENT_STALE_AFTER
+    hb, sh = totals
+    if sh < ENFORCEMENT_MIN_PASSIVE:
+        return False        # too little observed use to draw any conclusion
+    return hb < sh * ENFORCEMENT_RATIO
 
 
 # Deliberately script-free: inline styles, no JS. The condition it reports is *the
