@@ -430,7 +430,8 @@ def test_switch_fires_when_pages_load_but_nothing_is_charged(rdb):
     """The exact F20 shape: a CSP blocks the injected script, so the site works, the
     heartbeat never posts, and the budget silently stops draining."""
     now = time.time()
-    rdb.set("last_active_nav", now - 30)            # browsing right now
+    rdb.set("last_active_nav", now - 30)            # browsing right now...
+    rdb.set("nav_burst_start", now - 1800)          # ...and have been for half an hour
     rdb.set("last_charge", now - 3600)              # nothing charged for an hour
     assert addon.enforcement_looks_dead() is True
 
@@ -438,6 +439,7 @@ def test_switch_fires_when_pages_load_but_nothing_is_charged(rdb):
 def test_switch_is_quiet_when_the_heartbeat_is_working(rdb):
     now = time.time()
     rdb.set("last_active_nav", now - 30)
+    rdb.set("nav_burst_start", now - 1800)
     rdb.set("last_charge", now - 20)
     assert addon.enforcement_looks_dead() is False
 
@@ -452,6 +454,49 @@ def test_switch_is_quiet_when_you_simply_are_not_browsing(rdb):
     assert addon.enforcement_looks_dead() is False   # fresh install
 
 
+def test_switch_is_quiet_on_the_first_page_of_a_session(rdb):
+    """The false alarm that fired on nearly every visit.
+
+    You open Reddit after a few hours away. The request handler stamps last_active_nav,
+    the response handler then asks whether enforcement is dead, and last_charge is from
+    this morning -- so both conditions read true. But the heartbeat that would set
+    last_charge ships *inside* that same response and cannot have run yet. One refresh
+    later it has, and the banner vanishes, which is exactly what made it look flaky
+    rather than wrong.
+    """
+    now = time.time()
+    rdb.set("last_active_nav", now)                 # just landed
+    rdb.set("nav_burst_start", now)                 # this run started this instant
+    rdb.set("last_charge", now - 6 * 3600)          # last session was this morning
+    assert addon.enforcement_looks_dead() is False
+
+
+def test_switch_still_fires_once_browsing_outlasts_the_window(rdb):
+    """The other half: the fix must not simply mute the alarm. Ten minutes of page loads
+    with nothing charged is the real F20 failure and still has to be caught."""
+    now = time.time()
+    rdb.set("last_active_nav", now - 5)
+    rdb.set("nav_burst_start", now - 10 * 60)
+    rdb.set("last_charge", now - 6 * 3600)
+    assert addon.enforcement_looks_dead() is True
+
+
+def test_navigation_after_a_gap_starts_a_new_burst(rdb):
+    """Coming back after a break must reset the clock, or the first page of the second
+    session inherits the first session's burst and warns immediately again."""
+    rdb.delete("last_active_nav", "nav_burst_start")
+    t0 = time.time() - 3600
+    addon._note_navigation(t0)
+    assert float(rdb.get("nav_burst_start")) == t0
+
+    addon._note_navigation(t0 + 60)                 # still the same run
+    assert float(rdb.get("nav_burst_start")) == t0
+
+    t1 = t0 + 3600                                  # an hour later: a new run
+    addon._note_navigation(t1)
+    assert float(rdb.get("nav_burst_start")) == t1
+
+
 def test_warning_needs_no_javascript(rdb):
     """It reports that the injected JavaScript is not running, so it must not need any.
     A <div> with inline styles survives the CSP that caused the failure."""
@@ -464,6 +509,7 @@ def test_warning_is_injected_into_the_page_when_the_switch_fires(rdb):
     _live_session(rdb)
     now = time.time()
     rdb.set("last_active_nav", now - 30); rdb.set("last_charge", now - 3600)
+    rdb.set("nav_burst_start", now - 1800)          # browsing for half an hour
     f = tflow.tflow(resp=True)
     f.request.host, f.request.path = "www.reddit.com", "/r/python"
     f.response.headers["content-type"] = "text/html"
@@ -486,9 +532,23 @@ def test_no_warning_when_enforcement_is_healthy(rdb):
     assert "bp-timewarn" in f.response.text          # the normal heartbeat still injected
 
 
+def test_health_is_quiet_on_the_first_page_of_a_session(rdb):
+    """/health must apply the same burst rule as the banner. When it did not, the card
+    called every fresh session a failure -- and a dashboard that is wrong on arrival is
+    worse than one that says nothing, because you learn to discount it."""
+    now = time.time()
+    rdb.set("last_active_nav", now)
+    rdb.set("nav_burst_start", now)
+    rdb.set("last_charge", now - 6 * 3600)
+    st = budget.enforcement_status()
+    assert st["ok"] is True
+    assert st["burst_ago"] is not None      # and it reports what it judged on
+
+
 def test_health_reports_a_dead_heartbeat(rdb, client, monkeypatch):
     now = time.time()
     rdb.set("last_active_nav", now - 30); rdb.set("last_charge", now - 3600)
+    rdb.set("nav_burst_start", now - 1800)          # browsing for half an hour
     assert budget.enforcement_status()["ok"] is False
     html = _health_html(client, monkeypatch,
                         {"total": 0, "proxy": 0, "top": [], "last": "", "last_ago": None})

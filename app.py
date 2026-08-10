@@ -2834,12 +2834,17 @@ def enforcement_status():
     now = time.time()
     nav = _try(lambda: r.get("last_active_nav"))
     charge = _try(lambda: r.get("last_charge"))
+    burst = _try(lambda: r.get("nav_burst_start"))
     nav_ago = int(now - float(nav)) if nav else None
     charge_ago = int(now - float(charge)) if charge else None
+    burst_ago = int(now - float(burst)) if burst else None
     browsing = nav_ago is not None and nav_ago <= 5 * 60
-    dead = browsing and (charge_ago is None or charge_ago > 8 * 60)
+    # Same burst rule addon.py uses, so the banner and this card cannot disagree. Without
+    # it both called the first page load of every session a failure.
+    settled = burst_ago is not None and burst_ago >= 8 * 60
+    dead = browsing and settled and (charge_ago is None or charge_ago > 8 * 60)
     return {"ok": not dead, "browsing": browsing,
-            "nav_ago": nav_ago, "charge_ago": charge_ago}
+            "nav_ago": nav_ago, "charge_ago": charge_ago, "burst_ago": burst_ago}
 
 def error_summary():
     """Counts for /health. `proxy` comes from addon.py, which has its own swallowed

@@ -467,6 +467,21 @@ def _try_redis(fn, default=None):
         return default
 
 
+def _note_navigation(now):
+    """Record this page load, and when the current run of browsing began.
+
+    The burst start is the fix for a false alarm that fired on nearly every session: at
+    the moment you open the first page, nothing has been charged for hours and nothing
+    *should* have been, because the script that does the charging is being delivered by
+    this very response. Comparing against "when did you start browsing" instead of
+    "how long since a charge" tells those two apart.
+    """
+    prev = r.get("last_active_nav")
+    if not prev or now - float(prev) > ENFORCEMENT_NAV_WINDOW:
+        r.set("nav_burst_start", now)     # a gap this long means this is a fresh run
+    r.set("last_active_nav", now)
+
+
 def enforcement_looks_dead():
     """True when pages are loading during a live session but nothing is being charged.
 
@@ -479,6 +494,13 @@ def enforcement_looks_dead():
     nav = _try_redis(lambda: r.get("last_active_nav"))
     if not nav or now - float(nav) > ENFORCEMENT_NAV_WINDOW:
         return False                      # not actively browsing a gated site: no signal
+    # Has this run of browsing lasted long enough that a working heartbeat would
+    # certainly have reported by now? On the first page of a session it has not, and
+    # warning there cries wolf every single time you sit down -- which is how a real
+    # alarm gets learned as noise and stops being read.
+    burst = _try_redis(lambda: r.get("nav_burst_start"))
+    if not burst or now - float(burst) < ENFORCEMENT_STALE_AFTER:
+        return False
     charge = _try_redis(lambda: r.get("last_charge"))
     return charge is None or (now - float(charge)) > ENFORCEMENT_STALE_AFTER
 
@@ -901,7 +923,7 @@ class BudgetAddon:
             # last time it actually charged. The two diverging means the clock has
             # stopped while browsing continues — the tool's whole job, failing silently.
             if is_navigation:
-                _try_redis(lambda: r.set("last_active_nav", time.time()))
+                _try_redis(lambda: _note_navigation(time.time()))
             return
 
         # No session (no budget, cooldown, or idled out). Serve the budget/cooldown
