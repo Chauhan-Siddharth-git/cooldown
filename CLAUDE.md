@@ -99,12 +99,30 @@ Read this part first, then **read the code before reading `SECURITY-CASESTUDY.md
    *what can a script on a gated origin reach, and what is browser-controlled input
    concatenated into?* That question produced four findings in one sitting.
 4. **Prove it before reporting it.** A working PoC or it is a hypothesis.
-5. **Fix the class, then grep for siblings.** Half of the third review's findings were an
+5. **Finish finding before you start fixing.** Observe, then explain, then repair — and
+   treat the gap between the first two as the work. On 2026-08-10 the observation was
+   "both apt timers have no next elapse". The explanation reached for was a clock jump on
+   a board with no RTC; the repair, written in the same motion, cleared the timers' stamp
+   files. It was wrong. The real cause was two levels down — a first-boot wizard blocking
+   `multi-user.target`, so the jobs queued forever — and the fix made the dashboard look
+   healthier while changing nothing, which is worse than leaving it broken. Once the fix
+   is written you are invested in the diagnosis and stop interrogating it. Before
+   greenlighting any repair, answer: *what did I observe that rules out the alternatives?*
+   If the answer is a mechanism that sounds plausible rather than something seen, stop.
+   (Exception: anything live — an exposed service, an unknown SSH key, signs of intrusion
+   — gets fixed now. This is about diagnosis discipline, not a waiting period.)
+6. **Absence of signal is not a good signal.** The most common error in this project's
+   history is reading an empty result as a clean one: zero failed logins from a journal
+   that kept nothing, no `SYSCALL` records from a kernel that emits none, a mutation
+   reported as uncaught because the file was never staged, a truncated `ss` listing read
+   as the whole picture. Before running a check, say what a *broken* result would look
+   like. If you cannot, the check cannot tell you anything.
+7. **Fix the class, then grep for siblings.** Half of the third review's findings were an
    earlier fix repeated one call site away.
-6. **Mutation-test anything you add.** Reintroduce the bug; confirm something fails. A
+8. **Mutation-test anything you add.** Reintroduce the bug; confirm something fails. A
    check that cannot fail is decoration — this caught three defects in the pre-commit
    hook itself.
-7. **Update every doc that asserts the old behaviour**, or it becomes the next reviewer's
+9. **Update every doc that asserts the old behaviour**, or it becomes the next reviewer's
    anchor.
 
 **When to review at all:** on a new endpoint, origin, listener, privileged operation, or
