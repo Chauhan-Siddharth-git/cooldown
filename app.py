@@ -3335,6 +3335,11 @@ def _audit(now=None):
             "shell_accounts": d.get("shell_accounts", ""),
             "exposed_ports": (d.get("exposed_ports") or "").strip(),
             "tampered_files": int(d.get("tampered_files", 0)),
+            "ts_days": int(d.get("ts_days", -1)),
+            "ca_days": int(d.get("ca_days", 0)),
+            "backup_age": int(d.get("backup_age", -1)),
+            "mode": d.get("mode", "quick"),
+            "checked_human": _short_ago(now - checked) if checked else "never",
             # Defaults to True so an older state file does not read as an alarm.
             "journal_persistent": bool(d.get("journal_persistent", True)),
             "checked_ago": int(now - checked) if checked else None}
@@ -3705,6 +3710,10 @@ HEALTH_PAGE = """
       <span class="errlast">Details: journalctl -t cooldown-audit</span>
       {%- else -%}
       Security invariants hold &mdash; CA untouched, {{ d.audit.ssh_keys }} SSH key{{ '' if d.audit.ssh_keys == 1 else 's' }}, no exposed ports.
+      <span class="errlast">Checked {{ d.audit.get('checked_human', 'unknown') }}{%
+        if d.audit.get('ca_days', 0) %} &middot; CA valid {{ d.audit.ca_days }}d{% endif %}{%
+        if d.audit.get('ts_days', -1) > 0 %} &middot; tailnet key {{ d.audit.ts_days }}d{% endif %}{%
+        if d.audit.get('backup_age', -1) >= 0 %} &middot; backup {{ d.audit.backup_age }}d old{% endif %}</span>
       {%- endif -%}
     </div>
 

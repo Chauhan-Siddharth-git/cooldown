@@ -1,0 +1,9 @@
+[Unit]
+Description=Budget: hourly security invariant check (cheap tier)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/budget-audit.sh quick
+Nice=10
+IOSchedulingClass=idle

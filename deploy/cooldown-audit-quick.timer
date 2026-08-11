@@ -1,0 +1,12 @@
+[Unit]
+Description=Hourly security invariant check
+
+[Timer]
+# Offset from cooldown-updates so the two hourly jobs do not land together.
+OnBootSec=7min
+OnUnitActiveSec=1h
+Persistent=true
+RandomizedDelaySec=3min
+
+[Install]
+WantedBy=timers.target

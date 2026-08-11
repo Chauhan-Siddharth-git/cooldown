@@ -1533,3 +1533,26 @@ def test_health_page_names_the_pending_packages(client, monkeypatch):
                               "last_result": "success", "last_run_ago": 60, "checked_ago": 300})
     assert "linux-image-rpi-v8, openssl, tailscale" in html
     assert "and 9 more" in html
+
+
+def test_audit_surfaces_the_expiries_that_would_lock_you_out(tmp_path, monkeypatch):
+    """Two dates can silently end access: the Tailscale key (port 22 is tailnet-only)
+    and the CA (every gated site breaks at once). Both belong on the page."""
+    f = tmp_path / "a.json"
+    f.write_text(json.dumps({"findings": 0, "ssh_keys": 1, "exposed_ports": "",
+                             "ts_days": 126, "ca_days": 3595, "backup_age": 0,
+                             "mode": "quick", "checked": time.time() - 300}))
+    monkeypatch.setattr(budget, "AUDIT_STATE", str(f))
+    a = budget._audit()
+    assert a["ts_days"] == 126 and a["ca_days"] == 3595 and a["backup_age"] == 0
+    assert a["checked_human"] == "5 min ago"
+
+
+def test_health_page_shows_the_cheap_tier_recency(client, monkeypatch):
+    html = _audit_html(client, monkeypatch,
+                       {"fresh": True, "findings": 0, "ssh_keys": 1, "exposed_ports": "",
+                        "tampered_files": 0, "journal_persistent": True, "checked_ago": 300,
+                        "checked_human": "5 min ago", "ca_days": 3595, "ts_days": 126,
+                        "backup_age": 0, "mode": "quick"})
+    assert "Checked 5 min ago" in html
+    assert "tailnet key 126d" in html and "CA valid 3595d" in html

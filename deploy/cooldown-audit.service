@@ -1,9 +1,9 @@
 [Unit]
-Description=Budget: weekly security invariant audit
+Description=Budget: weekly full security audit (includes dpkg -V)
 After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/cooldown-audit.sh
+ExecStart=/usr/local/sbin/budget-audit.sh full
 Nice=10
 IOSchedulingClass=idle
