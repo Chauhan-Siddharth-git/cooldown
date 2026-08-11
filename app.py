@@ -2668,7 +2668,31 @@ def daily_reset(now=None):
     r.set("last_reset", reset_day(now))
     print("[RESET] Daily budget reset complete")
 
+def sample_history():
+    """Fill the CPU and temperature history on a fixed cadence.
+
+    This used to happen inside collect_health(), which meant samples were only taken
+    while someone had /health open. Arrive at the page after any gap and the chart began
+    from nothing -- the "last 4 minutes" were never recorded, because nobody was
+    watching. A monitor that only monitors while observed is not a monitor.
+
+    It also makes the readings honest. _cpu_stats() measures between its own calls, so
+    the percentage used to cover "however long since the last HTTP request" -- a
+    different window every time. Now it is a steady 4 seconds.
+    """
+    agg, per_core = _try(_cpu_stats, (0.0, []))
+    if per_core:
+        _CPU_HIST.append(list(per_core))
+        _CPU_LATEST["agg"] = agg
+    t = _try(_temp_c)
+    if t is not None:
+        _TEMP_HIST.append(t)
+
+
 scheduler = BackgroundScheduler()
+# 4s to match what the page polls at, so the chart's x-axis maths stays correct.
+scheduler.add_job(sample_history, 'interval', seconds=4, max_instances=1,
+                  coalesce=True, next_run_time=datetime.now())
 # Reset at the curfew's end (7am), not midnight — a "fresh day" of budget starts when
 # you wake, and this avoids handing out fresh budget in the middle of the night window.
 scheduler.add_job(daily_reset, 'cron', hour=NIGHT_END_HOUR, minute=0)
@@ -2689,6 +2713,7 @@ _TEMP_HIST = deque(maxlen=90)   # recent CPU temps for the sparkline (~6 min at 
 CPU_HIST_LEN = 60
 CPU_CARD_SAMPLES = 30
 _CPU_HIST = deque(maxlen=CPU_HIST_LEN)   # per-core CPU%, one list per sample
+_CPU_LATEST = {"agg": 0.0}               # most recent aggregate %, for the headline number
 
 # Per-core line colours. Retro/outrun on purpose — the page is near-black with a hex
 # matrix behind it, so saturated pink/cyan/purple/amber belongs here in a way it wouldn't
@@ -3233,6 +3258,19 @@ UPDATES_STATE = "/var/lib/cooldown-updates.json"
 UPDATES_STALE_AFTER = 3 * 3600   # the writer runs hourly; three misses means it stopped
 
 
+def _short_ago(secs):
+    """'3 min ago' / '2 h ago' / '4 days ago'. Answers "is this figure current?" at a
+    glance, which is the actual question behind "does it check every day?"."""
+    secs = max(0, int(secs))
+    if secs < 90:
+        return "just now"
+    if secs < 5400:
+        return f"{secs // 60} min ago"
+    if secs < 172800:
+        return f"{secs // 3600} h ago"
+    return f"{secs // 86400} days ago"
+
+
 def _updates(now=None):
     """Pending-update state, written hourly by deploy/cooldown-updates.sh.
 
@@ -3261,6 +3299,12 @@ def _updates(now=None):
             # writer always emits it now.
             "boot_ok": bool(d.get("boot_ok", True)),
             "stuck_jobs": int(d.get("stuck_jobs", 0)),
+            "packages": (d.get("packages") or "").split(),
+            "pkg_total": int(d.get("pkg_total", 0)),
+            # Formatted here rather than as a Jinja filter: render_page() compiles
+            # templates with from_string(), so there is no shared environment to
+            # register one on.
+            "checked_human": _short_ago(now - checked) if checked else "never",
             "last_result": d.get("last_result", "unknown"),
             "last_run_ago": int(now - float(d["last_run"])) if d.get("last_run") else None,
             "checked_ago": int(now - checked) if checked else None}
@@ -3304,12 +3348,13 @@ def collect_health(max_age=2.0):
     if hit is not None and time.monotonic() - _HEALTH_CACHE.get("t", 0) < max_age:
         return hit
     svc = _services(["cooldown-app", "cooldown-proxy", "cooldown-redirect", "redis-server", "tailscaled"])
-    agg, per_core = _try(_cpu_stats, (0.0, []))
-    if per_core:
-        _CPU_HIST.append(list(per_core))
-    temp = _try(_temp_c)
-    if temp is not None:
-        _TEMP_HIST.append(temp)
+    # Read the latest sample rather than taking one. sample_history() on the scheduler is
+    # the ONLY caller of _cpu_stats(), because that function measures the delta between
+    # its own calls -- a second caller landing a fraction of a second after the first
+    # would diff over a near-zero interval and report noise.
+    per_core = list(_CPU_HIST[-1]) if _CPU_HIST else []
+    agg = _CPU_LATEST.get("agg", 0.0)
+    temp = _TEMP_HIST[-1] if _TEMP_HIST else None
     out = {
         "model": _try(lambda: _first_line("/proc/device-tree/model").replace("\x00", ""), "Raspberry Pi"),
         "cpu": {"pct": agg, "per_core": per_core, "load": _try(_loadavg, [0, 0, 0]),
@@ -3640,8 +3685,10 @@ HEALTH_PAGE = """
       {%- elif d.updates.pending -%}
       <b>{{ d.updates.pending }}</b> update{{ '' if d.updates.pending == 1 else 's' }} pending{%
         if d.updates.security %}, <span class="upd-bad">{{ d.updates.security }} security</span>{% endif %}.
+      {%- if d.updates.packages %}<span class="errlast">{{ d.updates.packages|join(', ') }}{%
+        if d.updates.pkg_total > d.updates.packages|length %} and {{ d.updates.pkg_total - d.updates.packages|length }} more{% endif %}</span>{% endif -%}
       {%- else -%}
-      Fully patched.
+      Fully patched &mdash; checked {{ d.updates.checked_human }}, installs nightly at 03:00.
       {%- endif -%}
       {%- if d.updates.fresh and d.updates.last_result and d.updates.last_result != 'success' %}
       <span class="errlast">Last unattended run: {{ d.updates.last_result }}</span>{% endif -%}

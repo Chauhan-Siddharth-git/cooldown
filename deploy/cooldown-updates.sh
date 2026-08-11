@@ -102,6 +102,12 @@ sim="$(apt-get -s dist-upgrade 2>/dev/null || true)"
 pending=$(printf '%s\n' "$sim" | grep -c '^Inst ')
 security=$(printf '%s\n' "$sim" | grep '^Inst ' | grep -ci 'security' || true)
 
+# The package names, not just a count. "28 pending" tells you nothing about whether it
+# matters; "linux-image, tailscale, openssl" tells you immediately. Capped at 8 so a
+# large backlog cannot push the dashboard line off the screen.
+pkgs="$(printf '%s\n' "$sim" | awk '/^Inst /{print $2}' | head -8 | tr '\n' ' ')"
+pkg_total=$(printf '%s\n' "$sim" | grep -c '^Inst ')
+
 reboot=false
 [ -f /var/run/reboot-required ] && reboot=true
 
@@ -112,6 +118,8 @@ last_result="$(systemctl show apt-daily-upgrade.service -p Result --value 2>/dev
 
 printf '{"pending":%d,"security":%d,"reboot_required":%s,"timers_kicked":%d,' \
        "${pending:-0}" "${security:-0}" "$reboot" "$kicked" > "$TMP"
+printf '"packages":"%s","pkg_total":%d,' \
+       "$(printf '%s' "${pkgs:-}" | sed 's/\\/\\\\/g; s/"/\\"/g')" "${pkg_total:-0}" >> "$TMP"
 printf '"boot_ok":%s,"jobs_waiting":%d,"stuck_jobs":%d,' \
        "$boot_ok" "${jobs_waiting:-0}" "${stuck:-0}" >> "$TMP"
 printf '"last_run":%d,"last_result":"%s","checked":%d}\n' \

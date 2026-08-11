@@ -1502,3 +1502,34 @@ def test_health_page_confirms_a_clean_audit(client, monkeypatch):
                        {"fresh": True, "findings": 0, "ssh_keys": 1, "exposed_ports": "",
                         "tampered_files": 0, "journal_persistent": True, "checked_ago": 3600})
     assert "Security invariants hold" in html
+
+
+def test_short_ago_reads_like_a_human_wrote_it():
+    assert budget._short_ago(30) == "just now"
+    assert budget._short_ago(600) == "10 min ago"
+    assert budget._short_ago(7200) == "2 h ago"
+    assert budget._short_ago(3 * 86400) == "3 days ago"
+    assert budget._short_ago(-5) == "just now"      # clock skew must not print a negative
+
+
+def test_health_page_says_when_it_last_checked(client, monkeypatch):
+    """"Fully patched" alone does not say whether that was five minutes or five weeks
+    ago, which is the difference between reassuring and meaningless."""
+    html = _health_html_with(client, monkeypatch,
+                             {"fresh": True, "pending": 0, "security": 0,
+                              "reboot_required": False, "boot_ok": True, "stuck_jobs": 0,
+                              "packages": [], "pkg_total": 0, "checked_human": "12 min ago",
+                              "last_result": "success", "last_run_ago": 60, "checked_ago": 720})
+    assert "Fully patched" in html and "checked 12 min ago" in html
+
+
+def test_health_page_names_the_pending_packages(client, monkeypatch):
+    """A count does not tell you whether it matters; a kernel in the list does."""
+    html = _health_html_with(client, monkeypatch,
+                             {"fresh": True, "pending": 12, "security": 2,
+                              "reboot_required": False, "boot_ok": True, "stuck_jobs": 0,
+                              "packages": ["linux-image-rpi-v8", "openssl", "tailscale"],
+                              "pkg_total": 12, "checked_human": "5 min ago",
+                              "last_result": "success", "last_run_ago": 60, "checked_ago": 300})
+    assert "linux-image-rpi-v8, openssl, tailscale" in html
+    assert "and 9 more" in html
