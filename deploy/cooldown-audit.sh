@@ -30,8 +30,8 @@ trap 'rm -f "$TMP"' EXIT
 CA_DIR=/var/lib/cooldown/mitmproxy
 CA_CERT="$CA_DIR/mitmproxy-ca-cert.pem"
 # Not project-named: backup.py defaults to this and neither deployment overrides
-# COOLDOWN_BACKUP_DIR, so the path is the same in both repos. Guessing
-# /var/backups/budget-proxy produced a "no backups found" alarm on a box that had
+# COOLDOWN_BACKUP_DIR, so the path is identical in both repos. Guessing a
+# project-named path instead produced a "no backups found" alarm on a box that had
 # been backing up nightly all along.
 BACKUP_DIR=/var/backups/cooldown
 findings=()
