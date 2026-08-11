@@ -242,6 +242,34 @@ NREOF
   fi
 fi
 
+# A Pi ships avahi so it can be found as raspberrypi.local. This box is reached over the
+# tailnet by address, so mDNS buys nothing -- and it listens on UDP 5353 on every
+# interface, which on a connection with native IPv6 means a globally routable one. The
+# firewall here is an allowlist of a few TCP ports over a default-ACCEPT policy, so a
+# UDP listener is not covered by it at all. Disabling the service removes the listener
+# rather than trying to firewall it.
+#
+# Disabled, not purged: libnss-mdns and rpi-usb-gadget depend on the package. The socket
+# is masked too, or socket activation quietly starts the daemon again.
+step "Local network discovery (avahi)"
+if ! dpkg -s avahi-daemon >/dev/null 2>&1; then
+  ok "not installed"
+elif [ "$(systemctl is-enabled avahi-daemon.service 2>/dev/null)" = "masked" ]; then
+  ok "already disabled"
+elif [ "$DRY" = 1 ]; then
+  would "mask avahi-daemon.service and .socket (removes the mDNS listener)"
+else
+  echo "  ${DIM}You reach this box by address over the tailnet, so .local discovery is"
+  echo "  unused -- but it listens on every interface, including public IPv6.${N}"
+  if ask "Disable mDNS/avahi?"; then
+    run systemctl disable --now avahi-daemon.socket avahi-daemon.service >/dev/null 2>&1 || true
+    run systemctl mask avahi-daemon.socket avahi-daemon.service >/dev/null
+    ok "avahi disabled — <hostname>.local will no longer resolve to this box"
+  else
+    warn "skipped — mDNS stays reachable on every interface this box has"
+  fi
+fi
+
 step "Python environment"
 if [ -x "$REPO/venv/bin/python" ]; then ok "venv exists"
 else runu python3 -m venv "$REPO/venv"; did "venv created"; fi
