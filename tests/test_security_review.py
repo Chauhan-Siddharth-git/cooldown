@@ -1574,3 +1574,73 @@ def test_health_page_shows_the_cheap_tier_recency(client, monkeypatch):
                         "backup_age": 0, "mode": "quick"})
     assert "Checked 5 min ago" in html
     assert "tailnet key 126d" in html and "CA valid 3595d" in html
+
+
+# ---------- every line of copy, not just today's ----------
+
+def _banks():
+    """(bank name, line) for every piece of rotating copy."""
+    for state, lines in budget.GATE_LINES.items():
+        for t in lines:
+            yield f"GATE_LINES[{state}]", t
+    for t in budget.BLUNT_LINES:
+        yield "BLUNT_LINES", t
+    for entry in budget.PASS_LINES:
+        yield "PASS_LINES", entry[1]
+
+
+def test_every_line_of_copy_is_escaped_when_rendered(rdb, client, monkeypatch):
+    """No bank may be rendered with |safe.
+
+    17 of 31 GATE_LINES contain characters that escape differently. If any bank were
+    ever marked |safe, a line containing an angle bracket would inject markup — and
+    because the picker is seeded per day, it would only do so on that line's day.
+    Pinning each line in turn is the only way to see the whole surface at once.
+    """
+    monkeypatch.setattr(budget, "reflect_decision", lambda now=None: (True, "Why now?"))
+    from markupsafe import escape
+    unescaped = []
+    for name, text in _banks():
+        if str(escape(text)) == text:
+            continue                     # nothing to escape; nothing to prove
+        monkeypatch.setattr(budget, "gate_line", lambda *a, **k: text)
+        monkeypatch.setattr(budget, "pass_line", lambda *a, **k: ("", text, ""))
+        html = client.get("/budget?site=reddit").get_data(as_text=True)
+        if text in html:                 # raw form present => rendered unescaped
+            unescaped.append(f"{name}: {text[:50]!r}")
+    assert not unescaped, "copy rendered without escaping:\n  " + "\n  ".join(unescaped)
+
+
+def test_the_copy_banks_are_not_empty():
+    """A bank that lost its contents would make the test above vacuously pass."""
+    assert len(budget.BLUNT_LINES) >= 5
+    assert len(budget.PASS_LINES) >= 3
+    assert sum(len(v) for v in budget.GATE_LINES.values()) >= 20
+    for state, lines in budget.GATE_LINES.items():
+        assert lines, f"GATE_LINES[{state}] is empty"
+
+
+def test_audit_reports_whether_the_backup_actually_restores(tmp_path, monkeypatch):
+    """A backup nobody has restored is a hypothesis. -1 means the weekly tier has not
+    run yet, and must not read as a pass."""
+    f = tmp_path / "a.json"
+    for value, expect in ((1, 1), (0, 0)):
+        f.write_text(json.dumps({"findings": 0, "backup_restores": value,
+                                 "checked": time.time() - 60}))
+        monkeypatch.setattr(budget, "AUDIT_STATE", str(f))
+        assert budget._audit()["backup_restores"] == expect
+    f.write_text(json.dumps({"findings": 0, "checked": time.time() - 60}))
+    assert budget._audit()["backup_restores"] == -1     # absent != verified
+
+
+def test_health_page_distinguishes_verified_from_never_checked(client, monkeypatch):
+    base = {"fresh": True, "findings": 0, "ssh_keys": 1, "exposed_ports": "",
+            "tampered_files": 0, "journal_persistent": True, "checked_ago": 300,
+            "checked_human": "5 min ago", "ca_days": 3595, "ts_days": 126,
+            "backup_age": 0, "mode": "full"}
+    ok = _audit_html(client, monkeypatch, dict(base, backup_restores=1))
+    assert "restore verified" in ok
+    unknown = _audit_html(client, monkeypatch, dict(base, backup_restores=-1))
+    assert "restore verified" not in unknown and "restore FAILED" not in unknown
+    bad = _audit_html(client, monkeypatch, dict(base, backup_restores=0))
+    assert "restore FAILED" in bad

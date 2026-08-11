@@ -41,11 +41,12 @@ case "${1:-code}" in
     # in the repo while the box ran whatever had been installed by hand. A deploy that
     # silently skips a file is worse than one that fails.
     scp -o BatchMode=yes deploy/cooldown-*.service deploy/cooldown-*.timer \
-        deploy/cooldown-redirect.sh deploy/cooldown-updates.sh deploy/cooldown-audit.sh "$PI:$STAGE/"
+        deploy/cooldown-redirect.sh deploy/cooldown-updates.sh deploy/cooldown-audit.sh deploy/cooldown-verify-backup.py "$PI:$STAGE/"
     "${SSH[@]}" "sudo install -m644 $STAGE/cooldown-*.service $STAGE/cooldown-*.timer /etc/systemd/system/ &&
                  sudo install -m755 $STAGE/cooldown-redirect.sh /usr/local/sbin/cooldown-redirect.sh &&
                  sudo install -m755 $STAGE/cooldown-updates.sh /usr/local/sbin/cooldown-updates.sh &&
                  sudo install -m755 $STAGE/cooldown-audit.sh /usr/local/sbin/cooldown-audit.sh &&
+                 sudo install -m755 $STAGE/cooldown-verify-backup.py /usr/local/sbin/cooldown-verify-backup.py &&
                  rm -rf $STAGE &&
                  sudo systemctl daemon-reload && echo 'units installed + daemon-reloaded'"
     echo "NOTE: restart services yourself if a unit changed (sudo systemctl restart <svc>)."

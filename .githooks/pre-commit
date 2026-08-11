@@ -118,12 +118,16 @@ for f in $(staged '*'); do
 done
 
 # --- 8. the structural invariants a grep cannot see --------------------------
-if git diff --cached --name-only --diff-filter=ACM | grep -qE '^(app|addon)\.py$'; then
+# The WHOLE suite, not just the invariants. Running only test_invariants.py is how a
+# failing test got committed and pushed on 2026-08-10: the hook passed, because the
+# failure was in a file the hook never ran. A gate that checks a subset reports on the
+# subset, and reads as if it reported on everything.
+if git diff --cached --name-only --diff-filter=ACM | grep -qE '\.py$'; then
   if redis-cli ping >/dev/null 2>&1; then
-    printf "  ${DIM}· running invariant tests…${N}\n"
+    printf "  ${DIM}· running the test suite…${N}\n"
     PY=./venv/bin/python; [ -x "$PY" ] || PY=python3
-    if ! out="$("$PY" -m pytest tests/test_invariants.py -q 2>&1)"; then
-      printf "  ${RED}✗${N} ${B}invariant tests failed${N}\n"
+    if ! out="$("$PY" -m pytest tests/ -q 2>&1)"; then
+      printf "  ${RED}✗${N} ${B}tests failed${N}\n"
       printf "%s\n" "$out" | tail -20 | sed 's/^/    /'
       printf "    ${DIM}A broken invariant means a decision was skipped, not that the test is wrong.${N}\n"
       fails=$((fails+1))

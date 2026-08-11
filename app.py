@@ -3339,6 +3339,8 @@ def _audit(now=None):
             "ca_days": int(d.get("ca_days", 0)),
             "backup_age": int(d.get("backup_age", -1)),
             "mode": d.get("mode", "quick"),
+            # -1 until the weekly full tier has run at least once. Unknown is not a pass.
+            "backup_restores": int(d.get("backup_restores", -1)),
             "checked_human": _short_ago(now - checked) if checked else "never",
             # Defaults to True so an older state file does not read as an alarm.
             "journal_persistent": bool(d.get("journal_persistent", True)),
@@ -3713,7 +3715,9 @@ HEALTH_PAGE = """
       <span class="errlast">Checked {{ d.audit.get('checked_human', 'unknown') }}{%
         if d.audit.get('ca_days', 0) %} &middot; CA valid {{ d.audit.ca_days }}d{% endif %}{%
         if d.audit.get('ts_days', -1) > 0 %} &middot; tailnet key {{ d.audit.ts_days }}d{% endif %}{%
-        if d.audit.get('backup_age', -1) >= 0 %} &middot; backup {{ d.audit.backup_age }}d old{% endif %}</span>
+        if d.audit.get('backup_age', -1) >= 0 %} &middot; backup {{ d.audit.backup_age }}d old{% endif %}{%
+        if d.audit.get('backup_restores', -1) == 1 %} &middot; restore verified{%
+        elif d.audit.get('backup_restores', -1) == 0 %} &middot; <span class="upd-bad">restore FAILED</span>{% endif %}</span>
       {%- endif -%}
     </div>
 

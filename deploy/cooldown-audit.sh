@@ -130,7 +130,22 @@ boot_pct="$(df --output=pcent /boot/firmware 2>/dev/null | tail -1 | tr -dc '0-9
 # --- the expensive tier -----------------------------------------------------------
 KNOWN_MODIFIED='/usr/lib/modprobe.d/g_ether.conf'
 tampered=-1; tampered_all=-1
+backup_restores=-1
 if [ "$MODE" = "full" ]; then
+    # Prove the newest backup goes back in. Weekly, not hourly -- it restores every key
+    # into a scratch database, which is cheap but not free. Never touches db 0.
+    # The venv interpreter, not the system one: redis-py is installed only in the venv,
+    # so `python3 verify.py` dies with ModuleNotFoundError and the audit sees an empty
+    # string rather than a result.
+    PYBIN=/home/pi/cooldown/venv/bin/python3
+    [ -x "$PYBIN" ] || PYBIN=python3
+    if vb="$("$PYBIN" /usr/local/sbin/budget-verify-backup.py 2>/dev/null)"; then
+        backup_restores=1
+    else
+        backup_restores=0
+        note "backup does NOT restore: $(printf '%s' "$vb" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("error") or "unknown")' 2>/dev/null || echo 'verifier failed to run')"
+    fi
+
     tampered_all="$(dpkg -V 2>/dev/null | awk '$2 != "c"' | wc -l)"
     tampered="$(dpkg -V 2>/dev/null | awk '$2 != "c" {print $NF}' | grep -vxF "$KNOWN_MODIFIED" | wc -l)"
     [ "$tampered" -eq 0 ] || note "$tampered packaged file(s) differ from their manifest (dpkg -V)"
@@ -146,8 +161,8 @@ printf '"ts_days":%d,"listeners":"%s","firewall_rules":%d,"exposed_ports":"%s",'
        "${ts_days:--1}" "$(esc "$listeners")" "$fw_rules" "$(esc "$exposed")"
 printf '"journal_persistent":%s,"backup_age":%d,"root_pct":%d,"boot_pct":%d,' \
        "$journal_persistent" "${backup_age:--1}" "${root_pct:-0}" "${boot_pct:-0}"
-printf '"tampered_files":%d,"tampered_all":%d,"findings":%d,"checked":%d}\n' \
-       "${tampered:--1}" "${tampered_all:--1}" "${#findings[@]}" "$(date +%s)"
+printf '"tampered_files":%d,"tampered_all":%d,"backup_restores":%d,"findings":%d,"checked":%d}\n' \
+       "${tampered:--1}" "${tampered_all:--1}" "${backup_restores:--1}" "${#findings[@]}" "$(date +%s)"
 } > "$TMP"
 
 chmod 644 "$TMP"

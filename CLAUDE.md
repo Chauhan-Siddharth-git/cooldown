@@ -74,7 +74,7 @@ second clock.
 ## Commands
 
 ```bash
-python3 -m pytest tests/ -q              # 545 tests; needs local redis (uses db 15)
+python3 -m pytest tests/ -q              # needs a local redis (uses db 15)
 python3 -m pytest tests/test_invariants.py -q   # the structural properties
 git config core.hooksPath .githooks      # enable the pre-commit checks (once per clone)
 ./start.sh                               # local dev: loopback-only proxy, separate dev CA
