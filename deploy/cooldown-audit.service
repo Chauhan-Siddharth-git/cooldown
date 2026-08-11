@@ -1,0 +1,9 @@
+[Unit]
+Description=Budget: weekly security invariant audit
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cooldown-audit.sh
+Nice=10
+IOSchedulingClass=idle

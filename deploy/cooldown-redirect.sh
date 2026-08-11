@@ -47,7 +47,15 @@ q_dn(){ while iptables  -D FORWARD -i "$IF" -p udp --dport 443 -j REJECT 2>/dev/
 # 5000 is the Flask app. It binds loopback + the tailscale0 address (never 0.0.0.0), so
 # this rule is the second layer rather than the only one — but it is what keeps the
 # dashboard off the LAN and off the public IPv6 address if that bind ever widens.
-PORTS=5000,8080,8081
+# 22 included as of 2026-08-10. It was listening on 0.0.0.0 and covered by nothing,
+# while /health listed it as firewalled -- a dashboard asserting a control that did not
+# exist. Reachable from any device on the LAN, though key-only, so brute force was never
+# the risk; the risk was believing otherwise.
+#
+# TRADE-OFF, on purpose: this removes the LAN fallback. If tailscaled ever fails you
+# cannot SSH in from the same network any more, and recovery means a monitor and
+# keyboard. Revert by dropping 22 from this list and re-running `cooldown-redirect.sh up`.
+PORTS=22,5000,8080,8081
 fw_up(){ for ipt in iptables ip6tables; do
           $ipt -C INPUT -i "$IF" -p tcp -m multiport --dports "$PORTS" -j ACCEPT 2>/dev/null || $ipt -I INPUT 1 -i "$IF" -p tcp -m multiport --dports "$PORTS" -j ACCEPT
           $ipt -C INPUT -i lo    -p tcp -m multiport --dports "$PORTS" -j ACCEPT 2>/dev/null || $ipt -I INPUT 2 -i lo    -p tcp -m multiport --dports "$PORTS" -j ACCEPT

@@ -1,0 +1,12 @@
+[Unit]
+Description=Weekly security invariant audit
+
+[Timer]
+OnCalendar=Sun 04:30
+# Persistent so a box that was off over the weekend audits on the next boot rather than
+# waiting a full week. Ordered after time-sync for the same reason the apt timers are.
+Persistent=true
+RandomizedDelaySec=20m
+
+[Install]
+WantedBy=timers.target

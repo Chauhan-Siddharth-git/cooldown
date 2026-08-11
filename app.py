@@ -3266,6 +3266,36 @@ def _updates(now=None):
             "checked_ago": int(now - checked) if checked else None}
 
 
+AUDIT_STATE = "/var/lib/cooldown-audit.json"
+AUDIT_STALE_AFTER = 10 * 86400   # weekly writer; ten days means it stopped
+
+
+def _audit(now=None):
+    """Security-invariant state, written weekly by deploy/cooldown-audit.sh.
+
+    Reports findings rather than repairing them. A watchdog that silently deleted an
+    unexpected SSH key would destroy exactly the evidence worth having.
+    """
+    now = now if now is not None else time.time()
+    try:
+        with open(AUDIT_STATE) as fh:
+            d = json.load(fh)
+    except Exception:
+        return {"fresh": False, "findings": None, "checked_ago": None,
+                "ca_mtime": None, "exposed_ports": "", "journal_persistent": True}
+    checked = float(d.get("checked", 0))
+    return {"fresh": (now - checked) < AUDIT_STALE_AFTER,
+            "findings": int(d.get("findings", 0)),
+            "ca_mtime": d.get("ca_mtime") or None,
+            "ssh_keys": int(d.get("ssh_keys", 0)),
+            "shell_accounts": d.get("shell_accounts", ""),
+            "exposed_ports": (d.get("exposed_ports") or "").strip(),
+            "tampered_files": int(d.get("tampered_files", 0)),
+            # Defaults to True so an older state file does not read as an alarm.
+            "journal_persistent": bool(d.get("journal_persistent", True)),
+            "checked_ago": int(now - checked) if checked else None}
+
+
 def collect_health(max_age=2.0):
     """Snapshot of the box. Cached briefly: the page polls every 4s and several tabs (or a
     hostile same-origin script) would otherwise each spawn ~5 `systemctl` subprocesses per
@@ -3288,6 +3318,8 @@ def collect_health(max_age=2.0):
         "temp_hist": list(_TEMP_HIST),
         "updates": _try(_updates, {"fresh": False, "pending": None, "security": None,
                                    "reboot_required": False, "checked_ago": None}),
+        "audit": _try(_audit, {"fresh": False, "findings": None, "checked_ago": None,
+                               "exposed_ports": "", "journal_persistent": True}),
         "mem": _try(_mem, {"used_mb": 0, "total_mb": 0, "pct": 0}),
         "disk": _try(_disk, {"used_gb": 0, "total_gb": 0, "avail_gb": 0, "pct": 0}),
         "uptime": _try(_uptime, "?"),
@@ -3613,6 +3645,20 @@ HEALTH_PAGE = """
       {%- endif -%}
       {%- if d.updates.fresh and d.updates.last_result and d.updates.last_result != 'success' %}
       <span class="errlast">Last unattended run: {{ d.updates.last_result }}</span>{% endif -%}
+    </div>
+
+    <!-- Weekly security invariants. Reports, never repairs. -->
+    <div class="errline">
+      {%- if not d.audit.fresh -%}
+      <span class="upd-bad">Security audit has not run</span>{% if d.audit.checked_ago %} for {{ (d.audit.checked_ago // 86400) }} days{% endif %}.
+      {%- elif d.audit.findings -%}
+      <span class="upd-bad">{{ d.audit.findings }} audit finding{{ '' if d.audit.findings == 1 else 's' }}</span>
+      {%- if d.audit.exposed_ports %} &mdash; open to the LAN: {{ d.audit.exposed_ports }}{% endif -%}
+      {%- if d.audit.tampered_files %} &mdash; {{ d.audit.tampered_files }} modified packaged file(s){% endif -%}.
+      <span class="errlast">Details: journalctl -t cooldown-audit</span>
+      {%- else -%}
+      Security invariants hold &mdash; CA untouched, {{ d.audit.ssh_keys }} SSH key{{ '' if d.audit.ssh_keys == 1 else 's' }}, no exposed ports.
+      {%- endif -%}
     </div>
 
     <div class="foot">{% if back_url %}<a class="home" href="{{ back_url }}">&larr; {{ back_label }}</a>{% endif %}<a href="/stats{{ qs }}">Usage stats</a><a href="/devices{{ qs }}">Devices</a><a href="/health{{ qs }}">Refresh</a></div>

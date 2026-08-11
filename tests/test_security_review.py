@@ -393,6 +393,9 @@ _HEALTH_BASE = {
     "updates": {"fresh": True, "pending": 0, "security": 0, "reboot_required": False,
                 "boot_ok": True, "stuck_jobs": 0,
                 "last_result": "success", "last_run_ago": 3600, "checked_ago": 60},
+    "audit": {"fresh": True, "findings": 0, "ssh_keys": 1, "shell_accounts": "pi root",
+              "exposed_ports": "", "tampered_files": 0, "journal_persistent": True,
+              "ca_mtime": 1750000000, "checked_ago": 3600},
 }
 
 
@@ -1436,3 +1439,66 @@ def test_health_page_reports_stuck_jobs_even_when_boot_looks_fine(client, monkey
                               "reboot_required": False, "boot_ok": True, "stuck_jobs": 1,
                               "last_result": "success", "last_run_ago": 60, "checked_ago": 60})
     assert "1 timer fired without executing" in html
+
+
+# ---------- the weekly security audit ----------
+
+def _audit_html(client, monkeypatch, audit):
+    monkeypatch.setattr(budget, "collect_health", lambda *a, **k: dict(_HEALTH_BASE, audit=audit))
+    return client.get("/health").get_data(as_text=True)
+
+
+def test_audit_reports_unknown_when_it_has_not_run(tmp_path, monkeypatch):
+    """A missing audit must not read as a passing one -- the whole reason this exists is
+    that 'no records' got mistaken for 'nothing happened'."""
+    monkeypatch.setattr(budget, "AUDIT_STATE", str(tmp_path / "nope.json"))
+    a = budget._audit()
+    assert a["fresh"] is False and a["findings"] is None
+
+
+def test_audit_goes_stale_rather_than_reporting_old_results(tmp_path, monkeypatch):
+    f = tmp_path / "a.json"
+    f.write_text(json.dumps({"findings": 0, "checked": time.time() - 30 * 86400}))
+    monkeypatch.setattr(budget, "AUDIT_STATE", str(f))
+    assert budget._audit()["fresh"] is False
+
+
+def test_audit_reads_findings(tmp_path, monkeypatch):
+    f = tmp_path / "a.json"
+    f.write_text(json.dumps({"findings": 2, "ssh_keys": 1, "exposed_ports": "22 ",
+                             "tampered_files": 0, "journal_persistent": True,
+                             "checked": time.time() - 3600}))
+    monkeypatch.setattr(budget, "AUDIT_STATE", str(f))
+    a = budget._audit()
+    assert a["fresh"] is True and a["findings"] == 2 and a["exposed_ports"] == "22"
+
+
+def test_audit_survives_a_corrupt_report(tmp_path, monkeypatch):
+    f = tmp_path / "a.json"
+    f.write_text("{ not json")
+    monkeypatch.setattr(budget, "AUDIT_STATE", str(f))
+    assert budget._audit()["fresh"] is False
+
+
+def test_health_page_names_the_exposed_port(client, monkeypatch):
+    """The exact finding from tonight: port 22 open to the LAN while the dashboard
+    called it firewalled. It has to be named, not merely counted."""
+    html = _audit_html(client, monkeypatch,
+                       {"fresh": True, "findings": 1, "ssh_keys": 1, "exposed_ports": "22",
+                        "tampered_files": 0, "journal_persistent": True, "checked_ago": 3600})
+    assert "1 audit finding" in html and "open to the LAN: 22" in html
+
+
+def test_health_page_says_when_the_audit_is_missing(client, monkeypatch):
+    html = _audit_html(client, monkeypatch,
+                       {"fresh": False, "findings": None, "exposed_ports": "",
+                        "journal_persistent": True, "checked_ago": 20 * 86400})
+    assert "Security audit has not run" in html
+    assert "Security invariants hold" not in html
+
+
+def test_health_page_confirms_a_clean_audit(client, monkeypatch):
+    html = _audit_html(client, monkeypatch,
+                       {"fresh": True, "findings": 0, "ssh_keys": 1, "exposed_ports": "",
+                        "tampered_files": 0, "journal_persistent": True, "checked_ago": 3600})
+    assert "Security invariants hold" in html
