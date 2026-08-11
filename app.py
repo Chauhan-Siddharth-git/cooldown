@@ -3258,6 +3258,24 @@ UPDATES_STATE = "/var/lib/cooldown-updates.json"
 UPDATES_STALE_AFTER = 3 * 3600   # the writer runs hourly; three misses means it stopped
 
 
+def _when(ts, now=None):
+    """'tonight at 03:27' / 'in 40 min' / 'tomorrow at 03:27'. Answers "so when does
+    this actually happen", which a bare clock time does not when it is 2am."""
+    now = now if now is not None else time.time()
+    d = ts - now
+    if d < 0:
+        return "overdue"
+    if d < 5400:
+        return f"in {max(1, int(d // 60))} min"
+    hhmm = time.strftime("%-I:%M %p", time.localtime(ts)).lower()
+    same_day = time.strftime("%Y-%m-%d", time.localtime(ts)) == time.strftime("%Y-%m-%d", time.localtime(now))
+    if same_day:
+        return f"today at {hhmm}"
+    if d < 36 * 3600:
+        return f"tonight at {hhmm}" if time.localtime(ts).tm_hour < 6 else f"tomorrow at {hhmm}"
+    return f"in {int(d // 86400)} days"
+
+
 def _short_ago(secs):
     """'3 min ago' / '2 h ago' / '4 days ago'. Answers "is this figure current?" at a
     glance, which is the actual question behind "does it check every day?"."""
@@ -3305,6 +3323,9 @@ def _updates(now=None):
             # templates with from_string(), so there is no shared environment to
             # register one on.
             "checked_human": _short_ago(now - checked) if checked else "never",
+            # Read from the timer, never hardcoded — see cooldown-updates.sh.
+            "next_install": _when(float(d["next_install"]), now) if d.get("next_install") else "",
+            "auto_reboot": d.get("auto_reboot", ""),
             "last_result": d.get("last_result", "unknown"),
             "last_run_ago": int(now - float(d["last_run"])) if d.get("last_run") else None,
             "checked_ago": int(now - checked) if checked else None}
@@ -3341,6 +3362,9 @@ def _audit(now=None):
             "mode": d.get("mode", "quick"),
             # -1 until the weekly full tier has run at least once. Unknown is not a pass.
             "backup_restores": int(d.get("backup_restores", -1)),
+            # How long ago the weekly tier last proved it, so a carried-forward result
+            # cannot masquerade as fresh indefinitely.
+            "full_ago": _short_ago(now - float(d["full_checked"])) if d.get("full_checked") else "",
             "checked_human": _short_ago(now - checked) if checked else "never",
             # Defaults to True so an older state file does not read as an alarm.
             "journal_persistent": bool(d.get("journal_persistent", True)),
@@ -3499,7 +3523,29 @@ HEALTH_PAGE = """
         .plist td.wide{color:var(--bad);font-weight:600}
         .plist td.dim{color:var(--faint)}      /* wide, but firewalled by design */
         .phint{font-size:11px;color:var(--faint);line-height:1.5;margin-top:7px}
-        .errline{text-align:center;font-size:11.5px;color:var(--faint);margin-top:10px;line-height:1.5}
+        /* Status rows. Three centred fine-print paragraphs had turned into a wall nobody
+       read; a fixed label column lets the eye scan down it, and the dot carries state
+       so severity is visible before any of the words are. */
+    .status{margin-top:18px;padding-top:13px;border-top:1px solid var(--line);
+            display:flex;flex-direction:column;gap:10px}
+    .srow{display:grid;grid-template-columns:7px 78px 1fr;gap:10px;
+          align-items:baseline;font-size:12.5px;line-height:1.45;text-align:left}
+    .sdot{width:7px;height:7px;border-radius:50%;background:var(--go);
+          align-self:center;flex:none}
+    .srow.warn .sdot{background:var(--wait)}
+    .srow.bad  .sdot{background:var(--bad)}
+    .slabel{color:var(--faint);font-size:10.5px;letter-spacing:.06em;
+            text-transform:uppercase;font-weight:600}
+    .sval{color:var(--muted)}
+    .srow.warn .sval{color:#e8cfa4}
+    .srow.bad  .sval{color:#f0c9c9}
+    .sval b{color:var(--fg);font-weight:600}
+    .sdet{grid-column:3;color:var(--faint);font-size:11px;line-height:1.5;
+          word-break:break-word;margin-top:1px}
+    @media (max-width:420px){ .srow{grid-template-columns:7px 1fr}
+                              .slabel{grid-column:2}
+                              .sval,.sdet{grid-column:2} }
+    .errline{text-align:center;font-size:11.5px;color:var(--faint);margin-top:10px;line-height:1.5}
         .errline b{color:var(--wait)}
         .errlast{display:block;font-size:11px;color:#4a515c;word-break:break-word}
         .pill{font-size:11px;font-weight:600;padding:6px 10px;border-radius:999px;border:1px solid var(--line);
@@ -3665,60 +3711,99 @@ HEALTH_PAGE = """
         bound narrowly on purpose, or a port here you do not recognise.</div>
     </details>
 
-    <!-- Swallowed errors. Silence here used to mean "fine" and "broken" equally. -->
-    <div class="errline">
-      {%- if d.errors.total or d.errors.proxy -%}
-      <b>{{ d.errors.total }}</b> handled error{{ '' if d.errors.total == 1 else 's' }} in the app{% if d.errors.proxy %},
-      <b>{{ d.errors.proxy }}</b> in the proxy{% endif %} since boot.
-      {%- if d.errors.last %}<span class="errlast">Last: {{ d.errors.last }}</span>{% endif -%}
-      {%- else -%}
-      No handled errors since boot.
-      {%- endif -%}
-    </div>
+    <!-- System status. Was three centred fine-print paragraphs; the information was
+         all there and none of it was being read. Same facts, scannable. -->
+    <div class="status">
 
-    <!-- Patch state. Previously answerable only by SSHing in, which is why nobody
-         noticed apt's timer had been dead for ten days. -->
-    <div class="errline">
-      {%- if d.updates.fresh and (not d.updates.get('boot_ok', True) or d.updates.get('stuck_jobs', 0)) -%}
-      <span class="upd-bad">Boot never completed</span> &mdash; scheduled jobs are queued
-      and will not run{% if d.updates.get('stuck_jobs', 0) %} ({{ d.updates.stuck_jobs }} timer{{ '' if d.updates.stuck_jobs == 1 else 's' }} fired without executing){% endif %}.
-      Patch counts below are not to be trusted.
-      {%- elif not d.updates.fresh -%}
-      <span class="upd-bad">Update status unknown</span> &mdash; the hourly check has not
-      reported{% if d.updates.checked_ago %} for {{ (d.updates.checked_ago // 3600) }}h{% endif %}.
-      {%- elif d.updates.reboot_required -%}
-      <span class="upd-bad">Reboot required</span> to finish a kernel update.
-      {%- if d.updates.pending %} <b>{{ d.updates.pending }}</b> package{{ '' if d.updates.pending == 1 else 's' }} still pending.{% endif -%}
-      {%- elif d.updates.pending -%}
-      <b>{{ d.updates.pending }}</b> update{{ '' if d.updates.pending == 1 else 's' }} pending{%
-        if d.updates.security %}, <span class="upd-bad">{{ d.updates.security }} security</span>{% endif %}.
-      {%- if d.updates.packages %}<span class="errlast">{{ d.updates.packages|join(', ') }}{%
-        if d.updates.pkg_total > d.updates.packages|length %} and {{ d.updates.pkg_total - d.updates.packages|length }} more{% endif %}</span>{% endif -%}
-      {%- else -%}
-      Fully patched &mdash; checked {{ d.updates.checked_human }}, installs nightly at 03:00.
-      {%- endif -%}
-      {%- if d.updates.fresh and d.updates.last_result and d.updates.last_result != 'success' %}
-      <span class="errlast">Last unattended run: {{ d.updates.last_result }}</span>{% endif -%}
-    </div>
+      <!-- Swallowed errors. Silence here used to mean "fine" and "broken" equally. -->
+      <div class="srow {{ 'bad' if (d.errors.total or d.errors.proxy) else 'ok' }}">
+        <span class="sdot"></span><span class="slabel">Errors</span>
+        <span class="sval">
+          {%- if d.errors.total or d.errors.proxy -%}
+          <b>{{ d.errors.total }}</b> in the app{% if d.errors.proxy %}, <b>{{ d.errors.proxy }}</b> in the proxy{% endif %} since boot
+          {%- else -%}No handled errors since boot{%- endif -%}
+        </span>
+        {%- if d.errors.last %}<span class="sdet">Last: {{ d.errors.last }}</span>{% endif -%}
+      </div>
 
-    <!-- Weekly security invariants. Reports, never repairs. -->
-    <div class="errline">
-      {%- if not d.audit.fresh -%}
-      <span class="upd-bad">Security audit has not run</span>{% if d.audit.checked_ago %} for {{ (d.audit.checked_ago // 86400) }} days{% endif %}.
-      {%- elif d.audit.findings -%}
-      <span class="upd-bad">{{ d.audit.findings }} audit finding{{ '' if d.audit.findings == 1 else 's' }}</span>
-      {%- if d.audit.exposed_ports %} &mdash; open to the LAN: {{ d.audit.exposed_ports }}{% endif -%}
-      {%- if d.audit.tampered_files %} &mdash; {{ d.audit.tampered_files }} modified packaged file(s){% endif -%}.
-      <span class="errlast">Details: journalctl -t cooldown-audit</span>
-      {%- else -%}
-      Security invariants hold &mdash; CA untouched, {{ d.audit.ssh_keys }} SSH key{{ '' if d.audit.ssh_keys == 1 else 's' }}, no exposed ports.
-      <span class="errlast">Checked {{ d.audit.get('checked_human', 'unknown') }}{%
-        if d.audit.get('ca_days', 0) %} &middot; CA valid {{ d.audit.ca_days }}d{% endif %}{%
-        if d.audit.get('ts_days', -1) > 0 %} &middot; tailnet key {{ d.audit.ts_days }}d{% endif %}{%
-        if d.audit.get('backup_age', -1) >= 0 %} &middot; backup {{ d.audit.backup_age }}d old{% endif %}{%
-        if d.audit.get('backup_restores', -1) == 1 %} &middot; restore verified{%
-        elif d.audit.get('backup_restores', -1) == 0 %} &middot; <span class="upd-bad">restore FAILED</span>{% endif %}</span>
-      {%- endif -%}
+      <!-- Patch state, and crucially HOW it gets applied. Previously answerable only by
+           SSHing in, which is why nobody noticed apt's timer had been dead for ten days.
+           The schedule is read from the timer, never hardcoded here. -->
+      {% set u = d.updates %}
+      {% set ujam = u.fresh and (not u.get('boot_ok', True) or u.get('stuck_jobs', 0)) %}
+      <div class="srow {{ 'bad' if (ujam or not u.fresh or u.reboot_required) else ('warn' if u.security else ('warn' if u.pending else 'ok')) }}">
+        <span class="sdot"></span><span class="slabel">Updates</span>
+        <span class="sval">
+          {%- if ujam -%}
+          Boot never completed &mdash; scheduled jobs are queued and will not run
+          {%- elif not u.fresh -%}
+          Update status unknown
+          {%- elif u.reboot_required -%}
+          Reboot required to finish a kernel update
+          {%- elif u.pending -%}
+          <b>{{ u.pending }}</b> pending{% if u.security %}, <b>{{ u.security }}</b> security{% endif %}
+          {%- else -%}
+          Up to date{%- endif -%}
+        </span>
+        <span class="sdet">
+          {%- if ujam -%}
+          {% if u.get('stuck_jobs', 0) %}{{ u.stuck_jobs }} timer{{ '' if u.stuck_jobs == 1 else 's' }} fired without executing. {% endif %}Counts here are not to be trusted.
+          {%- elif not u.fresh -%}
+          The hourly check has not reported{% if u.checked_ago %} for {{ (u.checked_ago // 3600) }}h{% endif %}.
+          {%- else -%}
+          {% if u.pending %}Installs automatically{% if u.next_install %} {{ u.next_install }}{% endif %}{%
+            if u.auto_reboot and u.reboot_required %}, reboots {{ u.auto_reboot }}{%
+            elif u.auto_reboot %}; reboots {{ u.auto_reboot }} only if a kernel lands{% endif %}.
+          {% else %}Checked {{ u.checked_human }}. Next install{% if u.next_install %} {{ u.next_install }}{% endif %}.{% endif %}
+          {%- if u.packages %} {{ u.packages|join(', ') }}{%
+            if u.pkg_total > u.packages|length %} and {{ u.pkg_total - u.packages|length }} more{% endif %}.{% endif -%}
+          {%- if u.last_result and u.last_result != 'success' %} Last run: {{ u.last_result }}.{% endif -%}
+          {%- endif -%}
+        </span>
+      </div>
+
+      <!-- Weekly security invariants. Reports, never repairs. -->
+      {% set a = d.audit %}
+      <div class="srow {{ 'bad' if (not a.fresh or a.findings) else 'ok' }}">
+        <span class="sdot"></span><span class="slabel">Security</span>
+        <span class="sval">
+          {%- if not a.fresh -%}
+          Security audit has not run{% if a.checked_ago %} for {{ (a.checked_ago // 86400) }} days{% endif %}
+          {%- elif a.findings -%}
+          {{ a.findings }} audit finding{{ '' if a.findings == 1 else 's' }}
+          {%- if a.exposed_ports %} &mdash; open to the LAN: {{ a.exposed_ports }}{% endif -%}
+          {%- if a.tampered_files %} &mdash; {{ a.tampered_files }} modified packaged file(s){% endif -%}
+          {%- else -%}
+          Security invariants hold &mdash; CA untouched, {{ a.ssh_keys }} SSH key{{ '' if a.ssh_keys == 1 else 's' }}, no exposed ports
+          {%- endif -%}
+        </span>
+        <span class="sdet">
+          {%- if a.findings %}Details: journalctl -t budget-audit
+          {%- else -%}
+          Checked {{ a.get('checked_human', 'unknown') }}{%
+            if a.get('ca_days', 0) %} &middot; CA valid {{ a.ca_days }}d{% endif %}{%
+            if a.get('ts_days', -1) > 0 %} &middot; tailnet key {{ a.ts_days }}d{% endif %}
+          {%- endif -%}
+        </span>
+      </div>
+
+      <!-- Backup gets its own row: "it ran" and "it restores" are different claims. -->
+      {% if a.get('backup_age', -1) >= 0 or a.get('backup_restores', -1) >= 0 %}
+      <div class="srow {{ 'bad' if a.get('backup_restores', -1) == 0 else ('warn' if a.get('backup_age', 0) > 2 else 'ok') }}">
+        <span class="sdot"></span><span class="slabel">Backup</span>
+        <span class="sval">
+          {%- if a.get('backup_restores', -1) == 0 -%}restore FAILED
+          {%- elif a.get('backup_age', -1) >= 0 -%}{{ a.backup_age }}d old
+          {%- else -%}unknown{%- endif -%}
+        </span>
+        <span class="sdet">
+          {%- if a.get('backup_restores', -1) == 1 %}restore verified{% if a.get('full_ago') %} {{ a.full_ago }}{% endif %} against a scratch database
+          {%- elif a.get('backup_restores', -1) == 0 %}the newest backup did not restore &mdash; journalctl -t budget-audit
+          {%- else %}restore not yet verified this week{% endif -%}
+        </span>
+      </div>
+      {% endif %}
+
     </div>
 
     <div class="foot">{% if back_url %}<a class="home" href="{{ back_url }}">&larr; {{ back_label }}</a>{% endif %}<a href="/stats{{ qs }}">Usage stats</a><a href="/devices{{ qs }}">Devices</a><a href="/health{{ qs }}">Refresh</a></div>

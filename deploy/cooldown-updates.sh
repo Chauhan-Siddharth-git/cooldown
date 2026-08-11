@@ -111,6 +111,14 @@ pkg_total=$(printf '%s\n' "$sim" | grep -c '^Inst ')
 reboot=false
 [ -f /var/run/reboot-required ] && reboot=true
 
+# When the installer will ACTUALLY next run, read from the timer rather than hardcoded
+# in the page. A dashboard that states a schedule from memory drifts the moment the
+# schedule changes -- the same failure as the "firewalled ports" set, which claimed port
+# 22 was covered for however long it was not.
+next_install="$(systemctl show apt-daily-upgrade.timer -p NextElapseUSecRealtime --value 2>/dev/null)"
+next_epoch=0
+[ -n "$next_install" ] && next_epoch="$(date -d "$next_install" +%s 2>/dev/null || echo 0)"
+
 last_run="$(systemctl show apt-daily-upgrade.service -p ExecMainStartTimestamp --value 2>/dev/null)"
 last_epoch=0
 [ -n "$last_run" ] && last_epoch="$(date -d "$last_run" +%s 2>/dev/null || echo 0)"
@@ -118,6 +126,8 @@ last_result="$(systemctl show apt-daily-upgrade.service -p Result --value 2>/dev
 
 printf '{"pending":%d,"security":%d,"reboot_required":%s,"timers_kicked":%d,' \
        "${pending:-0}" "${security:-0}" "$reboot" "$kicked" > "$TMP"
+printf '"next_install":%d,"auto_reboot":"%s",' \
+       "${next_epoch:-0}" "$(apt-config dump 2>/dev/null | awk -F'"' '/Automatic-Reboot-Time/{print $2}' | head -1)" >> "$TMP"
 printf '"packages":"%s","pkg_total":%d,' \
        "$(printf '%s' "${pkgs:-}" | sed 's/\\/\\\\/g; s/"/\\"/g')" "${pkg_total:-0}" >> "$TMP"
 printf '"boot_ok":%s,"jobs_waiting":%d,"stuck_jobs":%d,' \

@@ -418,14 +418,14 @@ def _health_html_with(client, monkeypatch, updates):
 def test_health_page_says_so_when_nothing_has_broken(rdb, client, monkeypatch):
     html = _health_html(client, monkeypatch,
                         {"total": 0, "proxy": 0, "top": [], "last": "", "last_ago": None})
-    assert "No handled errors since boot." in html
+    assert "No handled errors since boot" in html
 
 
 def test_health_page_surfaces_app_and_proxy_errors(rdb, client, monkeypatch):
     html = _health_html(client, monkeypatch,
                         {"total": 3, "proxy": 2, "top": [], "last_ago": 5,
                          "last": "_power: FileNotFoundError: vcgencmd"})
-    assert "handled errors in the app" in html
+    assert "in the app" in html and "in the proxy" in html
     assert "in the proxy" in html
     assert "vcgencmd" in html
 
@@ -1395,7 +1395,7 @@ def test_health_page_shows_pending_security_count(client, monkeypatch):
                              {"fresh": True, "pending": 19, "security": 3,
                               "reboot_required": False, "last_result": "success",
                               "last_run_ago": 60, "checked_ago": 60})
-    assert "3 security" in html and "19</b> updates pending" in html
+    assert "security" in html and "<b>19</b> pending" in html
 
 
 def test_health_page_says_when_it_cannot_tell(client, monkeypatch):
@@ -1403,7 +1403,7 @@ def test_health_page_says_when_it_cannot_tell(client, monkeypatch):
                              {"fresh": False, "pending": None, "security": None,
                               "reboot_required": False, "checked_ago": 4 * 3600})
     assert "Update status unknown" in html
-    assert "Fully patched" not in html
+    assert "Up to date" not in html
 
 
 def test_health_page_says_fully_patched_when_it_is(client, monkeypatch):
@@ -1411,7 +1411,7 @@ def test_health_page_says_fully_patched_when_it_is(client, monkeypatch):
                              {"fresh": True, "pending": 0, "security": 0,
                               "reboot_required": False, "last_result": "success",
                               "last_run_ago": 60, "checked_ago": 60})
-    assert "Fully patched" in html
+    assert "Up to date" in html
 
 
 def test_updates_reports_a_boot_that_never_completed(tmp_path, monkeypatch):
@@ -1460,6 +1460,11 @@ def test_health_page_reports_stuck_jobs_even_when_boot_looks_fine(client, monkey
 
 
 # ---------- the weekly security audit ----------
+
+def _health_html_with_updates(client, monkeypatch, updates):
+    monkeypatch.setattr(budget, "collect_health", lambda *a, **k: dict(_HEALTH_BASE, updates=updates))
+    return client.get("/health").get_data(as_text=True)
+
 
 def _audit_html(client, monkeypatch, audit):
     monkeypatch.setattr(budget, "collect_health", lambda *a, **k: dict(_HEALTH_BASE, audit=audit))
@@ -1538,7 +1543,7 @@ def test_health_page_says_when_it_last_checked(client, monkeypatch):
                               "reboot_required": False, "boot_ok": True, "stuck_jobs": 0,
                               "packages": [], "pkg_total": 0, "checked_human": "12 min ago",
                               "last_result": "success", "last_run_ago": 60, "checked_ago": 720})
-    assert "Fully patched" in html and "checked 12 min ago" in html
+    assert "Up to date" in html and "Checked 12 min ago" in html
 
 
 def test_health_page_names_the_pending_packages(client, monkeypatch):
@@ -1644,3 +1649,30 @@ def test_health_page_distinguishes_verified_from_never_checked(client, monkeypat
     assert "restore verified" not in unknown and "restore FAILED" not in unknown
     bad = _audit_html(client, monkeypatch, dict(base, backup_restores=0))
     assert "restore FAILED" in bad
+
+
+def test_health_page_says_how_pending_updates_will_be_installed(client, monkeypatch):
+    """"6 pending" alone tells you a number and no plan. The row has to say what happens
+    next, and the schedule comes from the timer rather than being written in the page --
+    a hardcoded time is a claim that drifts, which is how the firewalled-ports set ended
+    up asserting a control that did not exist."""
+    html = _health_html_with_updates(client, monkeypatch,
+        {"fresh": True, "pending": 6, "security": 0, "reboot_required": False,
+         "boot_ok": True, "stuck_jobs": 0, "packages": ["libdrm2", "libgbm1"],
+         "pkg_total": 6, "checked_human": "5 min ago",
+         "next_install": "tonight at 3:27 am", "auto_reboot": "04:00",
+         "last_result": "success", "last_run_ago": 60, "checked_ago": 300})
+    assert "Installs automatically tonight at 3:27 am" in html
+    assert "reboots 04:00" in html
+    assert "libdrm2, libgbm1" in html and "and 4 more" in html
+
+
+def test_health_page_does_not_invent_a_schedule_it_does_not_know(client, monkeypatch):
+    """If the timer never reported a next run, say nothing rather than guess a time."""
+    html = _health_html_with_updates(client, monkeypatch,
+        {"fresh": True, "pending": 6, "security": 0, "reboot_required": False,
+         "boot_ok": True, "stuck_jobs": 0, "packages": [], "pkg_total": 6,
+         "checked_human": "5 min ago", "next_install": "", "auto_reboot": "",
+         "last_result": "success", "last_run_ago": 60, "checked_ago": 300})
+    assert "Installs automatically." in html
+    assert "reboots" not in html

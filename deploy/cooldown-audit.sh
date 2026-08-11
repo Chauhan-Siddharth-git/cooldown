@@ -129,9 +129,26 @@ boot_pct="$(df --output=pcent /boot/firmware 2>/dev/null | tail -1 | tr -dc '0-9
 
 # --- the expensive tier -----------------------------------------------------------
 KNOWN_MODIFIED='/usr/lib/modprobe.d/g_ether.conf'
-tampered=-1; tampered_all=-1
-backup_restores=-1
+
+# Carry forward what the WEEKLY tier established. The hourly run does not perform these
+# checks, and writing -1 for them erases a good result an hour after it was proved --
+# "restore verified" was visible for one hour in every 168, which is indistinguishable
+# from never. Unknown must stay unknown; proven must stay proven until re-tested, with
+# full_checked recording when, so a carried result cannot pose as fresh forever.
+prev() {
+    [ -r "$STATE" ] || { echo -1; return; }
+    python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get(sys.argv[2], -1))
+except Exception: print(-1)' "$STATE" "$1" 2>/dev/null || echo -1
+}
+tampered="$(prev tampered_files)"
+tampered_all="$(prev tampered_all)"
+backup_restores="$(prev backup_restores)"
+full_checked="$(prev full_checked)"
+[ "$full_checked" = "-1" ] && full_checked=0
+
 if [ "$MODE" = "full" ]; then
+    full_checked="$(date +%s)"
     # Prove the newest backup goes back in. Weekly, not hourly -- it restores every key
     # into a scratch database, which is cheap but not free. Never touches db 0.
     # The venv interpreter, not the system one: redis-py is installed only in the venv,
@@ -161,8 +178,8 @@ printf '"ts_days":%d,"listeners":"%s","firewall_rules":%d,"exposed_ports":"%s",'
        "${ts_days:--1}" "$(esc "$listeners")" "$fw_rules" "$(esc "$exposed")"
 printf '"journal_persistent":%s,"backup_age":%d,"root_pct":%d,"boot_pct":%d,' \
        "$journal_persistent" "${backup_age:--1}" "${root_pct:-0}" "${boot_pct:-0}"
-printf '"tampered_files":%d,"tampered_all":%d,"backup_restores":%d,"findings":%d,"checked":%d}\n' \
-       "${tampered:--1}" "${tampered_all:--1}" "${backup_restores:--1}" "${#findings[@]}" "$(date +%s)"
+printf '"tampered_files":%d,"tampered_all":%d,"backup_restores":%d,"full_checked":%d,"findings":%d,"checked":%d}\n' \
+       "${tampered:--1}" "${tampered_all:--1}" "${backup_restores:--1}" "${full_checked:-0}" "${#findings[@]}" "$(date +%s)"
 } > "$TMP"
 
 chmod 644 "$TMP"
