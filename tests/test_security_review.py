@@ -1188,8 +1188,26 @@ def test_the_pass_copy_is_rendered_server_side_not_smuggled_into_script(rdb, cli
     monkeypatch.setattr(budget, "reflect_decision", lambda now=None: (True, "Why now?"))
     html = client.get("/budget?site=reddit").get_data(as_text=True)
     assert 'id="passMsg"' in html
-    assert any(t in html for _, t, _ in budget.PASS_LINES)
+    # Compare against the ESCAPED form -- which is the property being asserted. Two of
+    # the six lines contain an apostrophe, so the raw-string version of this failed on a
+    # third of all days, silently, since the copy was added. Note markupsafe (&#39;) not
+    # html.escape (&#x27;): Jinja uses the former, and the stdlib version would fail on
+    # exactly the same days for a different reason.
+    from markupsafe import escape
+    assert any(str(escape(t)) in html for _, t, _ in budget.PASS_LINES)
     assert "PASS_LINES" not in html and "JSON.parse" not in html
+
+
+def test_every_pass_line_survives_rendering(rdb, client, monkeypatch):
+    """Pin each line in turn. The seeded picker shows one per day, so a line that breaks
+    rendering would only surface on the day it came up -- which is how the apostrophe
+    problem stayed hidden."""
+    from markupsafe import escape
+    monkeypatch.setattr(budget, "reflect_decision", lambda now=None: (True, "Why now?"))
+    for entry in budget.PASS_LINES:
+        monkeypatch.setattr(budget, "pass_line", lambda *a, **k: entry)
+        html = client.get("/budget?site=reddit").get_data(as_text=True)
+        assert str(escape(entry[1])) in html, f"{entry[1]!r} did not render"
 
 
 def test_no_pass_screen_when_there_is_no_prompt(rdb, client):
