@@ -274,6 +274,47 @@ polished product:
   whether the nightly backup actually *restores* — with "unknown" as a distinct state
   from "fine". See F11 and F21-F24 in SECURITY-CASESTUDY.md.
 
+## How this was built
+
+Written with [Claude Code](https://claude.com/claude-code), in long sessions of
+conversation rather than autocomplete. The tool is not the interesting part — the method
+is, and it is visible in the repository rather than asserted here.
+
+**Every control exists because something got through.** None of them are generic best
+practice adopted in advance:
+
+| Control | The failure that bought it |
+|---|---|
+| 200 structural invariant tests | a security fix was reintroduced one call site away from the original |
+| 8 pre-commit rules | four of the findings below were repeats of an earlier fix |
+| Mutation testing on every check | three defects were found *in the checks themselves* — a check that cannot fail is decoration |
+| A private/public repo parity checker | a careless file copy nearly carried a private address into this repo |
+| The self-monitoring layer | the box went eleven days without patching while every status indicator read healthy |
+
+**[SECURITY-CASESTUDY.md](SECURITY-CASESTUDY.md) is the artifact worth reading.** Twenty-four
+findings, all fixed, each with what it was, how it bit, and the idea to carry forward. It
+is deliberately not a highlight reel:
+
+- **F9** is headed *"FIXED (at the third attempt)"*. The first two fixes were wrong, and
+  the entry keeps them rather than quietly replacing them with the one that worked.
+- **F11** describes a fix that did not work: automatic updates were switched on for weeks
+  while nothing installed, and the entry is reopened rather than rewritten.
+- **F21** records a diagnosis that was confidently wrong, and a repair that made the
+  dashboard look healthier while changing nothing.
+
+That last category is the point. Recording where the reasoning failed is more useful than
+recording where it succeeded, because the failures are the ones that repeat.
+
+**By the numbers:** 576 tests against ~5,400 lines of application code. 24 findings, 24
+fixed. Every fix mutation-tested — the bug is reintroduced and something must fail, or the
+test is decoration.
+
+**The rule underneath all of it:** an absence of signal is not a good signal. Most of the
+mistakes here came from reading an empty result as a clean one — zero failed logins from a
+journal that kept nothing, a scheduled timer whose jobs never ran, a truncated listing read
+as complete. `CLAUDE.md` encodes that as a standing instruction for whoever works on this
+next, human or otherwise.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
