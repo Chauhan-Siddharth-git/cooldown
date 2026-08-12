@@ -11,7 +11,12 @@ was fixed. Written as a learning reference — each finding is
 New to any of the words below? *Nonce*, *same-origin*, *least privilege* and the rest are
 all explained in plain English in [**CONCEPTS.md**](CONCEPTS.md).
 
-**Scorecard:** 20 findings fixed · 4 risks accepted by design · 378 tests green.
+**Scorecard:** 25 findings fixed · 6 risks accepted by design · 602 tests green.
+
+> Every number in that line was wrong before F25 went in — it read *20 · 4 · 378* while the
+> document held 24 findings, the accepted list held 6, and the suite ran 577. Nothing tied
+> the summary to the thing it summarised, which is F22's lesson wearing a different hat.
+> If you edit this file, edit this line.
 
 Findings F1–F5 came from an initial review of the design. **F6–F12 came later, from
 auditing the box that was actually running** — which is where the more serious ones were,
@@ -20,7 +25,10 @@ and a reminder that reviewing a design is not the same as reviewing a deployment
 including a HIGH that the design review had every opportunity to catch, and three findings
 (F16–F18) sitting in the scripts *around* the app rather than in it. That pass also re-opened
 **F9** for the second time; it finally closed by moving the pages to another origin instead
-of guarding them with one more header, and it is the most instructive entry here. All
+of guarding them with one more header, and it is the most instructive entry here.
+**F25 came from a fourth review, and is the bill for F9's fix**: moving the pages to a
+second origin solved reading and silently un-did F3/F14's protection against writing,
+because the check lived at the proxy and the endpoints no longer passed through it. All
 findings are verified live on the box.
 
 ---
@@ -123,6 +131,12 @@ cross-site POSTs to `/budget/*` at the proxy boundary via the browser's
 `Sec-Fetch-Site` header. Verified: cross-site → `403`, same-origin passes.
 *Incomplete as written — `/exit` is also reachable by `GET`, so this covered it in name
 only. Finished in **F14**.*
+
+**Amended 2026-08-12.** Read the parenthetical above again: *"every endpoint is
+same-origin"*. That was true when it was written and stopped being true in F9, which moved
+five endpoints onto the box's own origin — where the proxy, and therefore this check, never
+sees them. The check did not break; it stopped applying. A second copy now runs inside
+Flask so the property holds at both doors. See **F25**.
 
 **Concept — CSRF / confused deputy.** CSRF abuses your browser's trust — it attaches
 your context to a request another site triggered. Defenses assert intent: anti-CSRF
@@ -315,7 +329,13 @@ Supporting changes: Flask binds loopback **plus the tailscale0 address** — nev
 so a missing firewall rule is not the only thing between `/devices` and the LAN — and port
 5000 joined the interface-scoped rules in `cooldown-redirect.sh` as the outer layer. The gate
 keeps `/feed` (its background polls it) with a token that unlocks nothing else, and the set
-of endpoints the proxy will serve on a gated origin drops from twelve to seven.
+of endpoints the proxy will serve on a gated origin drops from twelve to eight.
+
+**The bill, recorded 2026-08-12.** This move solved *reading* and quietly un-did the
+protection against *writing*. F3's cross-site check lives at the proxy boundary; the five
+endpoints that moved no longer pass through it, so from this commit until F25 any web page
+could POST to them. Moving to the safe side of a boundary you don't own also moves you out
+from behind the controls you built on the old one. See **F25**.
 
 Verified live: all four dashboard paths return 302 for `Dest: empty`, `iframe` **and
 `document`** — including the shape no header could have caught — while the dashboard answers
@@ -481,7 +501,7 @@ match hosts by suffix rather than substring — and then the *path* was matched 
   `reddit.com/budgeting` is Reddit's own page again; it used to be swallowed by this handler
   and returned a 500.
 - **Refuse anything outside a closed set of endpoints** *before* a URL is built. There are
-  twelve Flask routes and they are all known at import time, so nothing attacker-shaped is
+  seventeen Flask routes and they are all known at import time, so nothing attacker-shaped is
   ever concatenated onto the base address.
 
 Verified against the addon with mitmproxy's flow harness — before: attacker HTML returned
@@ -512,8 +532,15 @@ looser, and you re-enter with one tap — but it is a hole in a control whose st
 harmless.
 
 **The fix.** The check now covers any request to a state-changing endpoint, not just POSTs:
-`/enter`, `/study`, `/exit`, `/heartbeat`, `/reflect`, `/boot-ack`. The endpoint list is the
+`/enter`, `/study`, `/exit`, `/heartbeat`, `/reflect`, `/worth`. The endpoint list is the
 same closed set F13 introduced, so the two fixes hold each other up.
+
+**Corrected 2026-08-12.** That list read `/boot-ack` where it should have read `/worth`,
+and stayed wrong through two reviews. `/boot-ack` moved to the box's origin in F9 and was
+therefore covered by *nothing* — while this sentence said it was covered, which is exactly
+the kind of clearance that stops the next reader looking. `/worth` was added later and never
+recorded here. Both are true now, by different mechanisms: `/worth` by the proxy check
+described above, `/boot-ack` by the box-side check in **F25**.
 
 **The concept — CSRF is about the effect, not the verb.** "Only POSTs change state" is a
 convention, not a guarantee, and the moment one `GET` breaks it the defence has a hole
@@ -771,6 +798,84 @@ distinguish those two states will always report the reassuring one.
 
 ---
 
+## F25 — The CSRF check guarded one of the two doors  ·  HIGH  ·  FIXED
+
+**What it is.** `addon.py` rejects cross-site requests to `/budget/*`, and that covered
+every mutating endpoint for as long as every one of them was served through the proxy. F9's
+third fix moved the dashboard — and `/boot-ack` with it — onto the box's own origin, which
+the addon never sees. Flask serves those same routes there and read no request header at
+all. Same endpoints, two entrances, one lock.
+
+```
+                      → /budget/enter   (gated origin, via addon)  → 403 ✓
+  POST from evil.com
+                      → /enter          (box origin, direct)       → 302, session created ✗
+```
+
+**How it bit us.** With `Origin: https://evil.example` and `Sec-Fetch-Site: cross-site`
+sent straight at the box: `POST /enter` created a session, `GET /exit` ended one (so an
+`<img src>` was enough), `POST /reflect` and `/worth` wrote to the behavioural log, and
+`POST /boot-ack` cleared `unacked_boot` — **the reboot alarm that "Accepted by design"
+names as the compensating control for CA theft by physical access.** Nothing else surfaces
+that event: `boot_events` is written and trimmed and never read by anything, so clearing
+the banner erases the only trace.
+
+Driving `/heartbeat` the same way charged the pool at 1s per wall-clock second, so roughly
+fifteen minutes of an unrelated tab being open reached 900/900 and a 60-minute cooldown
+across every gated site. Write-only throughout — there is still no `Access-Control-Allow-Origin`
+anywhere, so nothing could be *read*.
+
+**Honest ceiling.** The dashboard is plain HTTP, and that constrains the attack more than
+first assumed. On the Pi shape the origin is `http://100.x.y.z:5000`, which is not a
+potentially-trustworthy origin, so an HTTPS page's *subresource* requests to it are blocked
+as mixed content — which also blocks the obvious chain through a script on a gated site.
+What survives is a top-level navigation (neither mixed content nor a Private Network Access
+subresource) and any attacker page served over HTTP. That comfortably covers the one-shot
+endpoints — `/boot-ack`, `/exit`, `/enter` — and makes the sustained `/heartbeat` drain much
+harder from an HTTPS origin. In the Docker shape the origin is the fixed
+`http://127.0.0.1:5000`, so no reconnaissance is needed at all. **This was not measured in a
+browser**, and relying on the browser to supply the missing check is the thing
+"never trust the client for a security decision" exists to forbid — so it is fixed
+regardless of which of those conditions holds today.
+
+**Why two reviews missed it.** Two clearances pointed the wrong way at once. F14's fix list
+named `/boot-ack` as covered while F9, in the same file, said it had moved — and the code
+followed F9. And every `Sec-Fetch` test in the suite reaches the app through
+`addon.BudgetAddon().request()`, including `test_every_mutating_endpoint_rejects_cross_site`,
+which was built as the *standing* version of the F3→F14 fix. **The mechanism written to stop
+F3 recurring could not see the origin where F3 recurred.** It passed at full green
+throughout.
+
+**The fix.** The same control at the second door: a `before_request` hook in `app.py`.
+Which routes it guards is derived from the app's own `url_map` — a rule declaring any method
+beyond `GET`/`HEAD`/`OPTIONS` is state-changing, and then *every* one of its methods is
+guarded, so a new POST route is covered by existing rather than by being remembered, and
+`/exit` is guarded as a `GET` (letting the verb stand in for the effect is what F14 was).
+`Origin` and `Sec-Fetch-Site` are both read because neither covers the other: a cross-site
+`<img src>` GET carries no `Origin`, and a browser without Sec-Fetch carries only `Origin`.
+A request carrying neither is allowed — that is what the proxy's own forwarded calls look
+like (`addon._forwarded_headers` sends `Content-Type` and nothing else), so the two layers
+stay independent rather than one silently depending on the other.
+
+`tests/test_invariants.py` gains `box()` as the deliberate sibling of `probe()`, and the
+mutating set is derived from `url_map` rather than from `STATE_CHANGING`. Each endpoint is
+called same-origin *first* to prove it acts, because the first draft of that test passed for
+`/heartbeat` — which answers 403 when there is no session, so an empty Redis made it look
+defended while it was wide open. Mutation-tested four ways, each caught by a different case:
+hook removed → 24 fail; keyed on the verb → 3 fail (`GET /exit` only); `Origin` alone → 8
+fail; `Sec-Fetch-Site` alone → 8 fail.
+
+**The concept — a control lives at a door, not at a route.** Every fix in this document was
+written where the traffic happened to be at the time, and that is fine until the traffic
+moves. When F9 relocated five endpoints it was reasoned about as a *read* boundary, and it
+was a good one; nobody asked what else the old path had been doing for those endpoints on
+the way past. Ask, of any control: *if this code were reached another way, would it still
+run?* If the answer is no, the control belongs to the path, not to the thing you meant to
+protect — and the standing test that proves it must exercise every path too, or it will keep
+reporting green from the one door somebody remembered.
+
+---
+
 ## Accepted by design
 
 Some risks are the cost of what the tool *is* — understood, bounded, documented,
@@ -827,7 +932,8 @@ not eliminated. Naming them is itself good practice.
   repeated (F4→F18, F3→F14, F1/F5→F16) all repeated because the fix was a one-time edit
   with nothing standing behind it. `tests/test_invariants.py` and `.githooks/pre-commit`
   are the standing version: the tests assert *properties* derived from the code (every
-  route classified, every reachable mutating endpoint CSRF-checked, no path escaping the
+  route classified, every reachable mutating endpoint CSRF-checked *at both origins*, no
+  path escaping the
   loopback call), and the hook greps added lines for the exact shapes above. Both were
   mutation-tested — each was shown to fail when the bug it targets is reintroduced,
   because a check that cannot fail is decoration.

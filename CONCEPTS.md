@@ -158,7 +158,8 @@ escalation** is an attacker turning a small foothold into that.
 **Forbidden header name** — a header the browser flatly refuses to let page code set, no
 matter what. `Sec-Fetch-Dest` is one: the browser fills it in with *how* a request was
 made, and a script cannot lie about it. That unforgeability makes it usable as a lock —
-Cooldown still uses it to reject cross-site requests to the gate. But F9 is the cautionary
+Cooldown still uses it to reject cross-site requests, at the proxy and again in the app
+itself. But F9 is the cautionary
 half of the story: the header was never forged, it was *misread*. A script can't lie about
 how a request was made; it can still choose a way that happens to satisfy your check.
 

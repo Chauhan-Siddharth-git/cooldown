@@ -13,8 +13,8 @@ usually need checking against both.
 
 | Boundary | What lives there |
 |---|---|
-| **Gated-site origin** (`https://www.reddit.com/budget/*`) | The gate, the session endpoints, `/feed`. **Seven endpoints, and that is a budget.** Any script on that site — including its ads — is same-origin with all of it. |
-| **Box origin** (`http://<box>:5000`) | The dashboard: `/stats`, `/health`, `/devices`, `/remaining`, `/boot-ack`. Cross-origin from every gated site, which **is** the control (F9). Do not put these back behind the proxy. |
+| **Gated-site origin** (`https://www.reddit.com/budget/*`) | The gate, the session endpoints, `/feed`, `/worth`. **Eight endpoints, and that is a budget.** Any script on that site — including its ads — is same-origin with all of it. |
+| **Box origin** (`http://<box>:5000`) | The dashboard: `/stats`, `/health`, `/devices`, `/remaining`, `/boot-ack`. Cross-origin from every gated site, which **is** the control for *reading* (F9). It is not a control for *writing* — Flask refuses cross-origin writes itself (F25). Do not put these back behind the proxy. |
 | **Loopback** `127.0.0.1:5000` | Flask. The addon reaches it here; this listener must never depend on the tailnet. |
 | **Privileged** | Exactly one sudo rule: an `iptables` counter read. Services run as `cooldownapp` / `cooldownproxy`, no shell, no password. |
 | **The trust anchor** | The CA at `/var/lib/cooldown/mitmproxy`, mode 700. Never leaves the box, never enters git. |
@@ -22,7 +22,10 @@ usually need checking against both.
 ## Before you change anything
 
 - **New Flask route** → classify it in `addon.BUDGET_ENDPOINTS` (gated origin — justify it)
-  or `addon.MOVED_TO_BOX` (box origin). Unclassified routes fail the invariants.
+  or `addon.MOVED_TO_BOX` (box origin). Unclassified routes fail the invariants. If it
+  changes state, declare a non-GET method: the box-side check keys off `url_map`, so
+  declaring `methods=['POST']` is what enrols it (F25). A state-changing GET-only route
+  is guarded by nothing — don't write one.
 - **New listener** → bind loopback + `tailscale0`. Never `0.0.0.0`; `COOLDOWN_LISTEN` is
   the Docker-only override, safe there only because compose publishes to host loopback.
 - **Comparing a hostname** → `addon.host_matches()`. Nowhere else.

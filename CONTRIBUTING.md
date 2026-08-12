@@ -45,8 +45,9 @@ see [SECURITY-CASESTUDY.md](SECURITY-CASESTUDY.md):
   or auth keys.
 - **`tests/test_invariants.py`**, which enforces what a grep can't see: every Flask
   route is classified as gated-origin or box-origin, every reachable mutating endpoint
-  rejects cross-site requests, and no request path can redirect the proxy's internal
-  call off `127.0.0.1:5000`.
+  rejects cross-site requests *at both origins* (F25 — asserting it at one door only is
+  how the check passed green while the other door was open), and no request path can
+  redirect the proxy's internal call off `127.0.0.1:5000`.
 
 **If an invariant fails, a decision was skipped — not the test being fussy.** Adding a
 route without deciding which origin serves it is exactly the mistake F9 made twice.

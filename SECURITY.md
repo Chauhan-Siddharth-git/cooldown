@@ -447,7 +447,13 @@ directly, so you never type the address.
 What stays on the gated site's origin is only what has to be: the gate itself (it renders
 in place of the site), the session endpoints behind it, and `/feed` — two aggregate
 bytes-per-second numbers that drive the moving background, behind a token that unlocks
-nothing else. That's seven endpoints where it used to be twelve.
+nothing else. That's eight endpoints where it used to be twelve — the eighth is `/worth`,
+the post-session "was that worth it?" answer, which is asked *on the gate* and so has to
+live where the gate lives.
+
+Moving them also moved them out from behind the proxy's cross-site check, which is where
+F25 came from. Writes are now refused at both origins: the proxy rejects cross-site
+requests to `/budget/*`, and the app refuses them again on its own listener.
 
 Belt and braces: the app binds loopback plus your tailnet address only — never
 `0.0.0.0` — and the firewall drops port 5000 on every other interface, so neither your
