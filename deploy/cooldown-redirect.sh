@@ -117,7 +117,7 @@ fw_dn(){ for ipt in iptables ip6tables; do
 # rules with NO target, so they only count and fall through — they cannot affect routing.
 # :443 = TLS (encrypted), :80 + :53 = HTTP + DNS (the plaintext that leaves in the clear).
 # Created here (as root, at boot) rather than by the web app, so the app needs nothing
-# beyond a single read; see deploy/sudoers.d-budget-proxy.
+# beyond a single read; see deploy/sudoers.d-cooldown.
 acct_up(){
   iptables -t mangle -nL TRAFFIC_ACCT >/dev/null 2>&1 || iptables -t mangle -N TRAFFIC_ACCT
   for spec in "tcp 443" "tcp 80" "udp 53" "tcp 53"; do
