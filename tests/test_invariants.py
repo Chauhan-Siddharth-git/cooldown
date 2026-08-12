@@ -318,6 +318,119 @@ def test_the_box_origin_check_is_exercising_something(rdb):
         assert want in rules, f"{want} missing from the derived set"
 
 
+def _routes_reaching_sudo():
+    """Flask rules whose view function can transitively reach a `sudo` subprocess.
+
+    Derived from app.py's own call graph rather than from a list, because the point of
+    budget.PRIVILEGED_READS is to be complete and a hand-written list is the thing that
+    goes stale. Finds every function containing subprocess.run(["sudo", ...]), walks
+    callers back to the view functions, and maps those to their rules.
+    """
+    tree = _tree("app.py")
+    funcs = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+
+    privileged = set()
+    for name, fn in funcs.items():
+        for call in ast.walk(fn):
+            if not (isinstance(call, ast.Call) and call.args
+                    and isinstance(call.args[0], ast.List)):
+                continue
+            head = call.args[0].elts[0] if call.args[0].elts else None
+            if isinstance(head, ast.Constant) and head.value == "sudo":
+                privileged.add(name)
+
+    # Reverse-reachability: keep pulling in anything that calls something privileged.
+    changed = True
+    while changed:
+        changed = False
+        for name, fn in funcs.items():
+            if name in privileged:
+                continue
+            called = {c.func.id for c in ast.walk(fn)
+                      if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+            # _try(_acct_counters) passes the callable rather than calling it.
+            called |= {a.id for c in ast.walk(fn) if isinstance(c, ast.Call)
+                       for a in c.args if isinstance(a, ast.Name)}
+            if called & privileged:
+                privileged.add(name)
+                changed = True
+
+    views = {}
+    for name, fn in funcs.items():
+        for d in fn.decorator_list:
+            if isinstance(d, ast.Call) and getattr(d.func, "attr", "") == "route":
+                views[name] = d.args[0].value
+    return {rule for name, rule in views.items() if name in privileged}
+
+
+def test_every_route_that_can_reach_sudo_is_guarded_against_cross_origin(rdb):
+    """F7 was an unauthenticated GET performing privileged firewall *writes*. The write
+    is long gone; the unauthenticated trigger was not. /feed still shells out to
+    `sudo iptables`, so any page could make the box spawn a privileged process on demand.
+
+    Derived, so a second privileged read cannot be added without either guarding it or
+    failing here — which is how the first one came to sit unguarded for a whole review."""
+    reaching = _routes_reaching_sudo()
+    assert reaching, "no route found reaching sudo — the call-graph walk is broken, " \
+                     "and a broken walk reports success"
+    unguarded = reaching - budget.PRIVILEGED_READS
+    assert not unguarded, (
+        f"{sorted(unguarded)} can reach a sudo subprocess but is not in "
+        f"budget.PRIVILEGED_READS, so a cross-origin GET triggers it")
+
+
+@pytest.mark.parametrize("shape", sorted(CROSS_SITE_SHAPES))
+def test_privileged_reads_refuse_cross_origin_on_the_box_origin(rdb, shape):
+    """The behavioural half of the above. addon.py gates /feed with a token on the gated
+    origin; the box origin answered anyone."""
+    # This test is a loop over a set, so an empty set makes it pass without asserting
+    # anything — which is exactly what it did when PRIVILEGED_READS was mutated to
+    # empty during review. A vacuous pass here would report the guard working while it
+    # guarded nothing.
+    assert budget.PRIVILEGED_READS, "PRIVILEGED_READS is empty — nothing is being tested"
+    rdb.set("ui_token", "T")
+    for rule in sorted(budget.PRIVILEGED_READS):
+        assert box(rule, SAME_ORIGIN).status_code != 403, (
+            f"precondition: {rule} must answer its own origin, else the 403 proves nothing")
+        resp = box(rule, CROSS_SITE_SHAPES[shape])
+        assert resp.status_code == 403, (
+            f"cross-origin GET {rule} as {shape} returned {resp.status_code}, not 403")
+
+
+# The security headers addon.py puts on everything it forwards. Read off a live forwarded
+# response rather than copied here, so the two doors are compared against each other and
+# not against a third list that can drift from both.
+HARDENING = ("X-Content-Type-Options", "X-Frame-Options", "Content-Security-Policy",
+             "Referrer-Policy", "Cache-Control")
+
+
+def test_the_box_origin_is_at_least_as_hardened_as_the_proxy(rdb, monkeypatch):
+    """The addon stamps nosniff / DENY / frame-ancestors / no-referrer / no-store on every
+    response it synthesises. Flask sent none of them on its own origin, so the dashboard —
+    the pages F9 moved specifically to be harder to reach — was frameable, and a click
+    back to a gated site leaked the box's tailnet address in the Referer."""
+    class FakeResp:
+        status_code, content = 200, b'{"ok":1}'
+        headers = {"Content-Type": "application/json"}
+
+    monkeypatch.setattr(addon.req, "get", lambda *a, **k: FakeResp())
+    monkeypatch.setattr(addon.req, "post", lambda *a, **k: FakeResp())
+    rdb.set("feed_token", "T")
+    through_proxy = probe("/budget/feed?t=T",
+                          {"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "same-origin"})
+    assert through_proxy is not None and through_proxy.status_code == 200, \
+        "the proxy side of the comparison did not answer — nothing is being compared"
+
+    on_the_box = box("/stats")
+    for header in HARDENING:
+        want = through_proxy.headers.get(header)
+        if want is None:
+            continue
+        assert on_the_box.headers.get(header) == want, (
+            f"{header}: proxy sends {want!r}, box origin sends "
+            f"{on_the_box.headers.get(header)!r}")
+
+
 # ---------------------------------------------------------------------------
 # 5. Responses the proxy synthesises are always hardened
 # ---------------------------------------------------------------------------

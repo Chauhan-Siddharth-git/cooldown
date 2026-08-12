@@ -61,11 +61,25 @@ r = redis.Redis(host=os.environ.get("REDIS_HOST", "localhost"),
 # ---------------------------------------------------------------------------
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
+# Read routes that cost something privileged, and so are guarded like a write.
+#
+# /feed shells out to `sudo iptables` for the byte counters — the single sudo rule this
+# app has. It is a GET, so the method-derived rule below does not reach it, and an
+# unauthenticated cross-origin request therefore made the box spawn a privileged process
+# on demand: F7's shape with the write taken out but the trigger left in. addon.py gates
+# the same endpoint with a token on the gated origin; the box origin had nothing, which is
+# F25's asymmetry one route over. A test derives the call graph and fails if anything else
+# that reaches sudo is left off this set.
+PRIVILEGED_READS = {"/feed"}
 
-def _is_cross_origin_write():
+
+def _cross_origin_to_guarded_route():
     rule = request.url_rule
-    if rule is None or (rule.methods or set()) <= SAFE_METHODS:
-        return False                       # unrouted, or a read-only route
+    if rule is None:
+        return False                       # unrouted — 404, nothing to guard
+    read_only = (rule.methods or set()) <= SAFE_METHODS
+    if read_only and str(rule.rule) not in PRIVILEGED_READS:
+        return False
     fetch_site = request.headers.get("Sec-Fetch-Site")
     if fetch_site:
         # "none" is a user-initiated navigation (typed, bookmarked) — a page cannot
@@ -80,9 +94,39 @@ def _is_cross_origin_write():
 
 @app.before_request
 def _refuse_cross_origin_writes():
-    if _is_cross_origin_write():
+    if _cross_origin_to_guarded_route():
         return ("cross-origin request blocked", 403,
                 {"Content-Type": "text/plain; charset=utf-8"})
+
+
+# The hardening headers addon.py already puts on every response it forwards. The box
+# serves the same kind of content on its own origin and was sending none of them — the
+# same one-door asymmetry as F25, in the response direction instead of the request one.
+#
+# Referrer-Policy is the one that was actively leaking rather than merely missing: the
+# dashboard links back to the gated site, and a click from /stats sent the box's tailnet
+# address to reddit.com in the Referer. HTTP → HTTPS is an upgrade, not a downgrade, so
+# the browser default did not withhold it.
+#
+# The CSP here carries frame-ancestors and NOTHING else on purpose. These pages are built
+# from inline <script> and <style>; adding default-src or script-src would break every one
+# of them, and framing is the only thing this header is here to stop.
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": "frame-ancestors 'none'",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
+}
+
+
+@app.after_request
+def _harden(resp):
+    # setdefault, not assignment: a route that has already made its own decision about
+    # one of these keeps it.
+    for header, value in SECURITY_HEADERS.items():
+        resp.headers.setdefault(header, value)
+    return resp
 
 
 # ---------------------------------------------------------------------------
