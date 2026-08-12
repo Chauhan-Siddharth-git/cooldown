@@ -94,6 +94,26 @@ sudo chown -R "$PROXY_USER:$PROXY_USER" "$CONF"
 sudo chmod 700 "$CONF"
 sudo systemctl restart "$SERVICE"
 NEWFP="$(fingerprint "$CONF/mitmproxy-ca-cert.pem")"
+
+# Re-pin the fingerprint the hourly audit compares against.
+#
+# The audit notes "CA FINGERPRINT CHANGED" whenever the live CA stops matching its
+# baseline, and it only ever WRITES that baseline when the file is empty (see the
+# `[ -s "$PIN" ]` branch in deploy/cooldown-audit.sh). A deliberate rotation therefore
+# looks exactly like the theft the pin exists to catch, and keeps looking like it every
+# hour until somebody clears the file by hand.
+#
+# A detector that cries wolf after every legitimate rotation is one you learn to ignore,
+# which is the same failure as not having it. Rotating is the one moment we KNOW the
+# change was intended, so it is the right place to say so.
+AUDIT_PIN="${COOLDOWN_AUDIT_PIN:-/var/lib/budget-audit-baseline}"
+if sudo test -e "$AUDIT_PIN"; then
+  printf '%s' "$NEWFP" | sudo tee "$AUDIT_PIN" >/dev/null
+  sudo chmod 600 "$AUDIT_PIN"
+  ok "audit fingerprint pin updated (no hourly false alarm)"
+else
+  say "no audit baseline at $AUDIT_PIN — the audit will pin the new one on its next run"
+fi
 [ "$NEWFP" = "$(fingerprint "$OLD/mitmproxy-ca-cert.pem")" ] && die "New fingerprint matches the old — rotation did not happen."
 ok "new certificate generated"
 

@@ -7,6 +7,7 @@ extension that is present but ignored looks exactly like one that works — they
 by *verifying certificates*, not by reading the extension back out.
 """
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -146,6 +147,31 @@ def test_rotation_verifies_the_new_ca_before_restarting_the_proxy():
         "rotate-ca.sh restarts the proxy before confirming the new CA is constrained; "
         "mitmproxy will fill an empty confdir with an unconstrained CA and the check "
         "will then pass against it")
+
+
+def test_rotation_repins_the_fingerprint_the_audit_compares_against():
+    """A deliberate rotation must not look like the theft the pin exists to detect.
+
+    cooldown-audit.sh notes "CA FINGERPRINT CHANGED" on any mismatch and only writes the
+    baseline when the file is empty, so without this the hourly audit reports a finding
+    forever after every rotation. A detector that cries wolf after every legitimate
+    change is one you learn to ignore, which is the same as not having it.
+
+    Asserted against the source, and against the audit's own path, so the two cannot
+    drift to different files and both look correct in isolation.
+    """
+    rot = open(os.path.join(ROOT, "rotate-ca.sh")).read()
+    audit = open(os.path.join(ROOT, "deploy", "cooldown-audit.sh")).read()
+
+    pin_paths = re.findall(r"^PIN=(\S+)", audit, re.M)
+    assert pin_paths, "could not find PIN= in cooldown-audit.sh — update this test"
+    assert pin_paths[0] in rot, (
+        f"rotate-ca.sh does not touch the audit baseline {pin_paths[0]}; a rotation will "
+        f"trip 'CA FINGERPRINT CHANGED' every hour until it is cleared by hand")
+
+    repin = rot.find(pin_paths[0])
+    newfp = rot.find("NEWFP=")
+    assert newfp < repin, "re-pin must come after the new fingerprint is known"
 
 
 def test_the_generator_refuses_to_ship_an_unconstrained_ca(tmp_path):
