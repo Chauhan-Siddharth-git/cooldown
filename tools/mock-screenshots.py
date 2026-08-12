@@ -63,11 +63,13 @@ HEALTH = {
               "checked_human": "34 min ago", "ca_days": 3596, "ts_days": 128,
               "backup_age": 0, "backup_restores": 1, "full_ago": "2 days ago",
               "mode": "full", "checked_ago": 2040},
-    "procs": [{"name": "mitmdump", "mem_mb": 96, "cpu": 3.2},
-              {"name": "tailscaled", "mem_mb": 71, "cpu": 3.5},
-              {"name": "python", "mem_mb": 52, "cpu": 0.4},
-              {"name": "systemd-journal", "mem_mb": 26, "cpu": 0.3},
-              {"name": "redis-server", "mem_mb": 12, "cpu": 0.2}],
+    # name/mb/pct, copied from _top_processes(). Written as mem_mb/cpu first, which
+    # rendered an empty table -- the third mock shape guessed wrong rather than read.
+    "procs": [{"name": "mitmdump", "mb": 96, "pct": 3.2},
+              {"name": "tailscaled", "mb": 71, "pct": 3.5},
+              {"name": "python", "mb": 52, "pct": 0.4},
+              {"name": "systemd-journal", "mb": 26, "pct": 0.3},
+              {"name": "redis-server", "mb": 12, "pct": 0.2}],
     "proc_total": 168,
     # Field names taken from _listening_ports(), not guessed: port/scope/rank/what.
     # An earlier version used "addr" and the panel silently rendered nothing.
