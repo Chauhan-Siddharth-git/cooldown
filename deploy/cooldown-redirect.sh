@@ -56,21 +56,68 @@ q_dn(){ while iptables  -D FORWARD -i "$IF" -p udp --dport 443 -j REJECT 2>/dev/
 # cannot SSH in from the same network any more, and recovery means a monitor and
 # keyboard. Revert by dropping 22 from this list and re-running `cooldown-redirect.sh up`.
 PORTS=22,5000,8080,8081
+# DEFAULT-DENY. Until 2026-08-11 the INPUT policy was ACCEPT with an allowlist of named
+# ports, which protected exactly the ports somebody had remembered to name: avahi sat on
+# UDP 5353 on every interface, including a globally routable IPv6 address, and was never
+# covered because the list only held TCP (F23). The class of problem is "the next service
+# to start listening is exposed by default", and only the policy fixes that.
+#
+# Rules are inserted in reverse so the final order is deterministic regardless of how many
+# times this runs, and every one of them is a survival requirement:
+#
+#   ESTABLISHED,RELATED  replies to connections WE opened. Without this, flipping the
+#                        policy kills every outbound connection's return traffic --
+#                        including the ssh session running this script.
+#   lo (all of it)       the old rule covered four ports; Flask, Redis and the proxy talk
+#                        to each other on others.
+#   ICMPv6 (all types)   NOT optional and not about ping: neighbour discovery IS ICMPv6.
+#                        Dropping it does not block pings, it breaks IPv6 entirely.
+#   DHCP client          or the lease never renews and the box loses its address.
+#   ts-input             Tailscale's own chain, which already accepts tailscale0 and its
+#                        UDP 41641. Left to Tailscale; we only ensure the jump exists.
+#
+# The explicit port DROP is KEPT even though the policy now covers it: if anything ever
+# resets the policy to ACCEPT, the named ports stay closed rather than falling wide open.
 fw_up(){ for ipt in iptables ip6tables; do
+          # inserted last-to-first, so the resulting order reads top-down as written above
+          if [ "$ipt" = ip6tables ]; then
+            $ipt -C INPUT -p udp --dport 546 -j ACCEPT 2>/dev/null || $ipt -I INPUT 1 -p udp --dport 546 -j ACCEPT
+            $ipt -C INPUT -p icmpv6 -j ACCEPT 2>/dev/null || $ipt -I INPUT 1 -p icmpv6 -j ACCEPT
+          else
+            $ipt -C INPUT -p udp --sport 67 --dport 68 -j ACCEPT 2>/dev/null || $ipt -I INPUT 1 -p udp --sport 67 --dport 68 -j ACCEPT
+            $ipt -C INPUT -p icmp -j ACCEPT 2>/dev/null || $ipt -I INPUT 1 -p icmp -j ACCEPT
+          fi
           $ipt -C INPUT -i "$IF" -p tcp -m multiport --dports "$PORTS" -j ACCEPT 2>/dev/null || $ipt -I INPUT 1 -i "$IF" -p tcp -m multiport --dports "$PORTS" -j ACCEPT
-          $ipt -C INPUT -i lo    -p tcp -m multiport --dports "$PORTS" -j ACCEPT 2>/dev/null || $ipt -I INPUT 2 -i lo    -p tcp -m multiport --dports "$PORTS" -j ACCEPT
-          $ipt -C INPUT          -p tcp -m multiport --dports "$PORTS" -j DROP   2>/dev/null || $ipt -A INPUT          -p tcp -m multiport --dports "$PORTS" -j DROP
+          $ipt -C INPUT -i lo -j ACCEPT 2>/dev/null || $ipt -I INPUT 1 -i lo -j ACCEPT
+          $ipt -C INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || $ipt -I INPUT 1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+          # Tailscale owns ts-input and reinserts its own jump; make sure one exists so a
+          # DROP policy cannot strand the tailnet if this runs before tailscaled is ready.
+          $ipt -nL ts-input >/dev/null 2>&1 && { $ipt -C INPUT -j ts-input 2>/dev/null || $ipt -A INPUT -j ts-input; }
+          $ipt -C INPUT -p tcp -m multiport --dports "$PORTS" -j DROP 2>/dev/null || $ipt -A INPUT -p tcp -m multiport --dports "$PORTS" -j DROP
+          $ipt -P INPUT DROP
         done; }
+# Policy back to ACCEPT FIRST, before removing anything: taking the accepts away while
+# the policy is still DROP would cut the connection running the teardown.
 fw_dn(){ for ipt in iptables ip6tables; do
+          $ipt -P INPUT ACCEPT
+          $ipt -D INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
+          $ipt -D INPUT -i lo -j ACCEPT 2>/dev/null || true
           $ipt -D INPUT -i "$IF" -p tcp -m multiport --dports "$PORTS" -j ACCEPT 2>/dev/null || true
           $ipt -D INPUT -i lo    -p tcp -m multiport --dports "$PORTS" -j ACCEPT 2>/dev/null || true
           $ipt -D INPUT          -p tcp -m multiport --dports "$PORTS" -j DROP   2>/dev/null || true
+          if [ "$ipt" = ip6tables ]; then
+            $ipt -D INPUT -p icmpv6 -j ACCEPT 2>/dev/null || true
+            $ipt -D INPUT -p udp --dport 546 -j ACCEPT 2>/dev/null || true
+          else
+            $ipt -D INPUT -p icmp -j ACCEPT 2>/dev/null || true
+            $ipt -D INPUT -p udp --sport 67 --dport 68 -j ACCEPT 2>/dev/null || true
+          fi
         done; }
 # Observational byte counters for the packet-feed background: TRAFFIC_ACCT holds four
 # rules with NO target, so they only count and fall through — they cannot affect routing.
 # :443 = TLS (encrypted), :80 + :53 = HTTP + DNS (the plaintext that leaves in the clear).
 # Created here (as root, at boot) rather than by the web app, so the app needs nothing
-# beyond a single read; see deploy/sudoers.d-cooldown.
+# beyond a single read; see deploy/sudoers.d-budget-proxy.
 acct_up(){
   iptables -t mangle -nL TRAFFIC_ACCT >/dev/null 2>&1 || iptables -t mangle -N TRAFFIC_ACCT
   for spec in "tcp 443" "tcp 80" "udp 53" "tcp 53"; do
