@@ -15,6 +15,7 @@ import ast
 import itertools
 import os
 import sys
+import time
 
 import pytest
 import redis
@@ -199,6 +200,122 @@ def test_every_mutating_endpoint_rejects_cross_site(rdb, sub, method):
     resp = probe("/budget" + sub, {"Sec-Fetch-Site": "cross-site"}, method=method)
     assert resp is not None and resp.status_code == 403, (
         f"cross-site {method} {sub} was not rejected — add it to addon.STATE_CHANGING")
+
+
+# ---------------------------------------------------------------------------
+# 4b. ...and the same question asked at the OTHER door
+#
+# Every control above reaches the app through addon.request(). Flask also answers these
+# routes directly on the box's own origin (loopback + tailscale0), which the addon never
+# sees. F3's fix was written at the proxy boundary and rested on a parenthetical — "every
+# endpoint is same-origin" — which was true when written. F9's third fix then moved five
+# endpoints to an origin where that sentence is false and no check runs.
+#
+# So the property is not "the proxy rejects cross-site writes", it is "a cross-site write
+# is rejected", and it has to hold at every entrance the route has. A control that exists
+# at one of two doors is not a control.
+# ---------------------------------------------------------------------------
+
+def box(path, headers=None, method="GET", data=None):
+    """One request straight at Flask, the way the box's own listener answers it.
+
+    The deliberate sibling of probe(). Anything asserted about a request shape should be
+    asserted through both, or it is only true of the door somebody remembered."""
+    kwargs = {"headers": headers or {}, "method": method}
+    if method != "GET":
+        kwargs["data"] = data or {}
+    return budget.app.test_client().open(path, **kwargs)
+
+
+# The shapes a cross-site request actually arrives in. Three, not one, because a check
+# reading either signal ALONE passes a test that always sends both — and the two do not
+# cover each other: a cross-site <img src> GET carries no Origin at all (which is how
+# F14's /exit slipped through), while a browser with no Sec-Fetch support carries only
+# Origin. Parametrising over the shapes is what makes this assert the property rather
+# than one instance of it.
+CROSS_SITE_SHAPES = {
+    "form-post": {"Origin": "https://evil.example", "Referer": "https://evil.example/",
+                  "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors"},
+    "img-get-no-origin": {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Dest": "image",
+                          "Referer": "https://evil.example/"},
+    "no-sec-fetch-headers": {"Origin": "https://evil.example",
+                             "Referer": "https://evil.example/"},
+}
+# The control. The test client's host is "localhost", so this is the page's own origin.
+SAME_ORIGIN = {"Origin": "http://localhost", "Sec-Fetch-Site": "same-origin"}
+
+
+def _seed_live_state(rdb):
+    """Give every mutating endpoint something real to act on.
+
+    Written after this test passed for the wrong reason: /heartbeat answers 403 when
+    there is no session, so with an empty Redis it looked protected while being wide
+    open. A 403 has to mean "refused" and never "nothing to do", which means the state
+    each endpoint needs must exist before the request is made.
+    """
+    rdb.set("active_token:reddit", "tok-invariant")
+    rdb.setex("session:tok-invariant", 120, "active")
+    rdb.set("last_heartbeat:main", time.time() - 10)
+    rdb.setex("pending_worth", 7200, f"{time.time():.0f} reddit tired")
+    rdb.set("unacked_boot", f"{time.time():.0f}")
+
+
+def _mutating_rules():
+    """(path, method) for every Flask route declaring a state-changing method — read from
+    the app's own url_map, so a new POST route joins this test by existing rather than by
+    being remembered.
+
+    Every declared method is exercised, not only the unsafe-looking ones. F14 was /exit
+    accepting GET, and a check that tries POST alone misses the next one the same way.
+    """
+    out = []
+    for rule in budget.app.url_map.iter_rules():
+        methods = (rule.methods or set()) - {"HEAD", "OPTIONS"}
+        if methods <= {"GET"}:
+            continue                                    # read-only route
+        out += [(str(rule.rule), m) for m in sorted(methods)]
+    return sorted(out)
+
+
+@pytest.mark.parametrize("shape", sorted(CROSS_SITE_SHAPES))
+@pytest.mark.parametrize("path,method", _mutating_rules())
+def test_every_mutating_endpoint_rejects_cross_site_on_the_box_origin(
+        rdb, path, method, shape):
+    """The box origin is reachable from any page that knows the address — and the gate
+    hands that address to every script on a gated site, in the dashboard links.
+
+    A 302/200 here means an unrelated site can drive this endpoint: burn the budget into
+    a pool-wide cooldown, end sessions, or clear `unacked_boot` — the reboot alarm that
+    is the compensating control for CA theft in "Accepted by design"."""
+    body = {"v": "yes", "trigger": "tired"}
+
+    # Control first: prove this endpoint DOES something when the origin is its own, so
+    # the 403 asserted below can only be caused by the cross-site headers.
+    _seed_live_state(rdb)
+    ok = box(path + "?site=reddit", SAME_ORIGIN, method=method, data=body)
+    assert ok.status_code != 403, (
+        f"precondition failed: {method} {path} answers 403 even same-origin, so a 403 "
+        f"in the real check would prove nothing. Fix _seed_live_state, not this line.")
+
+    _seed_live_state(rdb)
+    resp = box(path + "?site=reddit", CROSS_SITE_SHAPES[shape], method=method, data=body)
+    assert resp.status_code == 403, (
+        f"cross-site {method} {path} as {shape} returned {resp.status_code}, not 403 — "
+        f"a check that reads only the signal the OTHER shapes carry is not a check")
+
+
+def test_the_box_origin_check_is_exercising_something(rdb):
+    """The derivation above is a filter over url_map; if it ever returns nothing the
+    parametrised test silently becomes zero tests and reports green. Absence of a failure
+    would then be indistinguishable from a pass.
+
+    The three named here are the ones that would be missed by an obvious weaker version:
+    /boot-ack because F14 claims it is already covered, /exit as a GET because that WAS
+    F14, and /heartbeat because it answers 403 unprompted and fooled the first draft."""
+    rules = _mutating_rules()
+    assert rules, "no mutating routes derived from url_map — the filter is broken"
+    for want in (("/boot-ack", "POST"), ("/exit", "GET"), ("/heartbeat", "POST")):
+        assert want in rules, f"{want} missing from the derived set"
 
 
 # ---------------------------------------------------------------------------

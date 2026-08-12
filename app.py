@@ -20,12 +20,70 @@ from news_domains import NEWS_DOMAINS
 # Access-Control-Allow-Origin only widened the attack surface, and its absence is now
 # load-bearing: it is what stops a script on reddit.com reading the monitoring pages
 # cross-origin now that they live somewhere else. CSRF on the mutating endpoints is
-# enforced at the proxy boundary (addon.py rejects cross-site requests to /budget/*).
+# enforced at BOTH doors: addon.py rejects cross-site requests to /budget/*, and the
+# before_request hook below rejects them on the box's own origin. One of those alone
+# only covers the endpoints that happen to be served through it — see the hook.
 app = Flask(__name__)
 # Redis lives on localhost for the native/Pi deploy; in Docker it's a separate
 # service, so honor REDIS_HOST/REDIS_PORT (defaults preserve native behaviour).
 r = redis.Redis(host=os.environ.get("REDIS_HOST", "localhost"),
                 port=int(os.environ.get("REDIS_PORT", "6379")), decode_responses=True)
+
+# ---------------------------------------------------------------------------
+# Cross-origin writes, refused at the box's own door.
+#
+# addon.py rejects cross-site requests to /budget/*, and that covered every mutating
+# endpoint for as long as every one of them was served through the proxy. F3's fix
+# rested on a parenthetical — "every endpoint is same-origin" — which was true when it
+# was written. F9's third fix then moved the dashboard, and /boot-ack with it, onto the
+# box's own origin, which the addon never sees. The check did not break; it stopped
+# applying, silently, to the endpoints that moved out from under it.
+#
+# So the property is not "the proxy rejects cross-site writes". It is "a cross-site
+# write is rejected", and it has to hold at every entrance a route has.
+#
+# WHICH routes are guarded is derived from the app's own routing table: a rule that
+# declares any method beyond GET/HEAD/OPTIONS is state-changing, and then *every* one of
+# its methods is guarded, not just the unsafe-looking ones. F14 was /exit accepting GET;
+# letting the verb stand in for the effect is precisely what let that through. A new POST
+# route is therefore covered by existing, rather than by somebody remembering it.
+#
+# Two signals, because neither covers the other:
+#   Origin          sent on cross-origin POSTs; ABSENT on a cross-site <img src> GET
+#   Sec-Fetch-Site  sent on both; absent from non-browser clients
+# A request carrying neither is allowed: that is what the proxy's own forwarded calls
+# look like (addon._forwarded_headers sends Content-Type and nothing else), so the two
+# layers stay independent instead of one silently depending on the other.
+#
+# Not guarded, deliberately: GET /budget can start a cooldown when the pool is already
+# drained. It is a read route that happens to have a consequence, the consequence was
+# going to happen on the next page load anyway, and guarding it would break the gate.
+# ---------------------------------------------------------------------------
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def _is_cross_origin_write():
+    rule = request.url_rule
+    if rule is None or (rule.methods or set()) <= SAFE_METHODS:
+        return False                       # unrouted, or a read-only route
+    fetch_site = request.headers.get("Sec-Fetch-Site")
+    if fetch_site:
+        # "none" is a user-initiated navigation (typed, bookmarked) — a page cannot
+        # produce it. Anything else foreign ("cross-site", "same-site") is refused.
+        return fetch_site not in ("same-origin", "none")
+    origin = request.headers.get("Origin")
+    if origin:
+        # A sandboxed iframe sends Origin: null, which parses to "" and is refused.
+        return urlparse(origin).netloc != request.host
+    return False
+
+
+@app.before_request
+def _refuse_cross_origin_writes():
+    if _is_cross_origin_write():
+        return ("cross-origin request blocked", 403,
+                {"Content-Type": "text/plain; charset=utf-8"})
+
 
 # ---------------------------------------------------------------------------
 # Where the monitoring pages live.
