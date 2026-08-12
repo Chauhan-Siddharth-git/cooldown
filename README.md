@@ -52,6 +52,10 @@ proxy, certificate, exit node, DNS — in plain English, with no assumed backgro
 </table>
 
 > All screenshots use mock data — the pages are private and reachable only through your own box.
+>
+> Regenerate them with `python3 tools/mock-screenshots.py`, which serves the same pages
+> against invented data on localhost. Shooting the real box would put a tailnet address and
+> real device names into a public image.
 
 ---
 
