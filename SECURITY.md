@@ -283,8 +283,17 @@ that the project is small, readable, tested, and reviewed rather than trusted.
 
 **The box quietly rots.**
 It's a computer that runs unattended for years. Unpatched software is how boring machines
-become someone else's. The installer offers to switch on automatic security updates
-(reboots stay manual, so it can't drop your devices mid-browse) — say yes, and leave it on.
+become someone else's. The installer offers to switch on automatic security updates — say
+yes, and leave it on. Upgrades install at 03:00 and, if a kernel landed, the box reboots at
+04:00. That reboot used to be off, on the grounds that a gateway restarting drops every
+routed device; at 4am the only routed device is a phone nobody is holding, and a kernel
+patch that never takes effect is not a patch.
+
+Switching it on is not the same as it working, which this project learned the hard way
+(F11, F21): the setting was enabled for weeks while the box installed nothing, because the
+package origins excluded everything Raspberry Pi ships, and then the job queue jammed. So
+the box now checks its own patching hourly and puts the answer on `/health` — including
+"unknown", which is not the same as "fine".
 
 ---
 
@@ -329,9 +338,14 @@ key, their traffic gets opened too.
 
 **What protects you:**
 - Devices reach the box over a **private network** (Tailscale), not the open internet.
-- The setup script adds firewall rules so the proxy ports answer only on that private
-  network and are **refused everywhere else** — including from other devices on your own
-  home wifi.
+- The setup script adds firewall rules so the proxy ports **and SSH** answer only on that
+  private network and are **refused everywhere else** — including from other devices on
+  your own home wifi. (SSH was missing from that list until 2026-08-11 while the dashboard
+  claimed otherwise — see F22. Key-only authentication is what carried the risk meanwhile.)
+- Know the shape of that rule: it is an allowlist of named ports over a default-ACCEPT
+  policy, so it protects the ports someone remembered to list. A new service that starts
+  listening is **not** covered automatically, and if your connection has native IPv6 then
+  "only reachable on the LAN" is not the fallback you might assume — see F23.
 - Check any time with `sudo iptables -S INPUT`: the accepts for the Tailscale interface
   and loopback should sit above a catch-all `DROP`.
 

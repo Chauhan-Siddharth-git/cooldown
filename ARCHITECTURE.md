@@ -288,6 +288,43 @@ and memory listen on localhost only — nothing off the box can reach them.
 
 ---
 
+## The layer that watches the layers
+
+Everything above describes the machine doing its job. This part is the machine checking
+that it still is — added after the box stopped patching itself for eleven days while every
+status indicator read healthy.
+
+| Runs | What it asks | Where the answer shows up |
+|---|---|---|
+| every 4 s | CPU and temperature samples | the `/health` chart and `/cpu` |
+| hourly | Are updates pending? Are apt's timers scheduled — and do their jobs actually *run*? | Updates row on `/health` |
+| hourly | Is the CA unchanged? Which accounts and keys exist? What is listening, and is it firewalled? Do the logs persist? When do the CA and tailnet keys expire? | Security row on `/health` |
+| nightly | Install upgrades (03:00), reboot if a kernel landed (04:00), back up Redis | Updates row |
+| weekly | Verify every packaged file against its manifest, and **restore the newest backup** into a scratch database | Security and Backup rows |
+| continuously | Compare the injected heartbeat against passively-observed traffic; warn if the clock has stopped while browsing continues | banner on the gated page |
+
+Three design rules run through all of it, each bought with a failure:
+
+**It reports; it does not repair.** A watchdog that silently deleted an unexpected SSH key
+would destroy the evidence that mattered. The one thing it does fix is a stalled timer,
+because a stalled timer has no evidentiary value.
+
+**Unknown is never "fine".** Every row distinguishes *good*, *bad* and *cannot tell*. A
+stale report reads as "Update status unknown", not as a pass. This exists because an empty
+journal was once read as "zero failed logins" and a jammed job queue looked identical to a
+quiet week.
+
+**Scheduled is not the same as executed.** The watchdog checks that jobs *ran*, not merely
+that timers are scheduled — a distinction that was invisible for eleven days, during which
+the timers were enabled, active, and firing into a queue that never drained.
+
+What it deliberately cannot do: detect the CA key being *read* (syscall auditing produces
+no events on this kernel, and the root filesystem is mounted `noatime`), or survive
+physical access to the SD card. Both are written into the scripts so they are not
+mistaken for coverage.
+
+---
+
 ## Where it can run — three shapes
 
 Everything above describes the reference box, a Raspberry Pi. But the **same code**

@@ -265,6 +265,14 @@ polished product:
   friction, by design.
 - The `--allow-hosts` allowlist and a few config values are duplicated across
   files (see above); consolidating them is a good first contribution.
+- **The firewall is an allowlist over a default-ACCEPT policy** — it protects the ports
+  it names, not everything. A new listener is exposed unless someone adds it. If your
+  connection has native IPv6, that exposure is not limited to your LAN.
+- **The box watches itself, and the reason is instructive.** It once went eleven days
+  without patching while every status indicator said it was fine. `/health` now reports
+  pending updates, when they install, whether the CA and accounts are unchanged, and
+  whether the nightly backup actually *restores* — with "unknown" as a distinct state
+  from "fine". See F11 and F21-F24 in SECURITY-CASESTUDY.md.
 
 ## License
 

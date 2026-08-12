@@ -371,11 +371,40 @@ got attention because they were the novel part. `sshd` was old and boring and wi
 **How it bit us.** The pending set included `gnutls`, `libgcrypt`, `krb5` and `dnsmasq` —
 the TLS and DNS libraries this machine's entire job depends on.
 
-**The fix.** Applied (18 → 0) and enabled automatic security upgrades. Auto-reboot
-deliberately left **off**: a gateway restarting itself would drop every routed device.
+**The fix, as first written.** Applied (18 → 0) and enabled automatic security upgrades.
+Auto-reboot deliberately left **off**: a gateway restarting itself would drop every routed
+device.
 
-**The concept — appliances rot.** Something you install once and never log into again is
-exactly the thing that needs to patch itself.
+**Reopened 2026-08-10, because that fix did not work.** Two separate defects, neither of
+which announced itself:
+
+- **The origins were wrong.** Enabling `unattended-upgrades` left Debian's stock
+  `Origins-Pattern`, which allows `origin=Debian` only. On a Raspberry Pi that silently
+  excludes the kernel, the firmware, `rpi-eeprom` — and `tailscaled`, the daemon the box's
+  remote access and firewall scoping depend on. "Automatic security updates are on" was
+  true and largely useless.
+- **It then stopped running entirely for eleven days** (see F22) and nothing reported it.
+
+**The fix now.** Origins widened to the Raspberry Pi and Tailscale repositories.
+`needrestart` in automatic mode, because patching a library on disk does nothing for a
+process that already has the old copy mapped — openssl gets fixed and the proxy keeps
+serving with the vulnerable one loaded. And **auto-reboot switched ON** at 04:00, reversing
+the original call: kernels cannot take effect without one, and the argument against ("a
+gateway restarting drops every routed device") is only true while a device is routed —
+at 4am the only one is a phone nobody is holding. Upgrades moved to 03:00 so a required
+reboot lands in the same night window.
+
+One thing that turned out to be untrue in the other direction: `unattended-upgrades` 2.12
+has **no dist-upgrade capability at all** (`grep -c "Dist-Upgrade"` on the binary returns
+zero), so it can never install a kernel that requires a new versioned package — which is
+every kernel bump. Widening the origins was necessary and not sufficient; the first kernel
+went in by hand.
+
+**The concept — enabling a thing is not the same as it working.** Every visible signal said
+this was handled: the package was installed, the timers were enabled and active, the config
+said `"1"`. The box had not patched itself in eleven days. Nothing here was caught by
+checking whether the feature was switched on; it was caught by asking what it had actually
+*done* lately, which nothing was doing.
 
 ---
 
@@ -390,6 +419,14 @@ failure of the tool's actual purpose, reachable by the same-origin scripts of F9
 
 **The fix.** CPU is sampled *between* calls instead of by sleeping, `/health` is cached,
 and the pool is larger. Measured 340 ms → 39 ms per request.
+
+**Amended 2026-08-11.** Sampling between calls fixed the starvation but left the readings
+dishonest: the percentage covered "however long since the last HTTP request", a different
+window every time, and history was only recorded while somebody had the page open. Arrive
+after a gap and the chart began from nothing. Sampling now runs on the scheduler at a fixed
+4 s and is the sole caller of `_cpu_stats()` — a second caller landing a fraction of a
+second after the first would diff over a near-zero interval and report noise. A monitor
+that only monitors while observed is not a monitor.
 
 **The concept — fail loudly, or fail safe.** Silent failure in the enforcement path is
 indistinguishable from success.
@@ -628,6 +665,109 @@ four shapes, including "leave it alone, their `unsafe-inline` already covers us.
 reads a *different* input than the enforcer is not a weak check, it's a decorative one. And
 when the failure mode is silent and fails open, nobody reports it — you only find it by
 reading the spec against the code.
+
+---
+
+## F21 — Boot never completed, so scheduled work queued for eleven days  ·  HIGH  ·  FIXED
+
+**What it is.** `userconf-pi` sat on tty1 showing "Please enter new username" from the
+2026-07-30 boot onward. cloud-init never answered it — its config had failed schema
+validation — so `multi-user.target` was **never reached**, and every job ordered behind it
+queued forever. `apt-daily.service` among them.
+
+**How it bit us.** The box stopped patching itself for eleven days. Every signal read
+healthy: services active, timers `enabled` and `active`, `systemctl status` reporting
+"active (running)". The only visible tell anywhere was `Trigger: n/a`, and
+`NextElapseUSecRealtime` being empty on a timer nobody thinks to interrogate.
+
+**How it was misdiagnosed, which is the more useful half.** The first explanation was a
+stale `Persistent=` elapse point caused by the Pi's missing RTC — a coherent, plausible
+mechanism fitted to the symptom, committed to two repositories, and wrong. The fix that
+followed cleared the timers' stamp files, which made them report a healthy next elapse
+while changing nothing: the jobs still had nowhere to run. **A fix that makes the dashboard
+look better without moving the underlying state is worse than no fix**, because it also
+retires the question.
+
+**The fix.** `userconfig.service` stopped and masked; `multi-user.target` reached in 14 s
+on the next boot for the first time in eleven days. The watchdog now checks that jobs
+**execute**, not merely that timers are scheduled: `multi-user.target` active, count of
+jobs stuck in `waiting`, and per-timer last-trigger against the service's last actual
+start. The original watchdog verified only that a next elapse existed — true throughout
+the entire outage — and would have reported all-clear every hour for eleven days.
+
+**The concept — a scheduled timer proves nothing about execution.** Two independent things
+have to be true for periodic work to happen, and only one of them is what everybody checks.
+
+---
+
+## F22 — SSH was open to the LAN while the dashboard said it was firewalled  ·  MEDIUM  ·  FIXED
+
+**What it is.** The interface-scoped firewall rules covered TCP 5000, 8080 and 8081. Port
+22 was not in the list. `/health` displayed it as firewalled, from a hardcoded set in
+`app.py`.
+
+**How it bit us.** `sshd` listened on `0.0.0.0:22` and `[::]:22`, reachable from any device
+on the LAN — verified by connecting to it. Mitigated in practice by key-only
+authentication (`passwordauthentication no`), so brute force was never viable; the real
+defect was a dashboard asserting a control that did not exist, which is how a gap stays
+unexamined.
+
+**The fix.** 22 added to the scoped port list, so it answers on `tailscale0` and loopback
+only. The claim in `app.py` is now true rather than aspirational. Applied behind a
+six-minute timer that would have removed the DROP rule if the connection was lost, and
+verified from both sides before disarming.
+
+**Trade-off, taken deliberately.** This removes the LAN fallback: if `tailscaled` fails,
+recovery needs a monitor and keyboard. That made the node's key expiry load-bearing, which
+the audit now watches.
+
+**The concept — a control you display is a claim you have to keep true.** The hardcoded set
+was accurate when written. Nothing tied it to the rules it described, so it drifted into a
+lie without anybody editing it.
+
+---
+
+## F23 — mDNS listening on a globally routable address, outside the firewall  ·  LOW  ·  FIXED
+
+**What it is.** `avahi-daemon` listened on UDP 5353 on every interface. `eth0` holds
+globally routable IPv6 addresses from the ISP, so "LAN-only" was never the right model for
+this box. The firewall is an allowlist of a few **TCP** ports over a default-ACCEPT policy,
+so a UDP listener was not covered by it at all.
+
+**How it bit us.** Reachable on the public address from another host. Whether it was
+reachable from the internet depends on the router's inbound IPv6 policy, which is untested
+and cannot be determined from inside the network — so the honest ceiling on this finding is
+"exposed to at least the local network, and possibly further".
+
+**The fix.** Service and socket disabled and masked — the socket too, or socket activation
+restarts the daemon behind you. Disabled rather than purged, since `libnss-mdns` and
+`rpi-usb-gadget` depend on the package. The box is reached by address over the tailnet, so
+`.local` discovery bought nothing.
+
+**The concept — an allowlist over a default-ACCEPT policy only protects what someone
+remembered to name.** avahi was the instance; the policy is the class, and the next service
+that starts listening is exposed by default too. Left open deliberately, recorded here so
+it is a decision rather than an oversight.
+
+---
+
+## F24 — No logs survived a reboot, so "was anything compromised?" had no answer  ·  LOW  ·  FIXED
+
+**What it is.** Raspberry Pi OS ships `Storage=volatile` for journald, to spare the SD card.
+Nothing was retained across a restart.
+
+**How it bit us.** After the eleven-day outage the obvious question was whether anything had
+happened during it. There was no evidence either way — and worse, the first attempt to
+answer it reported "zero failed authentication attempts" from a journal that had begun
+twenty minutes earlier. **An empty result was read as a clean one**, which is the same
+error class as the outage itself.
+
+**The fix.** `Storage=persistent`, capped at 200 MB with a month of retention, because the
+SD-wear concern that motivated the vendor default is real. Verified by forcing a flush and
+confirming files actually landed on disk rather than trusting the setting.
+
+**The concept — "no records exist" is not "nothing happened".** A check that cannot
+distinguish those two states will always report the reassuring one.
 
 ---
 
