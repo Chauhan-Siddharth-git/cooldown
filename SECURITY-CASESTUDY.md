@@ -11,7 +11,7 @@ was fixed. Written as a learning reference — each finding is
 New to any of the words below? *Nonce*, *same-origin*, *least privilege* and the rest are
 all explained in plain English in [**CONCEPTS.md**](CONCEPTS.md).
 
-**Scorecard:** 25 findings fixed · 6 risks accepted by design · 602 tests green.
+**Scorecard:** 26 findings fixed · 6 risks accepted by design · 626 tests green.
 
 > Every number in that line was wrong before F25 went in — it read *20 · 4 · 378* while the
 > document held 24 findings, the accepted list held 6, and the suite ran 577. Nothing tied
@@ -876,6 +876,64 @@ reporting green from the one door somebody remembered.
 
 ---
 
+## F26 — The CA could vouch for the whole internet  ·  MEDIUM  ·  FIXED
+
+**What it is.** mitmproxy generates its own CA on first start, and that CA is
+unconstrained: it can issue a valid certificate for *any* hostname. The SD card is
+unencrypted and that is accepted by design — but what a copy of the card buys was never
+examined. It buys a trust anchor your devices honour for your bank, your email and
+everything else, not just for the sites this box gates.
+
+This is not a bug anyone introduced. It is the default, and the default was never
+questioned because the finding it belongs to ("physical access to the box") had already
+been filed under *accepted*, which is a good way to stop looking at something.
+
+**The fix.** The CA now carries X.509 name constraints listing exactly the domains in
+`gen_allow_hosts.py` — the same derivation `--allow-hosts` is built from, so the two
+cannot drift. A stolen key is now a trust anchor for Reddit and the news list. Measured,
+against the generated CA rather than by reading the extension back out:
+
+```
+                         unconstrained CA      constrained CA
+  www.reddit.com         vouches ✓             vouches ✓        (gated — must work)
+  mybank.example         vouches ✗             REFUSED ✓
+  accounts.google.com    vouches ✗             REFUSED ✓
+  evil-reddit.com        vouches ✗             REFUSED ✓        (F4's shape)
+  reddit.com.attacker.io vouches ✗             REFUSED ✓        (F4's shape)
+```
+
+Two details are load-bearing. A DNS constraint matches the name *and* any subdomain
+(RFC 5280 4.2.1.10), which is exactly `host_matches()` semantics — hence the two F4 rows
+above falling out for free. And a name **type** absent from the permitted subtrees is
+unconstrained rather than forbidden, so permitting only DNS would have left a stolen CA
+free to issue for IP addresses; IP, email and URI are explicitly excluded.
+
+`deploy/gen_ca.sh` verifies its own output before installing it — signs one in-scope and
+one out-of-scope host and refuses to write anything if the out-of-scope one validates.
+A generator that silently stopped constraining would otherwise look identical from
+outside.
+
+**What it does not do.** It does not stop the key being copied, and it does not help for
+the gated sites themselves — whoever holds it can still impersonate Reddit to you.
+Enforcement of name constraints on a *user-installed* root is honoured by Firefox and by
+Apple platforms; Android's support has historically been patchy, so this reduces blast
+radius on the platforms that check rather than guaranteeing it everywhere.
+
+**The cost, taken deliberately.** Adding a gated site now means regenerating the CA and
+re-trusting every device, where it used to be a proxy restart. The CA is a fourth place
+that must agree about the site list, and the failure mode if you forget is quiet in the
+wrong direction: the proxy intercepts a site it cannot produce a valid certificate for,
+so that site breaks with a certificate warning and nothing explains why.
+
+**The concept — ask what the accepted risk is actually worth.** "Whoever holds the card
+holds the key" was documented, understood and correct, and it stopped the question one
+step too early. The key being copyable was not the thing to attack; the *value* of the
+copy was, and that turned out to be adjustable by one certificate extension. When a risk
+is accepted, the useful follow-up is not "can we prevent it after all" but "how much is
+it worth to them, and can that be made smaller".
+
+---
+
 ## Accepted by design
 
 Some risks are the cost of what the tool *is* — understood, bounded, documented,
@@ -890,8 +948,10 @@ not eliminated. Naming them is itself good practice.
 - **A weakened CSP on gated sites.** Now minimal rather than total — one nonce added,
   everything else enforced (F8) — but our script does run on those origins by design.
 - **The CA key is a single trust anchor.** Whoever holds it can decrypt your
-  traffic. It stays on the box, out of git; the mitigation is guarding the box, not
-  removing the trust.
+  traffic *for the gated sites*. It stays on the box, out of git; the mitigation is
+  guarding the box, not removing the trust. **Bounded since F26**: the CA carries name
+  constraints, so a stolen key is a trust anchor for Reddit and the news list rather than
+  for your bank — on the platforms that enforce them, which is not all of them.
 - **The VPN-off bypass.** Turning the tunnel off routes around the gate —
   deliberate *soft* friction (a commitment device for a cooperative user), not an
   adversarial lock.

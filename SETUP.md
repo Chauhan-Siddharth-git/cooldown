@@ -172,7 +172,8 @@ running cooldown — is skipped on purpose: it's meaningless an hour later.
 ## 8. Make it yours
 
 Edit the top of `app.py`: `SITES`, budgets, `COOLDOWN_SECONDS`, refill rate, the
-night-curfew hours, `STUDY_PLAYLISTS`. Remember the **three places** a new site
+night-curfew hours, `STUDY_PLAYLISTS`. Remember the **four places** a new site (the fourth, the CA's name constraints, needs
+`./rotate-ca.sh` and a re-trust on every device — see CLAUDE.md)
 lives (README → Configure). Run `python -m pytest tests/` after changing budget
 logic.
 

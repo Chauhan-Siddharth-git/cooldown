@@ -14,7 +14,7 @@ no formality required.
 
 ## Good first issues
 
-- **Consolidate the duplicated config.** The gated-site list lives in three places
+- **Consolidate the duplicated config.** The gated-site list lives in four places
   (`SITES` in `app.py`, `SITES` in `addon.py`, and `--allow-hosts` in
   `deploy/cooldown-proxy.service`). One source of truth would prevent a whole class
   of "site silently not gating" bugs.

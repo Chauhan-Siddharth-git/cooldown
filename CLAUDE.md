@@ -34,8 +34,13 @@ usually need checking against both.
 - **Touching the gate template** → it is readable by any script on the gated site.
   Nothing worth stealing goes in it (`feed_tok`, never `ui_tok`).
 - **Adding a gated site** → `news_domains.py` or `SITES`, then regenerate the decrypt
-  allowlist (`python3 deploy/gen_allow_hosts.py`) and restart the proxy. Three places
-  must agree: `app.py`, `addon.py`, and the unit's `--allow-hosts`.
+  allowlist (`python3 deploy/gen_allow_hosts.py`) and restart the proxy. **Four** places
+  must agree: `app.py`, `addon.py`, the unit's `--allow-hosts`, and **the CA's name
+  constraints** (F26). The fourth one costs: the CA can only vouch for the domains it was
+  built with, so a new site needs `./rotate-ca.sh` and a re-trust on **every device**.
+  Adding a site used to be a proxy restart. Batch them. The failure mode if you skip it is
+  quiet in the wrong way — the proxy intercepts a site it cannot produce a valid
+  certificate for, so that site breaks with a cert warning and nothing else says why.
 
 ## The shadow meter: read out 2026-08-10, still running
 
