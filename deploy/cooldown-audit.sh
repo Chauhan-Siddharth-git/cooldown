@@ -97,12 +97,40 @@ listeners="$(ss -tlnH 2>/dev/null | awk '{print $4}' | sed 's/.*://' | sort -un 
 fw_rules="$(iptables -S INPUT 2>/dev/null | grep -c 'multiport\|tailscale0')"
 [ "$fw_rules" -gt 0 ] || note "no interface-scoped INPUT rules found -- the firewall is not loaded"
 
-covered="$(iptables -S INPUT 2>/dev/null | grep -oE 'dports [0-9,]+' | tr ',' '\n' | grep -oE '[0-9]+' | sort -u | tr '\n' ' ')"
-exposed=""
-for p in $(ss -tlnH 2>/dev/null | awk '$4 ~ /^(0\.0\.0\.0|\[::\]):/ {print $4}' | sed 's/.*://' | sort -un); do
-    case " $covered " in *" $p "*) ;; *) exposed="$exposed$p " ;; esac
+# Exposure depends on the POLICY, not just on which ports a rule names. Under the old
+# default-ACCEPT this was "any wildcard listener nobody wrote a rule for"; the moment the
+# policy became DROP that inverted -- an unnamed port is now blocked, not open. Verified
+# by binding a listener on 9099 and confirming it was unreachable while the old logic
+# still called it exposed.
+fw_policy="$(iptables -S INPUT 2>/dev/null | awk '/^-P INPUT/{print $3}')"
+
+# Ports an ACCEPT rule admits from somewhere other than loopback or the tailnet, i.e.
+# genuinely reachable from off-box regardless of policy.
+fw_open="$(iptables -S INPUT 2>/dev/null | grep -- '-j ACCEPT' \
+           | grep -vE -- '-i (lo|tailscale0)' \
+           | grep -oE 'dports [0-9,]+' | tr ',' '\n' | grep -oE '[0-9]+' | sort -u | tr '\n' ' ')"
+# Ports a DROP rule names -- the only thing that contained anything under ACCEPT policy.
+fw_dropped="$(iptables -S INPUT 2>/dev/null | grep -- '-j DROP' \
+              | grep -oE 'dports [0-9,]+' | tr ',' '\n' | grep -oE '[0-9]+' | sort -u | tr '\n' ' ')"
+
+wildcard="$(ss -tlnH 2>/dev/null | awk '$4 ~ /^(0\.0\.0\.0|\[::\]):/ {print $4}' | sed 's/.*://' | sort -un)"
+exposed=""; contained=""
+for p in $wildcard; do
+    open=no
+    case " $fw_open " in *" $p "*) open=yes ;; esac
+    if [ "$fw_policy" = "DROP" ]; then
+        # Default-deny: reachable only if something explicitly opened it wide.
+        [ "$open" = yes ] && exposed="$exposed$p " || contained="$contained$p "
+    else
+        # Default-allow: contained only if a DROP names it and nothing opened it wide.
+        case " $fw_dropped " in
+            *" $p "*) [ "$open" = yes ] && exposed="$exposed$p " || contained="$contained$p " ;;
+            *) exposed="$exposed$p " ;;
+        esac
+    fi
 done
-[ -z "$exposed" ] || note "listening on all interfaces and not covered by a firewall rule: $exposed"
+[ -z "$exposed" ] || note "reachable from off-box and not contained by the firewall: $exposed"
+[ "$fw_policy" = "DROP" ] || note "INPUT policy is $fw_policy, not DROP -- new listeners are exposed by default"
 
 # --- is anything still being written down -----------------------------------------
 journal_persistent=false
@@ -176,6 +204,7 @@ printf '"shell_accounts":"%s","ssh_keys":%d,"password_auth":"%s","failed_auth":%
        "$(esc "$shell_accounts")" "$key_count" "${pw_auth:-unknown}" "${failed_auth:-0}"
 printf '"ts_days":%d,"listeners":"%s","firewall_rules":%d,"exposed_ports":"%s",' \
        "${ts_days:--1}" "$(esc "$listeners")" "$fw_rules" "$(esc "$exposed")"
+printf '"fw_policy":"%s","fw_contained":"%s",' "${fw_policy:-unknown}" "$(esc "$contained")"
 printf '"journal_persistent":%s,"backup_age":%d,"root_pct":%d,"boot_pct":%d,' \
        "$journal_persistent" "${backup_age:--1}" "${root_pct:-0}" "${boot_pct:-0}"
 printf '"tampered_files":%d,"tampered_all":%d,"backup_restores":%d,"full_checked":%d,"findings":%d,"checked":%d}\n' \

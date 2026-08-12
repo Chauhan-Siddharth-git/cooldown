@@ -259,10 +259,14 @@ def test_stats_renders_history(client, rdb):
 def test_stats_shows_cooldown_clustering(client, rdb):
     today = time.strftime("%Y-%m-%d")
     now = time.time()
-    # Keep both events within the last couple minutes so they can't straddle midnight
-    # into the previous local day (which would drop them from "today").
-    rdb.rpush(f"cooldown_events:{today}", f"{int(now - 120)} reddit")    # ~2 min ago
-    rdb.rpush(f"cooldown_events:{today}", f"{int(now - 30)} youtube")    # ~30s ago -> rapid
+    # Clamp both events INTO today rather than merely close to now. The previous version
+    # kept them "within the last couple of minutes" to avoid straddling midnight, which is
+    # precisely what breaks just after it: at 00:01 those minutes were yesterday, so events
+    # filed under today's key carry yesterday's timestamps and the page drops them. Failed
+    # only in the ~2 minutes after local midnight; passed in every other timezone tested.
+    start = time.mktime(time.strptime(today, "%Y-%m-%d"))
+    rdb.rpush(f"cooldown_events:{today}", f"{int(max(now - 120, start + 1))} reddit")
+    rdb.rpush(f"cooldown_events:{today}", f"{int(max(now - 30, start + 31))} youtube")  # -> rapid
     rdb.set("last_charge", now)
     html = client.get("/stats").data.decode()
     assert "binge clustering" in html

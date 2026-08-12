@@ -3362,6 +3362,11 @@ def _audit(now=None):
             "mode": d.get("mode", "quick"),
             # -1 until the weekly full tier has run at least once. Unknown is not a pass.
             "backup_restores": int(d.get("backup_restores", -1)),
+            # Read from the live rules by the audit, never hardcoded here. The previous
+            # hardcoded set claimed port 22 was firewalled for however long it was not
+            # (F22), and went stale again the moment the policy became default-deny.
+            "fw_policy": d.get("fw_policy", "unknown"),
+            "fw_contained": [int(x) for x in (d.get("fw_contained") or "").split() if x.isdigit()],
             # How long ago the weekly tier last proved it, so a carried-forward result
             # cannot masquerade as fresh indefinitely.
             "full_ago": _short_ago(now - float(d["full_checked"])) if d.get("full_checked") else "",
@@ -3704,6 +3709,8 @@ HEALTH_PAGE = """
             <td class="{{ 'wide' if pt.rank == 0 and pt.port not in firewalled else 'dim' if pt.rank == 0 else '' }}">{{ pt.scope }}</td></tr>
         {% endfor %}
       </table>
+      {% if not fw_known %}<div class="phint"><span class="upd-bad">Firewall state unknown</span>
+        &mdash; the hourly audit has not reported, so nothing below can be called contained.</div>{% endif %}
       <div class="phint"><b>Wide is not automatically wrong here.</b> mitmproxy binds every
         interface and cannot be told otherwise in transparent mode, and sshd does the same —
         both are contained by the interface-scoped firewall rules, which is what F1 actually
@@ -3917,7 +3924,11 @@ def health():
         card_min=max(1, round(CPU_CARD_SAMPLES * 4 / 60)),
         # Ports the redirect script scopes to tailscale0 + loopback. Wide here is the
         # documented design, not a finding, so it must not render as an alarm.
-        firewalled={8080, 8081, 22},
+        # Derived, not asserted. With no audit report we pass an empty set, so wildcard
+        # ports render as "wide" rather than being quietly called contained -- erring
+        # toward the alarming reading, as every other unknown on this page does.
+        firewalled=set(_try(lambda: _audit().get("fw_contained") or [], [])),
+        fw_known=bool(_try(lambda: _audit().get("fw_policy") not in (None, "", "unknown"), False)),
         tclass=_temp_class(d["temp_c"]),
         eth_state=eth_state,
         ram_class=_pct_class(mem_pct),

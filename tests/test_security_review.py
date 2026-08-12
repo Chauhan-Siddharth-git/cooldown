@@ -1009,11 +1009,34 @@ def test_wide_binds_are_only_flagged_when_they_are_actually_wrong(rdb, client, m
         {"port": 5000, "scope": "all interfaces", "rank": 0, "what": "dashboard"},
     ])
     monkeypatch.setattr(budget, "_HEALTH_CACHE", {})
+    # "8080 is contained" is now a fact read from the live rules by the audit, not a
+    # constant in app.py -- the constant claimed port 22 was firewalled while it was not.
+    # The test therefore has to supply the fact.
+    monkeypatch.setattr(budget, "_audit",
+                        lambda *a, **k: {"fw_policy": "DROP", "fw_contained": [8080, 22]})
     html = client.get("/health").get_data(as_text=True)
     rows = re.findall(r'<td>(\d+)[^<]*</td>\s*<td class="([a-z]*)"', html)
     flags = dict(rows)
     assert flags.get("8080") == "dim", flags       # expected, firewalled
     assert flags.get("5000") == "wide", flags      # bound narrowly on purpose — alarm
+
+
+def test_ports_are_not_called_contained_when_the_firewall_state_is_unknown(rdb, client, monkeypatch):
+    """If the audit has not reported, nothing can be called contained.
+
+    The alternative -- assume the old hardcoded set -- is how a dashboard ends up
+    asserting a control that does not exist. Unknown renders as wide, and says so.
+    """
+    monkeypatch.setattr(budget, "_listening_ports", lambda: [
+        {"port": 8080, "scope": "all interfaces", "rank": 0, "what": "proxy"},
+    ])
+    monkeypatch.setattr(budget, "_HEALTH_CACHE", {})
+    monkeypatch.setattr(budget, "_audit", lambda *a, **k: {"fw_policy": "unknown",
+                                                           "fw_contained": []})
+    html = client.get("/health").get_data(as_text=True)
+    assert "Firewall state unknown" in html
+    flags = dict(re.findall(r'<td>(\d+)[^<]*</td>\s*<td class="([a-z]*)"', html))
+    assert flags.get("8080") == "wide", flags
 
 
 # ---------- 18. themes ----------
