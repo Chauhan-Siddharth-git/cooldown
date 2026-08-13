@@ -321,10 +321,14 @@ def test_the_box_origin_check_is_exercising_something(rdb):
 def _routes_reaching_sudo():
     """Flask rules whose view function can transitively reach a `sudo` subprocess.
 
-    Derived from app.py's own call graph rather than from a list, because the point of
-    budget.PRIVILEGED_READS is to be complete and a hand-written list is the thing that
-    goes stale. Finds every function containing subprocess.run(["sudo", ...]), walks
-    callers back to the view functions, and maps those to their rules.
+    Derived from app.py's own call graph rather than from a list, because a hand-written
+    list is the thing that goes stale. Finds every function containing
+    subprocess.run(["sudo", ...]), walks callers back to the view functions, and maps
+    those to their rules.
+
+    Returns (rules, privileged_function_names). The second value exists so a caller can
+    tell "no route reaches sudo" — the property we want — apart from "the walk found
+    nothing at all", which is a broken check reporting the same answer.
     """
     tree = _tree("app.py")
     funcs = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
@@ -360,36 +364,47 @@ def _routes_reaching_sudo():
         for d in fn.decorator_list:
             if isinstance(d, ast.Call) and getattr(d.func, "attr", "") == "route":
                 views[name] = d.args[0].value
-    return {rule for name, rule in views.items() if name in privileged}
+    return {rule for name, rule in views.items() if name in privileged}, privileged
 
 
-def test_every_route_that_can_reach_sudo_is_guarded_against_cross_origin(rdb):
+def test_no_route_can_reach_sudo(rdb):
     """F7 was an unauthenticated GET performing privileged firewall *writes*. The write
-    is long gone; the unauthenticated trigger was not. /feed still shells out to
-    `sudo iptables`, so any page could make the box spawn a privileged process on demand.
+    is long gone; the unauthenticated trigger outlived it.
 
-    Derived, so a second privileged read cannot be added without either guarding it or
-    failing here — which is how the first one came to sit unguarded for a whole review."""
-    reaching = _routes_reaching_sudo()
-    assert reaching, "no route found reaching sudo — the call-graph walk is broken, " \
-                     "and a broken walk reports success"
-    unguarded = reaching - budget.PRIVILEGED_READS
-    assert not unguarded, (
-        f"{sorted(unguarded)} can reach a sudo subprocess but is not in "
-        f"budget.PRIVILEGED_READS, so a cross-origin GET triggers it")
+    This began as "every route reaching sudo must be in PRIVILEGED_READS", which was the
+    right shape while /feed forked a `sudo` per request. It no longer does — the
+    TRAFFIC_ACCT read moved onto the scheduler, because the trigger was only half the
+    problem and the other half was 3,620 forks an hour filling the journal. So the set is
+    empty, and an allowlist with nothing to allow is worse than no allowlist: it reads as
+    if something is being permitted.
+
+    Emptiness is the stronger property and it cannot drift. Adding a privileged call
+    anywhere a view can reach still fails here; it now fails as "this must not exist"
+    rather than "this must be listed".
+
+    The second assertion is the one that makes the first trustworthy. Asserting a set is
+    empty is satisfied just as well by a walk that found nothing, so the vacuity guard
+    moves from the routes to the functions — the walk must still be finding the sudo call
+    itself, or it is reporting safety it never checked."""
+    routes, privileged = _routes_reaching_sudo()
+    assert privileged, ("no function containing a sudo subprocess was found at all — the "
+                        "call-graph walk is broken, and a broken walk reports success")
+    assert not routes, (
+        f"{sorted(routes)} can reach a sudo subprocess from a request path. That read "
+        f"belongs on the scheduler (see app.sample_acct), not on a request.")
 
 
 @pytest.mark.parametrize("shape", sorted(CROSS_SITE_SHAPES))
-def test_privileged_reads_refuse_cross_origin_on_the_box_origin(rdb, shape):
+def test_guarded_reads_refuse_cross_origin_on_the_box_origin(rdb, shape):
     """The behavioural half of the above. addon.py gates /feed with a token on the gated
     origin; the box origin answered anyone."""
     # This test is a loop over a set, so an empty set makes it pass without asserting
-    # anything — which is exactly what it did when PRIVILEGED_READS was mutated to
+    # anything — which is exactly what it did when GUARDED_READS was mutated to
     # empty during review. A vacuous pass here would report the guard working while it
     # guarded nothing.
-    assert budget.PRIVILEGED_READS, "PRIVILEGED_READS is empty — nothing is being tested"
+    assert budget.GUARDED_READS, "GUARDED_READS is empty — nothing is being tested"
     rdb.set("ui_token", "T")
-    for rule in sorted(budget.PRIVILEGED_READS):
+    for rule in sorted(budget.GUARDED_READS):
         assert box(rule, SAME_ORIGIN).status_code != 403, (
             f"precondition: {rule} must answer its own origin, else the 403 proves nothing")
         resp = box(rule, CROSS_SITE_SHAPES[shape])

@@ -61,16 +61,24 @@ r = redis.Redis(host=os.environ.get("REDIS_HOST", "localhost"),
 # ---------------------------------------------------------------------------
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
-# Read routes that cost something privileged, and so are guarded like a write.
+# Read routes guarded like a write, because the method is not what makes them matter.
 #
-# /feed shells out to `sudo iptables` for the byte counters — the single sudo rule this
-# app has. It is a GET, so the method-derived rule below does not reach it, and an
-# unauthenticated cross-origin request therefore made the box spawn a privileged process
-# on demand: F7's shape with the write taken out but the trigger left in. addon.py gates
-# the same endpoint with a token on the gated origin; the box origin had nothing, which is
-# F25's asymmetry one route over. A test derives the call graph and fails if anything else
-# that reaches sudo is left off this set.
-PRIVILEGED_READS = {"/feed"}
+# This set was called PRIVILEGED_READS and held /feed for a concrete reason: /feed forked
+# `sudo iptables` on every request, so an unauthenticated cross-origin GET could make the
+# box spawn a privileged process on demand — F7's shape with the write taken out and the
+# trigger left in. addon.py gated the same endpoint with a token on the gated origin; the
+# box origin had nothing, which was F25's asymmetry one route over.
+#
+# That reason is gone: the counter read moved onto the scheduler (see sample_acct), so no
+# route reaches sudo at all now, and test_no_route_can_reach_sudo asserts it. The name went
+# with the reason — a constant called PRIVILEGED_READS listing a route that is no longer
+# privileged is the kind of stale label a later reader takes as fact.
+#
+# /feed stays in the set on the surviving argument, which was never about the fork: it
+# reports how much traffic this network is passing, in near real time, and a page on a
+# gated site should not be able to read that cross-origin any more than it can read
+# /stats. Cheap to keep, and the behavioural test below has something to exercise.
+GUARDED_READS = {"/feed"}
 
 
 def _cross_origin_to_guarded_route():
@@ -78,7 +86,7 @@ def _cross_origin_to_guarded_route():
     if rule is None:
         return False                       # unrouted — 404, nothing to guard
     read_only = (rule.methods or set()) <= SAFE_METHODS
-    if read_only and str(rule.rule) not in PRIVILEGED_READS:
+    if read_only and str(rule.rule) not in GUARDED_READS:
         return False
     fetch_site = request.headers.get("Sec-Fetch-Site")
     if fetch_site:
@@ -2791,6 +2799,14 @@ def sample_history():
         _TEMP_HIST.append(t)
 
 
+# How often the TRAFFIC_ACCT byte counters are read. This is the one sampler whose cadence
+# has a cost beyond CPU: each read is a `sudo` fork, and every fork is ~3 journal lines. At
+# 4s that is 900 reads an hour; the per-request version it replaced measured 3,620. Raise
+# this number if the journal needs more headroom — the feed is a background animation and
+# degrades gracefully. sample_acct() itself is registered further down, next to the counter
+# read it depends on.
+ACCT_SAMPLE_SECS = 4
+
 scheduler = BackgroundScheduler()
 # 4s to match what the page polls at, so the chart's x-axis maths stays correct.
 scheduler.add_job(sample_history, 'interval', seconds=4, max_instances=1,
@@ -2835,7 +2851,8 @@ CPU_LINE_COLORS = ["#d9548f", "#0fa8b8", "#8f57d4", "#c08420"]
 _NET_PREV = {}                  # iface -> (monotonic_t, rx_bytes, tx_bytes) for throughput
 _CPU_PREV = {}                  # {"v": /proc/stat snapshot} — CPU% is measured between calls
 _HEALTH_CACHE = {}              # {"t": monotonic, "d": payload} — collapses concurrent pollers
-_FEED_PREV = {}                 # {"v": (monotonic_t, enc_bytes, unenc_bytes)} for the packet feed
+_FEED_PREV = {}                 # {"v": (monotonic_t, enc_bytes, unenc_bytes)} — sample_acct's baseline
+_ACCT_RATE = {"enc": 0, "unenc": 0}   # bytes/sec, written by the scheduler; /feed only reads it
 
 def _persistent_token(key):
     tok = r.get(key)
@@ -4045,7 +4062,10 @@ def _acct_counters():
     STRICTLY READ-ONLY. The chain is created by the root-run redirect script at boot, not
     here: an earlier version rebuilt it inline, which meant an unauthenticated GET could
     trigger privileged firewall *writes* and spawn ~10 sudo processes per request. The app
-    now only ever runs this one read, which is all `sudoers.d/cooldown` permits."""
+    now only ever runs this one read, which is all `sudoers.d/cooldown` permits.
+
+    Called ONLY by sample_acct(), on the scheduler. Nothing on a request path may call this
+    or anything else that reaches sudo — see the note in sample_acct()."""
     out = subprocess.run(["sudo", "-n", "iptables", "-t", "mangle", "-nvxL", "TRAFFIC_ACCT"],
                          capture_output=True, text=True, timeout=3).stdout
     enc = unenc = 0
@@ -4060,19 +4080,46 @@ def _acct_counters():
             unenc += b
     return enc, unenc
 
+def sample_acct():
+    """Turn the cumulative TRAFFIC_ACCT counters into a bytes/sec rate on a fixed cadence,
+    so /feed can answer from memory instead of forking.
+
+    Two defects, one fix. /feed is polled every 2-4s by every open page and ran a `sudo`
+    per request: 3,620 invocations an hour measured on the box, 34% of all journal lines,
+    on a journal already at its 200M cap with a ~47 hour window. And the rate was computed
+    between consecutive *requests*, so dt was "however long since someone last polled" — a
+    different window every time, and with two pollers open the 0.3s guard made one of them
+    report zero while resetting the other's baseline.
+
+    Same argument as sample_history(), one metric over: a rate measured between its own
+    calls is honest, and a reading taken only while someone is watching is not a reading.
+    """
+    enc, unenc = _try(_acct_counters, (0, 0))
+    now = time.monotonic()
+    prev = _FEED_PREV.get("v")
+    if prev and now - prev[0] >= 0.3:
+        dt = now - prev[0]
+        _ACCT_RATE["enc"] = max(0, round((enc - prev[1]) / dt))
+        _ACCT_RATE["unenc"] = max(0, round((unenc - prev[2]) / dt))
+    _FEED_PREV["v"] = (now, enc, unenc)
+
+
+# Registered here, not beside the other jobs, because it needs _acct_counters — defined
+# just above. scheduler.start() has already run; APScheduler accepts jobs on a running
+# scheduler, and doing it this way avoids the forward reference the other jobs live with.
+scheduler.add_job(sample_acct, 'interval', seconds=ACCT_SAMPLE_SECS, max_instances=1,
+                  coalesce=True, next_run_time=datetime.now())
+
+
 @app.route('/feed')
 def feed():
     # Encrypted vs unencrypted bytes/sec, driving the packet-feed background (green = TLS,
     # red = the plaintext DNS/HTTP that actually leaves your network in the clear).
-    enc, unenc = _try(_acct_counters, (0, 0))
-    now, e, u = time.monotonic(), 0, 0
-    prev = _FEED_PREV.get("v")
-    if prev and now - prev[0] >= 0.3:
-        dt = now - prev[0]
-        e = max(0, round((enc - prev[1]) / dt))
-        u = max(0, round((unenc - prev[2]) / dt))
-    _FEED_PREV["v"] = (now, enc, unenc)
-    return jsonify({"enc": e, "unenc": u})
+    #
+    # Reads what the sampler left and touches nothing else: no subprocess, no sudo, no
+    # privilege on a request path. test_feed_does_no_privileged_work asserts that, because
+    # the whole point of this route's history is that it used to.
+    return jsonify({"enc": _ACCT_RATE["enc"], "unenc": _ACCT_RATE["unenc"]})
 
 # ---------------------------------------------------------------------------
 # Devices page: the phone + laptop as the Pi sees them over Tailscale. Everything
