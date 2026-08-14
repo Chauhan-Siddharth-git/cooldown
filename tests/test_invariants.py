@@ -158,6 +158,33 @@ def test_only_declared_endpoints_are_ever_forwarded(rdb, path, monkeypatch):
         assert got in allowed, f"{path!r} forwarded to undeclared endpoint {got!r}"
 
 
+def test_the_hostile_path_harness_actually_forwards_something(rdb, monkeypatch):
+    """Guards the two tests above against passing vacuously.
+
+    Neither can assert `calls`/`seen` is non-empty: for a path like "/budgeting" the
+    correct behaviour is to forward NOTHING, so an empty list is a pass. That leaves a
+    hole -- if the addon stopped forwarding entirely, or the monkeypatch stopped
+    intercepting, every parametrised case would iterate an empty list and the whole set
+    would go green having checked nothing. Auto-inserting a non-empty guard there broke
+    42 cases, which is how the distinction was found.
+
+    So the harness is checked once, here, on paths that MUST forward."""
+    seen = []
+
+    class FakeResp:
+        status_code, content, headers = 200, b"ok", {"Content-Type": "text/html"}
+
+    monkeypatch.setattr(addon.req, "get", lambda url, *a, **k: (seen.append(url), FakeResp())[1])
+    monkeypatch.setattr(addon.req, "post", lambda url, *a, **k: (seen.append(url), FakeResp())[1])
+    for p in ("/budget", "/budget/feed"):
+        probe(p, {"Sec-Fetch-Dest": "document"})
+    assert seen, (
+        "the addon forwarded nothing for /budget or /budget/feed. Either forwarding "
+        "broke, or the monkeypatch above no longer intercepts it -- in which case every "
+        "hostile-path case is iterating an empty list and asserting nothing.")
+    assert all("127.0.0.1:5000" in u for u in seen), seen
+
+
 # ---------------------------------------------------------------------------
 # 3. The origin split holds for every request shape
 # ---------------------------------------------------------------------------
@@ -451,6 +478,7 @@ def test_the_box_origin_carries_the_headers_it_earned(rdb, monkeypatch):
         "Referrer-Policy": "no-referrer",
     }
     on_the_box = box("/stats")
+    assert EARNED.items(), ("EARNED.items() is empty, so the loop below would assert nothing and this test would pass having checked nothing")
     for header, want in EARNED.items():
         assert on_the_box.headers.get(header) == want, (
             f"{header}: box origin sends {on_the_box.headers.get(header)!r}, expected {want!r}")

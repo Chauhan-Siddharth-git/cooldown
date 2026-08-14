@@ -1052,6 +1052,7 @@ def test_no_theme_may_lighten_the_surface_the_charts_sit_on():
         f = lambda c: c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
         return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(bl)
     base = luminance("#14171d")
+    assert budget.THEMES.items(), ("budget.THEMES.items() is empty, so the loop below would assert nothing and this test would pass having checked nothing")
     for name, th in budget.THEMES.items():
         card = th["vars"]["card"]
         assert luminance(card) <= base * 1.6, f"{name} card {card} is too light for the charts"
@@ -1064,6 +1065,7 @@ def test_every_theme_keeps_body_text_readable():
         r, g, b = (int(h[i:i + 2], 16) / 255 for i in (1, 3, 5))
         f = lambda c: c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
         return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+    assert budget.THEMES.items(), ("budget.THEMES.items() is empty, so the loop below would assert nothing and this test would pass having checked nothing")
     for name, th in budget.THEMES.items():
         a, bg = lum(th["vars"]["fg"]), lum(th["vars"]["card"])
         ratio = (max(a, bg) + 0.05) / (min(a, bg) + 0.05)
@@ -1141,6 +1143,7 @@ def test_the_hour_may_speak_over_the_bank_but_only_at_night(rdb):
 
 def test_the_steer_survives_every_variant(rdb):
     """Whichever wording comes up, 'you still have time on YouTube' must reach the user."""
+    assert budget.GATE_LINES['spent'], ("budget.GATE_LINES['spent'] is empty, so the loop below would assert nothing and this test would pass having checked nothing")
     for v in budget.GATE_LINES["spent"]:
         assert "{steer}" in v
 
@@ -1157,6 +1160,7 @@ def test_gate_copy_rotates_but_cannot_be_rerolled_by_refreshing(rdb):
 
 
 def test_every_bank_is_non_empty_and_formats_cleanly(rdb):
+    assert budget.GATE_LINES.items(), ("budget.GATE_LINES.items() is empty, so the loop below would assert nothing and this test would pass having checked nothing")
     for state, bank in budget.GATE_LINES.items():
         assert bank, state
         for v in bank:
@@ -1227,6 +1231,7 @@ def test_every_pass_line_survives_rendering(rdb, client, monkeypatch):
     problem stayed hidden."""
     from markupsafe import escape
     monkeypatch.setattr(budget, "reflect_decision", lambda now=None: (True, "Why now?"))
+    assert budget.PASS_LINES, ("budget.PASS_LINES is empty, so the loop below would assert nothing and this test would pass having checked nothing")
     for entry in budget.PASS_LINES:
         monkeypatch.setattr(budget, "pass_line", lambda *a, **k: entry)
         html = client.get("/budget?site=reddit").get_data(as_text=True)
@@ -1270,6 +1275,7 @@ def test_no_personal_date_is_committed_to_the_repository():
 def test_the_birthday_theme_is_unlabelled_on_the_gated_origin(rdb):
     """The gate is served on reddit.com, so any script there can fetch it. A cake emoji
     would hand that script the date once a year; nice colours reveal nothing."""
+    assert budget.PERSONAL_THEMES, ("budget.PERSONAL_THEMES is empty, so the loop below would assert nothing and this test would pass having checked nothing")
     for name in budget.PERSONAL_THEMES:
         assert budget.THEMES[name]["emoji"] == "", name
         assert budget.THEMES[name]["label"] == "", name
