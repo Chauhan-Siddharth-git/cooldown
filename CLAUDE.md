@@ -13,7 +13,7 @@ usually need checking against both.
 
 | Boundary | What lives there |
 |---|---|
-| **Gated-site origin** (`https://www.reddit.com/budget/*`) | The gate, the session endpoints, `/feed`, `/worth`. **Eight endpoints, and that is a budget.** Any script on that site — including its ads — is same-origin with all of it. |
+| **Gated-site origin** (`https://www.reddit.com/budget/*`) | The gate, the session endpoints, `/feed`, `/worth`. **Eight endpoints, and that is a budget — now fully spent** (cap set at 8 on 2026-08-02 with the set at 7; `/worth` took the last slot on 2026-08-03, and the cap has never been raised). Any script on that site — including its ads — is same-origin with all of it. |
 | **Box origin** (`http://<box>:5000`) | The dashboard: `/stats`, `/health`, `/devices`, `/remaining`, `/boot-ack`. Cross-origin from every gated site, which **is** the control for *reading* (F9). It is not a control for *writing* — Flask refuses cross-origin writes itself (F25). Do not put these back behind the proxy. |
 | **Loopback** `127.0.0.1:5000` | Flask. The addon reaches it here; this listener must never depend on the tailnet. |
 | **Privileged** | Exactly one sudo rule: an `iptables` counter read. Services run as `cooldownapp` / `cooldownproxy`, no shell, no password. |

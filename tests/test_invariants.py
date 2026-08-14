@@ -174,8 +174,21 @@ def test_box_origin_pages_never_return_content_on_a_gated_origin(rdb, sub, dest)
 
 def test_the_gated_origin_surface_stays_small(rdb):
     """A budget, not a rule. Every endpoint here is one a hostile script on a gated
-    site can reach; if this number is climbing, ask what moved in and why."""
-    assert len(addon.BUDGET_ENDPOINTS) <= 8, sorted(addon.BUDGET_ENDPOINTS)
+    site can reach; if this number is climbing, ask what moved in and why.
+
+    The cap was written at 8 on 2026-08-02 when the set held 7 -- one slot of slack,
+    spent by /worth the next day. It has never been raised, and raising it to fit a
+    change is the failure this test exists to make visible. It is now AT the cap, so
+    the next gated endpoint is the first one that will ever trip this."""
+    assert len(addon.BUDGET_ENDPOINTS) <= 8, (
+        f"gated-origin surface would grow to {len(addon.BUDGET_ENDPOINTS)}: "
+        f"{sorted(addon.BUDGET_ENDPOINTS)}\n"
+        "The budget is fully spent. Raising this number is not the fix -- the options are:\n"
+        "  (a) put the endpoint on the box origin (addon.MOVED_TO_BOX) and accept that a\n"
+        "      script on a gated site cannot read it, which is usually what you want;\n"
+        "  (b) fold it into an endpoint that is already here;\n"
+        "  (c) retire one. /worth is the cheapest to lose -- it is journalling only.\n"
+        "Raise the cap only with a written reason, the way the 8 itself was justified.")
 
 
 # ---------------------------------------------------------------------------
