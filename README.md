@@ -257,6 +257,33 @@ buffer-vs-stream choice, the request gate (block / study lock / pass-through / c
 POST rejection), and what gets injected into a page. Each of those was verified by
 mutation testing — breaking the behaviour makes the suite fail.
 
+### Tools that check the checks
+
+A green suite of 640 tests says nothing about what is verified until you know how many of
+them *can* fail. These exist because, on separate occasions, each answer turned out to be
+"fewer than you'd think":
+
+```bash
+python3 tools/audit-tests.py     # tests that can pass without asserting anything
+python3 tools/check-deps.py      # known CVEs in the versions actually installed
+tools/ca-trust-scan.sh           # every trust store on this machine holding the CA
+tools/liveness-probe.sh --report # windows when the box was unreachable, recorded off-box
+```
+
+`audit-tests.py` found ten tests whose only assertions sat inside a loop over a collection
+derived from the code under test — empty collection, zero assertions, green test. Confirmed
+by emptying `THEMES` and watching two of them still pass.
+
+`check-deps.py` queries OSV for what is installed rather than what is pinned, and sorts by
+**reachability rather than severity** — the package with the most advisories turned out not
+to be imported at all, while the one that mattered was a transitive wheel bundling a
+vulnerable OpenSSL. Every "not applicable" in it names the check that established it.
+
+Each of these keeps a list of reviewed exceptions, and each **fails when an entry stops
+matching anything**. That is not tidiness: an exemption that no longer exempts anything is
+indistinguishable from one that quietly permits everything, and a stale list of exactly
+that kind is how five private identifiers ended up in this public repository.
+
 ## Status & limitations
 
 Works, and runs daily on the author's setup — but it's a personal project, not a

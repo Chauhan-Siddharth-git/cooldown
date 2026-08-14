@@ -1,6 +1,6 @@
 # Setup
 
-The reference deployment is a Raspberry Pi running the three services natively
+The reference deployment is a Raspberry Pi running the services natively
 (Python venv + systemd), with devices reaching it over Tailscale. Adapt freely.
 
 > Do **[SECURITY.md](SECURITY.md)** first. You are about to trust a CA you
@@ -43,7 +43,7 @@ the code, fork it on GitHub first and clone your fork instead.)*
 - Install dependencies:
   ```bash
   sudo apt update
-  sudo apt install -y redis-server python3-venv python3-pip iptables
+  sudo apt install -y redis-server python3-venv python3-pip iptables inotify-tools
   ```
 - Set up the venv (you cloned the repo in step 0):
   ```bash
@@ -163,11 +163,53 @@ running cooldown — is skipped on purpose: it's meaningless an hour later.
 
 ## 7. Verify
 
-- `systemctl is-active cooldown-app cooldown-proxy cooldown-redirect redis-server` → all `active`.
+- `systemctl is-active cooldown-app cooldown-proxy cooldown-redirect cooldown-cawatch redis-server`
+  → all `active`. (`cooldown-cawatch` alerts if the CA private key is ever read; it needs
+  `inotify-tools`, installed in step 1.)
 - On a routed device (one you've pointed through the box), open a budgeted site → you
   should see the gate.
 - `curl http://127.0.0.1:5000/remaining` on the box → JSON with per-site budgets.
 - Visit `/budget/stats` for the usage dashboard.
+
+## 7b. Optional: get told when something happens (off by default)
+
+Two things are worth knowing about immediately rather than the next time you happen to
+open the dashboard: an unexplained reboot, and a read of the CA private key. Both can be
+pushed to your phone.
+
+Pick any push endpoint that accepts a plain POST body — [ntfy.sh](https://ntfy.sh) is the
+usual choice and needs no account. **The topic name is the credential**: anyone who knows
+it can read your alerts, so generate a random one rather than picking a word.
+
+```bash
+# a topic nobody will guess
+echo "cooldown-$(head -c9 /dev/urandom | base64 | tr -dc 'a-z0-9')"
+```
+
+Install it as a systemd drop-in rather than editing the unit, so a redeploy cannot
+overwrite it:
+
+```bash
+sudo install -d -m755 /etc/systemd/system/cooldown-app.service.d
+sudo tee /etc/systemd/system/cooldown-app.service.d/alert.conf >/dev/null <<'EOF'
+[Service]
+Environment=COOLDOWN_ALERT_URL=https://ntfy.sh/your-topic-here
+EOF
+sudo chmod 600 /etc/systemd/system/cooldown-app.service.d/alert.conf
+sudo systemctl daemon-reload && sudo systemctl restart cooldown-app
+```
+
+Then check it actually works, without faking an alarm:
+
+```bash
+sudo /usr/local/sbin/cooldown-alert-test.sh
+```
+
+That script reads the URL from the **unit's** environment, not your shell — which is the
+trap: the variable lives in the drop-in, so a shell that doesn't inherit it reports "not
+configured" on a box where it is configured perfectly well.
+
+Subscribe on your phone with the ntfy app, or in a browser at `https://ntfy.sh/your-topic`.
 
 ## 8. Make it yours
 

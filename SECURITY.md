@@ -311,10 +311,26 @@ This is the risk you accept in exchange for the tool.
 - The key lives only on your box, readable by one locked-down account and nothing else.
 - It is never uploaded, never emailed, never committed to Git (the `.gitignore` here
   blocks it, and **this repository ships no key of its own**).
+- **A read of the key is now noticed.** `cooldown-cawatch` watches the CA directory and pushes an
+  alert the moment the private half is opened outside the proxy's own startup. Its limits
+  are worth knowing: it reports *that* a read happened and never *who* (inotify events
+  carry no process identity), and copying the SD card while the box is powered off
+  produces no event at all. Physical possession still beats it.
+- The audit pins the CA's fingerprint hourly, but note what that does and does not catch:
+  it detects **modification**, and a thief copies the key without changing it. The
+  fingerprint check stays green through a theft. That gap is why the read watcher exists.
 - If you ever suspect it leaked: **make a new one and stop trusting the old one.** Run
   `./rotate-ca.sh` on the box, then reinstall on your devices. Ten minutes of annoyance,
   problem gone. Full checklist — including lost/stolen/retired — in
   [RECOVERY.md](RECOVERY.md).
+- **Before you can revoke, you need to know what trusts it.** There is no CRL and no
+  OCSP for a privately-trusted root: nothing phones home to ask whether it is still
+  valid, so revocation means removing it from every trust store by hand. Revocation is
+  therefore exactly as complete as your inventory is. `tools/ca-trust-scan.sh` takes that
+  inventory; [CA-TRUST.md](CA-TRUST.md) holds the removal runbook per platform. The first
+  run of that scan on one laptop found the CA trusted in **five** places — the system
+  bundle plus three Firefox profiles, one of them twice — because Firefox keeps its own
+  store and people think in devices rather than stores.
 
 ### 2. You install *somebody else's* master key ⚠️ the big one
 
@@ -394,6 +410,14 @@ that rule. Worth being precise about how, and what it costs:
   `connect-src` and `form-action` all stay enforced. On live Reddit, whose policy is
   `default-src 'none'`, the page arrives with that intact and both nonces present —
   Reddit's own and ours.
+- **`'strict-dynamic'` is handled explicitly**, and the absence of that was a silent
+  fail-open until 2026-08-14. Under CSP3 a source list containing `'strict-dynamic'`
+  causes `'unsafe-inline'` to be ignored *for scripts* — the spec's own algorithm returns
+  "Does Not Allow" before it ever reaches the `'unsafe-inline'` branch. Cooldown used to
+  read `script-src 'unsafe-inline' 'strict-dynamic'` as "our script is already permitted"
+  and leave the policy alone, which would have blocked the heartbeat with nothing
+  reporting it — and no heartbeat means no time charged while browsing continues. It now
+  adds a nonce in that case, which is precisely what the spec still honours.
 - Earlier versions deleted the header outright. That was the blunt version of the same
   idea, and it threw away protections that had nothing to do with script injection —
   written up as F8 in [SECURITY-CASESTUDY.md](SECURITY-CASESTUDY.md).

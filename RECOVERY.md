@@ -81,6 +81,22 @@ rotation and the reinstall, browsing on routed devices will fail with certificat
 warnings — that's expected, and it's why you do this when you have ten minutes, not on
 your way out the door.
 
+**"Each device" is the wrong unit, and this is the step people get wrong.** Trust lives in
+*stores*, not devices, and one machine has several: the system bundle (used by Chrome,
+curl and everything linked against OpenSSL), Chrome's own NSS database, and **every Firefox
+profile separately** — Firefox ignores the system store entirely. The first inventory taken
+here found the CA trusted in five places on a single laptop. Updating "the laptop" updates
+one of them, and the rest keep trusting a certificate you believe you retired.
+
+```bash
+tools/ca-trust-scan.sh          # run on each computer: lists every store, flags strays
+```
+
+[CA-TRUST.md](CA-TRUST.md) holds the inventory table to fill in and the per-platform
+removal commands. Read the revocation section there before you need it: there is no CRL
+and no OCSP for a privately-trusted root, so nothing revokes it for you — **revocation is
+exactly as complete as your inventory is.**
+
 Old backups of the previous key are kept in `/var/backups/cooldown/ca-*`; delete them once
 every device is on the new certificate.
 
@@ -136,28 +152,60 @@ moment it leaves, the code that would raise an alarm is unreadable. Anything cla
 otherwise on a Pi is wishful thinking.
 
 But nobody yanks a card from a running Pi. They **power it down, copy it, and put it
-back** — and that leaves a trace. Cooldown watches `/proc/sys/kernel/random/boot_id`,
-which changes on every boot, and if the box restarts for a reason you haven't
-acknowledged, the Pi health page shows a red banner until you dismiss it:
+back** — and that leaves a trace. There are now four independent traces, which matters
+because each covers a case the others miss.
+
+**1. The reboot alarm.** Cooldown watches `/proc/sys/kernel/random/boot_id`, which changes
+on every boot. If the box restarts for a reason you haven't acknowledged, the health page
+shows a red banner until you dismiss it:
 
 > ⚠️ **This box restarted on Sun 2 Aug, 12:53 PM** — if that wasn't you, someone had
 > physical access.
 
-A power cut will trigger it too. That's the right trade: you'd rather dismiss the odd
-false alarm than miss the real one.
+A power cut will trigger it too. That's the right trade: you'd rather dismiss the odd false
+alarm than miss the real one.
 
-**Its limits, stated plainly:**
-- Someone holding the card can edit this check or clear the flag. It is tamper-**evidence**
-  against the careless, not tamper-proofing against the determined.
-- It tells you the box restarted, not what was done to it.
-- **A sticker or tamper tape across the SD slot is a better detector than any of this**,
-  and costs nothing. Physical problems want physical answers.
+**2. The alarm is pushed off the box.** If you configure `COOLDOWN_ALERT_URL`, that same
+event is sent to your phone at the moment it happens. This is the part that changes the
+threat model: the case study admits anyone holding the card can clear the flag, and that is
+still true — but **nobody can un-send a notification.** Tamper-evidence that lives only on
+the tampered device is evidence the tamperer controls. Off by default; see
+[SETUP.md](SETUP.md).
+
+**3. The restart history outlives the dismissal.** Every unexplained boot is recorded, and
+the health page lists the recent ones whether or not the banner has been dismissed.
+Previously the banner was the *only* surfacing, so acknowledging a reboot erased the
+evidence it had happened — the opposite of what evidence is for.
+
+**4. An off-box record of when the box was unreachable.** `tools/liveness-probe.sh` runs on
+a different machine and logs windows like `03:12 → 03:47 UNREACHABLE 35m`. This is the one
+that catches an attacker who boots a *modified* image with the alarm suppressed — that
+defeats the first three completely and leaves nothing behind on the box, but it cannot
+hide the box being off. It distinguishes "the box is gone" from "I can't see it": if its
+own network is down, the window is recorded as BLIND rather than as evidence.
+
+**And separately, a read of the CA key is alerted.** `cooldown-cawatch` reports any open of
+the private key outside the proxy's own startup. Note what it does *not* cover, because it
+is the same blind spot as everything above: reading the card in another machine, with this
+one powered off, produces no event anywhere.
+
+**The limits, stated plainly:**
+- Someone holding the card can edit these checks or clear the flag. This is
+  tamper-**evidence** against the careless, not tamper-proofing against the determined. The
+  off-box pieces (2 and 4) are the ones they cannot reach into and edit.
+- They tell you the box restarted, or was unreachable — not what was done to it.
+- The liveness probe only sees what it is awake for. A laptop asleep overnight records a
+  BLIND window, not a clean one. For always-on coverage the box would need to check in with
+  an external dead-man's-switch service; that runs on the box and can be stopped, but
+  stopping it is itself the alarm.
+- **A sticker or tamper tape across the SD slot is still a better detector than any of
+  this**, and costs nothing. Physical problems want physical answers.
 
 ## Sanity checks, any time
 
 ```bash
 # what the box is actually running
-systemctl is-active cooldown-app cooldown-proxy cooldown-redirect redis-server
+systemctl is-active cooldown-app cooldown-proxy cooldown-redirect cooldown-cawatch redis-server
 
 # the certificate your devices are trusting
 sudo openssl x509 -in /var/lib/cooldown/mitmproxy/mitmproxy-ca-cert.pem \

@@ -575,6 +575,16 @@ what a response actually is, add `nosniff` so the browser doesn't get creative, 
 free headers *before* you need them — the bug they defend against is usually written after
 the header was skipped.
 
+**A note added 2026-08-14.** Two of those five headers have since been dropped from
+Cooldown's own responses, keeping `X-Frame-Options: DENY`,
+`Content-Security-Policy: frame-ancestors 'none'` and `Referrer-Policy: no-referrer`.
+`nosniff` and `Cache-Control: no-store` were removed once the responses they guarded were
+no longer served the way they had been. The reasoning above still holds for the headers
+that remain, and "set the free headers before you need them" is still right — but a header
+kept after its reason has gone is a claim the code no longer earns, which is the same
+defect as a stale exemption in an allowlist.
+
+
 ---
 
 ## F16 — The dev script quietly undid two fixes  ·  MEDIUM  ·  FIXED
@@ -931,6 +941,190 @@ step too early. The key being copyable was not the thing to attack; the *value* 
 copy was, and that turned out to be adjustable by one certificate extension. When a risk
 is accepted, the useful follow-up is not "can we prevent it after all" but "how much is
 it worth to them, and can that be made smaller".
+
+---
+
+## F27 — The audit judged IPv6 listeners using IPv4 rules  ·  MEDIUM  ·  FIXED
+
+**What it is.** `cooldown-audit.sh` decided which listening ports were contained by the
+firewall, and `/health` rendered that as a "firewalled" badge. It read `iptables` only —
+zero calls to `ip6tables` — while the listener set it judged came from `ss -tlnH`, which
+reports `[::]` binds. So `[::]:22`, `[::]:8080` and `[::]:8081` were cleared on evidence
+from the other address family, on a box holding a globally routable IPv6 address with
+mitmdump bound to `[::]`. Two further defects in the same parser:
+
+- `grep -vE -- '-i (lo|tailscale0)'` was meant to skip rules scoped to a safe interface.
+  It also discarded `! -i tailscale0 ... -j ACCEPT` — a rule accepting from *everywhere
+  except* the tailnet. The most permissive shape in the chain was read as the safest.
+- Only the multiport `--dports` form was matched, so a plain `--dport 8080 -j ACCEPT`
+  opening the proxy on every interface was classified as contained.
+
+**Why it survived.** The two families agreed for months, so the output was correct while
+the reasoning was not. It stopped being latent quietly: the v6 chain had drifted to seven
+ACCEPT rules against v4's five, because the teardown deleted rules matching the *current*
+port list and orphaned every previous generation.
+
+**The fix.** Both families parsed, per-listener, with the harsher verdict winning — a port
+exposed on either family is exposed. Negated interface matches kept. Both `--dport` forms
+read. The teardown now deletes by rule *shape* rather than by today's port list. Verified
+against stub rule sets, and the same cases run against the old parser fail exactly the two
+it was blind to.
+
+**The concept — a check that reads the wrong half of the evidence is worse than no check,
+because it produces a badge.** `/health` was not silent about the firewall; it was
+confident. F22 was the same shape (SSH open while the dashboard called it firewalled), and
+the repair for F22 did not generalise to the address family nobody was looking at.
+
+---
+
+## F28 — The firewall could lock you out of your own box  ·  MEDIUM  ·  FIXED
+
+**What it is.** `cooldown-redirect.sh` ended its setup with an unconditional
+`iptables -P INPUT DROP`. Every ACCEPT above it used the pattern `-C ... || -I ...`, whose
+failure is silent, and the file has no `set -e`. If any insertion failed — a conntrack
+module that will not load is the realistic case — the accepts were missing and the policy
+flipped anyway. Since port 22 was added to the tailnet-only allowlist, the LAN SSH fallback
+is deliberately gone, so the recovery path is a monitor and a keyboard.
+
+**The fix.** Before the flip, the three rules that keep the box reachable — established
+connections, loopback, and the tailnet interface — are verified **present** with `-C`,
+which asks the kernel what is actually in the chain rather than trusting the exit status of
+the command that tried to add it. If any is missing, the policy stays at ACCEPT, loudly,
+and the function returns non-zero.
+
+**The concept — when a safety check fails, fail toward the recoverable state.** An exposed
+box can be fixed from anywhere; a locked one cannot be fixed at all. The instinct to
+"fail closed" is right for a door and wrong for the lock you are standing outside of.
+
+Landed with someone physically at the box, behind a ten-minute automatic rollback to
+ACCEPT that was confirmed armed before the change rather than assumed. It was not needed.
+
+---
+
+## F29 — A failed `apt` reported as "up to date"  ·  MEDIUM  ·  FIXED
+
+**What it is.** The updates watchdog ran `apt-get -s dist-upgrade 2>/dev/null || true` and
+counted `^Inst ` lines. Any apt failure — broken sources, unreachable repository, a wedged
+dpkg — produced an empty simulation, which counted as zero pending, which `/health`
+rendered as **"Up to date."** Demonstrated with a stub apt exiting 100: the state file
+recorded `pending: 0, security: 0`.
+
+**The fix.** The exit status is captured and published as `apt_ok`. When it is false the
+reader returns `None` rather than `0`, and the page says the count is unknown. Two tests,
+in both directions, so the fix cannot be satisfied by never saying "up to date" again.
+
+**The concept — this is the project's oldest mistake, found in the one script whose entire
+job is to prevent it.** F21 was eleven days of missed patches that nothing reported,
+because silence read as success. The watchdog written in response to F21 contained the
+same defect on its own reporting path. Absence of signal is not a good signal, and the
+place it hides best is inside the thing you built to detect it.
+
+Also fixed there: the error capture wrote to a fixed `/tmp` path as root, which a
+pre-created symlink turns into root truncating an arbitrary file.
+
+---
+
+## F30 — The CA had no theft detection and no revocation path  ·  MEDIUM  ·  FIXED
+
+**What it is.** Two halves of one gap in the trust anchor's lifecycle.
+
+*Nothing noticed a read.* The audit pins the CA's fingerprint hourly, which detects
+**modification** — but a thief copies the key and changes nothing, so the fingerprint check
+stays green straight through a theft. The one event that matters most produced no signal at
+all.
+
+*Nothing knew what trusted it.* `rotate-ca.sh` has always said "every routed device must
+install the new certificate", but nothing recorded which devices those were, and there is
+no CRL or OCSP for a privately-trusted root — nothing phones home to ask whether it is
+still valid. Revocation therefore means removing it from every trust store by hand, which
+makes it exactly as complete as the inventory is. There was no inventory. Combined with
+F26, which makes rotation *mandatory* for adding a gated site, that meant a rotation nobody
+could finish, and so a site nobody could add.
+
+**The fix.** `cooldown-cawatch` watches the CA directory and alerts off-box the moment the
+private half is opened outside the proxy's own startup — the baseline is nearly empty
+because mitmproxy loads the CA once and holds no descriptor afterwards, so a read at any
+other time has no innocent explanation. `tools/ca-trust-scan.sh` inventories every trust
+store on a machine and flags CA material that is not the expected one;
+[CA-TRUST.md](CA-TRUST.md) holds the per-platform removal runbook.
+
+What the first inventory found is the point: on one laptop the CA was trusted in **five**
+places — the system bundle plus three Firefox profiles, one of them holding it twice —
+because Firefox ignores the system store entirely. A rotation that updated "the laptop"
+would have updated one of them. The scan also turned up a **second CA, with its private
+key**, in `~/.mitmproxy/`, left behind by a superseded dev setup and trusted by nothing.
+
+**The limits, stated because a detector believed to be complete is worse than none.**
+inotify reports *that* a file was read, never *who* read it — the events carry no process
+identity. Copying the SD card while the box is off produces no event. Root can stop the
+service. This raises the cost of a quiet theft; it does not prevent one.
+
+---
+
+## F31 — The dependency tree had never been reviewed  ·  MEDIUM  ·  FIXED
+
+**What it is.** `requirements.txt` pinned `requests==2.31.0` from 2023 and nothing had ever
+checked what the tree was carrying. Three security reviews read this code; none asked.
+
+**What the check found, and why the ranking matters.** `tools/check-deps.py` queries OSV
+for the versions actually installed. Sorting by severity would have got the priorities
+backwards:
+
+- `tornado` carried **eight** advisories and is never imported — mitmdump does not load it;
+  it is there for mitmweb, which this deployment never runs.
+- Every application-level advisory was unreachable, verified rather than assumed: no
+  `verify=False` outside tests, no `~/.netrc`, `extract_zipped_paths` never called, no
+  Flask sessions, no proxy authentication.
+- What *was* reachable sat in the TLS path: the `cryptography` wheel bundled a statically
+  linked OpenSSL vulnerable to a heap use-after-free, and `pyOpenSSL` carried a TLS bypass
+  in the `set_tlsext_servername` callback — the exact path used to mint a certificate per
+  hostname.
+
+**The fix.** Upgraded, with the floors recorded in `requirements.txt` so a fresh install
+cannot regress. One advisory is left deliberately unfixed and written down: mitmproxy pins
+`h2==4.3.0` exactly, so a request-smuggling fix in 4.4.1 cannot be taken until upstream
+moves.
+
+**The concept — reachability beats severity, and "not applicable" has to be evidence.**
+Every entry in the reviewed list names the check that established it, because such a claim
+goes stale the moment the code grows the thing it says is absent.
+
+---
+
+## F32 — Controls that could not fail  ·  LOW  ·  FIXED
+
+**What it is.** Three separate mechanisms that reported success without checking anything.
+
+- **Ten tests could pass vacuously.** Each asserted only inside a loop over a collection
+  derived from the code under test, so an empty collection meant zero assertions and a
+  green test. Proven, not inferred: with `THEMES = {}` two theme tests passed. The suite
+  had never been audited for the shape, despite the same defect being hit three times in
+  one session.
+- **Five entries in the repo-parity allowlist matched nothing.** Each exempted a difference
+  that a later rename rule had absorbed. The test guarding the allowlist checked an
+  entry's *shape* — file, needle length, reason present — and never whether it still
+  described a real difference, despite its own docstring saying an entry matching nothing
+  is stale.
+- **The dependency review list had the same defect within hours of being written**, when
+  the upgrade it motivated made five of its seven entries obsolete.
+
+**The fix.** `tools/audit-tests.py` finds the vacuous shape statically and knows which
+iterables cannot be empty; each exemption list now fails when an entry stops matching.
+
+**The concept — an exemption is a standing permission, and one that no longer permits
+anything is indistinguishable from one that quietly permits everything.** The parity
+allowlist is the only control between the private repo and the public one, and the same
+evening these were found, five private identifiers were sitting in the public repo. One
+was not cosmetic: a systemd unit there pointed at a script path the public installer never
+creates, so a public installation's weekly audit would have silently never run.
+
+Three of the ten vacuous tests could not be fixed with a non-empty guard, and that turned
+out to be the more useful finding. They are parametrised over hostile paths where
+forwarding *nothing* is the correct behaviour, so asserting the collection is non-empty is
+simply wrong — applying the mechanical fix broke 42 cases. They are covered instead by one
+test that the harness forwards anything at all, which is the real hole: if forwarding
+broke, every case would iterate an empty list and the whole set would go green.
+
 
 ---
 

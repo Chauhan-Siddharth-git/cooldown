@@ -85,6 +85,9 @@ second clock.
 python3 -m pytest tests/ -q              # needs a local redis (uses db 15)
 python3 -m pytest tests/test_invariants.py -q   # the structural properties
 git config core.hooksPath .githooks      # enable the pre-commit checks (once per clone)
+python3 tools/audit-tests.py             # tests that can pass without asserting anything
+python3 tools/check-deps.py --remote     # CVEs in the versions installed ON THE BOX
+tools/ca-trust-scan.sh                   # every trust store here holding the CA
 ./start.sh                               # local dev: loopback-only proxy, separate dev CA
 ./deploy.sh code|units|status            # native Pi deployment over SSH
 ```
@@ -132,6 +135,15 @@ Read this part first, then **read the code before reading `SECURITY-CASESTUDY.md
    hook itself.
 9. **Update every doc that asserts the old behaviour**, or it becomes the next reviewer's
    anchor.
+10. **Every list of exceptions needs a test that the exceptions still exist.** Three of
+   them here — `parity.ALLOWED_DIFFS`, and the reviewed-advisory and reviewed-test maps —
+   accumulated entries that matched nothing, in one case within hours of being written.
+   An exemption that no longer exempts anything is indistinguishable from one that quietly
+   permits everything, and the parity allowlist is the only control standing between the
+   two repos: while five of its entries were stale, five private identifiers were sitting
+   in the public repo, one of them a systemd unit pointing at a path that never exists
+   there. Shape checks (is the reason written down? is the needle specific?) do not catch
+   this. Only recomputing the thing the entry claims to describe does.
 
 **When to review at all:** on a new endpoint, origin, listener, privileged operation, or
 new reliance on browser behaviour — those five account for all twenty findings. Plus after

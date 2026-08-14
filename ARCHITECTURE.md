@@ -432,11 +432,34 @@ off. A separate **Study mode** (locked to a course playlist) stays open at all h
 | **iptables** | Linux's built-in firewall/routing; steers web traffic into the interceptor and blocks what it can't read. |
 | **Port** | A numbered "door" on a computer — programs listen on different ports so traffic reaches the right one (mitmproxy 8080/8081, Flask 5000, Redis 6379). |
 | **localhost** | The machine talking to *itself*. Flask and Redis only accept localhost connections, so nothing off the box can reach them. |
-| **systemd** | Linux's service manager — keeps the three programs running and restarts them on boot (why they're "services"). |
+| **systemd** | Linux's service manager — keeps the long-running programs alive and restarts them on boot (why they're "services"), and runs the periodic ones (audit, updates watchdog, backup) on timers. |
 | **WSGI / waitress** | The plumbing that lets a Python web app (Flask) receive real requests; **waitress** is the production-grade version used here. |
 | **QUIC** | A newer, faster web transport (used heavily by YouTube); blocked so browsers fall back to the inspectable kind. |
 | **Heartbeat** | The tiny injected script that pings the box every few seconds *while the tab is visible*. |
 | **Session / cooldown** | A *session* is an active "you're allowed in" pass; a *cooldown* is the enforced break once the budget is spent. |
+
+---
+
+## Watchdogs and alerting
+
+Four things run beside the three main services, all added after the failure each one
+exists to catch:
+
+| Unit | What it does | The failure that motivated it |
+|---|---|---|
+| `cooldown-updates` (hourly) | Records pending packages, and checks apt's timers actually *ran* rather than merely being scheduled | Eleven days of missed patches while every signal read healthy — a timer can fire perfectly and its job still queue forever behind a target that is never reached |
+| `cooldown-audit` (hourly quick, weekly full) | CA fingerprint, expiry, firewall exposure, backup freshness, failed logins | Claims on the dashboard that nothing verified |
+| `cooldown-cawatch` (always on) | Alerts when the CA private key is read outside the proxy's own startup | The fingerprint check detects *modification*; a thief copies the key and changes nothing, so it stays green through a theft |
+| `cooldown-backup` (daily) | Snapshots history, and **restores the newest one into a scratch database** to prove it works | A backup nobody has restored is a hypothesis |
+
+Anything urgent — an unexplained reboot, a read of the CA key — is also pushed off the box
+if `COOLDOWN_ALERT_URL` is set. That is the point rather than a convenience: evidence that
+lives only on the tampered device is evidence the tamperer controls, and nobody can un-send
+a notification.
+
+The gap those four share is that they all run *on* the box. `tools/liveness-probe.sh` runs
+somewhere else and records windows when the box was unreachable, which is what catches an
+attacker who boots a modified image with the alarm suppressed.
 
 ---
 
