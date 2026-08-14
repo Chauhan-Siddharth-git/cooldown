@@ -419,36 +419,32 @@ HARDENING = ("X-Content-Type-Options", "X-Frame-Options", "Content-Security-Poli
              "Referrer-Policy", "Cache-Control")
 
 
-def test_the_box_origin_is_at_least_as_hardened_as_the_proxy(rdb, monkeypatch):
-    """The addon stamps nosniff / DENY / frame-ancestors / no-referrer / no-store on every
-    response it synthesises. Flask sent none of them on its own origin, so the dashboard —
-    the pages F9 moved specifically to be harder to reach — was frameable, and a click
-    back to a gated site leaked the box's tailnet address in the Referer."""
-    class FakeResp:
-        status_code, content = 200, b'{"ok":1}'
-        headers = {"Content-Type": "application/json"}
+def test_the_box_origin_carries_the_headers_it_earned(rdb, monkeypatch):
+    """Renamed from test_the_box_origin_is_at_least_as_hardened_as_the_proxy, whose
+    premise was symmetry with the proxy. D5 rejected that premise: two headers had been
+    copied across for parity with no finding behind either, which made README's "none of
+    them are generic best practice adopted in advance" false.
 
-    monkeypatch.setattr(addon.req, "get", lambda *a, **k: FakeResp())
-    monkeypatch.setattr(addon.req, "post", lambda *a, **k: FakeResp())
-    rdb.set("feed_token", "T")
-    through_proxy = probe("/budget/feed?t=T",
-                          {"Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "same-origin"})
-    assert through_proxy is not None and through_proxy.status_code == 200, \
-        "the proxy side of the comparison did not answer — nothing is being compared"
-
+    What the box origin owes is the headers it earned, each traceable:
+      X-Frame-Options / frame-ancestors -- the dashboard F9 moved was frameable
+      Referrer-Policy                   -- a click back to a gated site leaked the box's
+                                           tailnet address in the Referer
+    The proxy keeps nosniff and no-store on the gated origin, where they were earned, and
+    the box origin is not required to mirror it.
+    """
+    EARNED = {
+        "X-Frame-Options": "DENY",
+        "Content-Security-Policy": "frame-ancestors 'none'",
+        "Referrer-Policy": "no-referrer",
+    }
     on_the_box = box("/stats")
-    for header in HARDENING:
-        want = through_proxy.headers.get(header)
-        if want is None:
-            continue
+    for header, want in EARNED.items():
         assert on_the_box.headers.get(header) == want, (
-            f"{header}: proxy sends {want!r}, box origin sends "
-            f"{on_the_box.headers.get(header)!r}")
-
-
-# ---------------------------------------------------------------------------
-# 5. Responses the proxy synthesises are always hardened
-# ---------------------------------------------------------------------------
+            f"{header}: box origin sends {on_the_box.headers.get(header)!r}, expected {want!r}")
+    # The removed pair must stay removed, or the contradiction returns silently.
+    for header in ("X-Content-Type-Options", "Cache-Control"):
+        assert on_the_box.headers.get(header) is None, (
+            f"{header} is back on the box origin with no finding behind it (D5)")
 
 def test_forwarded_responses_always_carry_the_hardening_headers(rdb, monkeypatch):
     class FakeResp:

@@ -119,12 +119,16 @@ def _refuse_cross_origin_writes():
 # The CSP here carries frame-ancestors and NOTHING else on purpose. These pages are built
 # from inline <script> and <style>; adding default-src or script-src would break every one
 # of them, and framing is the only thing this header is here to stop.
+# D5. Two more were here -- X-Content-Type-Options and Cache-Control -- copied from the
+# proxy's set for symmetry, with no finding behind either. Removed, because README's
+# "None of them are generic best practice adopted in advance" is the sentence that makes
+# this whole list mean something, and it was false the moment they were added. The proxy
+# keeps both on the gated origin, where they were earned; the token-bearing gate is
+# served through it and is still no-store (addon.py).
 SECURITY_HEADERS = {
-    "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "Content-Security-Policy": "frame-ancestors 'none'",
     "Referrer-Policy": "no-referrer",
-    "Cache-Control": "no-store",
 }
 
 
