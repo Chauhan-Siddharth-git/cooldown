@@ -26,17 +26,44 @@ import urllib.request
 # that the vulnerable code path cannot be reached, not that the advisory is unimportant --
 # and it goes stale the moment the code grows the thing it says is absent.
 REVIEWED = {
-    "CVE-2024-35195": "requests Session verify=False: grep finds no verify=False outside tests",
-    "CVE-2024-47081": "requests .netrc leak: no ~/.netrc for either account on the box",
-    "CVE-2026-25645": "requests extract_zipped_paths(): never called",
-    "CVE-2026-27205": "Flask session Vary: Cookie: no Flask sessions, no secret_key",
-    "CVE-2026-40606": "mitmproxy LDAP injection: proxyauth/ldap not configured in any unit",
-    "CVE-2026-69247": "cryptography PKCS#7 EnvelopedData oracle: no EnvelopedData decryption",
-    "GHSA-537c-gmf6-5ccf":
-        "bundled OpenSSL CVE-2026-45447 is in PKCS7_verify(); TLS and cert generation use "
-        "X509_verify_cert, not the PKCS#7 APIs. The SYSTEM OpenSSL is separately patched "
-        "(Debian 3.5.6-1~deb13u2+rpt1 names the CVE). Fix needs cryptography>=48.0.1, "
-        "which needs mitmproxy>=12.2.3 to lift its cryptography<=46.1 cap.",
+    # Keys are CVE/GHSA ids, or a bare package name to cover every advisory against a
+    # package that is not reachable at all. Values are the evidence, not an opinion.
+    #
+    # An entry here is a claim that the vulnerable path cannot be reached, and it goes
+    # stale the moment the code grows the thing it says is absent -- or the moment the
+    # package is upgraded past the advisory. Five entries in the first version of this
+    # file went stale within hours, when the very upgrade this tool motivated landed. The
+    # summary now reports entries that match nothing, because an exemption that no longer
+    # exempts anything is indistinguishable from one that quietly excuses everything --
+    # the same defect found the same evening in parity.ALLOWED_DIFFS, where it had let
+    # five private identifiers sit in a public repo.
+    "tornado":
+        "not reachable: mitmdump does not import tornado at all (verified by importing "
+        "mitmproxy.tools.main and inspecting sys.modules). It is present for mitmweb, "
+        "which this deployment never runs. Eight advisories, all moot -- severity alone "
+        "would have ranked these first.",
+    "msgpack":
+        "not reachable: not imported by mitmdump or by the addon (same check).",
+    "CVE-2026-27205":
+        "Flask session Vary: Cookie -- no Flask sessions and no secret_key anywhere.",
+    "CVE-2026-69247":
+        "cryptography PKCS#7 EnvelopedData oracle -- nothing here decrypts EnvelopedData.",
+    "CVE-2026-69248":
+        "cryptography verifier accepts wildcards escaping permittedSubtrees. Relevant to "
+        "name constraints, which this CA uses (F26) -- but the constraints that matter are "
+        "enforced by the BROWSERS, using their own verifiers, not by python-cryptography. "
+        "Fixed in 49.0.0; mitmproxy 12.2.3 caps cryptography at <=48.1, so it cannot be "
+        "taken yet. Re-check when mitmproxy lifts the cap.",
+    "CVE-2026-69249":
+        "cryptography exponential path-building via duplicate self-signed intermediates. "
+        "Reachable in principle when verifying a hostile upstream chain; impact is DoS on "
+        "a single-user box, not disclosure. Same 48.1 cap as above blocks the fix.",
+    "CVE-2026-71554":
+        "h2 duplicate Host header, request smuggling. CANNOT BE FIXED: mitmproxy pins "
+        "h2==4.3.0 exactly, in 12.2.3 as in 12.2.1, and the fix is 4.4.1. The addon gates "
+        "on Host, so a smuggled request is a gate bypass rather than a disclosure -- it "
+        "defeats a doomscroll limiter, and the clients are the owner's own devices. "
+        "Re-check when mitmproxy moves.",
 }
 
 
@@ -52,7 +79,16 @@ def installed(remote):
     else:
         out = subprocess.run([sys.executable, "-m", "pip", "list", "--format=json"],
                              capture_output=True, text=True).stdout
-    return [(p["name"], p["version"]) for p in json.loads(out)]
+    try:
+        return [(p["name"], p["version"]) for p in json.loads(out)]
+    except json.JSONDecodeError:
+        # An unreachable box produced a traceback, which reads like a broken tool rather
+        # than an unanswered question. Say which it is.
+        where = "the box over ssh" if remote else "this machine"
+        sys.exit(f"could not read the installed package list from {where}.\n"
+                 f"  Nothing was checked — this is not a clean result.\n"
+                 f"  For --remote, set PI=user@host (and COOLDOWN_VENV if the venv is "
+                 f"not at the default path).")
 
 
 def query(name, version):
@@ -68,7 +104,7 @@ def main():
     strict = "--strict" in sys.argv
     pkgs = installed(remote)
     print(f"{len(pkgs)} packages installed {'on the box' if remote else 'here'}\n")
-    unreviewed, failed = [], []
+    unreviewed, failed, used = [], [], set()
 
     for name, ver in sorted(pkgs):
         try:
@@ -87,7 +123,11 @@ def main():
             if key in seen:
                 continue          # OSV returns the GHSA and its CVE alias separately
             seen.add(key)
-            note = next((REVIEWED[i] for i in ids if i in REVIEWED), None)
+            note = next((REVIEWED[i] for i in ids if i in REVIEWED), None) \
+                   or REVIEWED.get(name.lower())
+            for i in list(ids) + [name.lower()]:
+                if i in REVIEWED:
+                    used.add(i)
             fixed = sorted({e["fixed"] for a in v.get("affected", [])
                             for r in a.get("ranges", []) for e in r.get("events", [])
                             if "fixed" in e})
@@ -100,13 +140,20 @@ def main():
                 unreviewed.append((name, key))
             print()
 
+    stale = sorted(set(REVIEWED) - used)
+    if stale:
+        print("STALE reviewed entries — they match nothing now. Delete them; the thing "
+              "they excused is gone:")
+        for s in stale:
+            print(f"  {s}")
+        print()
     print(f"summary: {len(unreviewed)} unreviewed advisory/ies, "
           f"{len(failed)} package(s) could not be checked")
     for n, k in unreviewed:
         print(f"  UNREVIEWED  {n}  {k}")
     if failed:
         print(f"  UNCHECKED   {', '.join(failed)}  — treat as unknown")
-    return 1 if strict and (unreviewed or failed) else 0
+    return 1 if strict and (unreviewed or failed or stale) else 0
 
 
 if __name__ == "__main__":
