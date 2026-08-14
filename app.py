@@ -1875,6 +1875,24 @@ def exit_session():
     r.delete(f"active_token:{site}")
     return redirect(SITES[site]["home"])
 
+def charged_gap(now, last):
+    """Seconds to charge for a ping, given the previous ping's timestamp.
+
+    CAPPED, not discarded (D1). The old rule was `if gap <= HEARTBEAT_MAX_GAP: charge`,
+    which meant a client pinging just outside the window kept its session alive -- the
+    TTL is refreshed at the top of heartbeat() regardless -- and was charged nothing,
+    indefinitely. Measured live: 4 pings 31s apart over 124s, spent 0.0s, HTTP 200
+    throughout. Capping makes paced pinging strictly worse than honest pinging, which is
+    the property that has to hold; the cost of genuinely being away is one cap's worth.
+
+    FLOORED at zero. `gap <= HEARTBEAT_MAX_GAP` is also true of a NEGATIVE gap, so a
+    last_heartbeat in the future subtracted from spent. Found while writing the test for
+    the paragraph above, reproduced at -30.96s. Not exotic here: this board has no RTC,
+    its clock steps at every boot, and F21 was caused by exactly that.
+    """
+    return min(max(0.0, now - float(last)), HEARTBEAT_MAX_GAP)
+
+
 @app.route('/heartbeat', methods=['POST'])
 def heartbeat():
     site = resolve_site(request.args.get("site"))
@@ -1897,8 +1915,8 @@ def heartbeat():
         now = time.time()
         last = r.get("last_study_beat")
         if last:
-            gap = now - float(last)
-            if gap <= HEARTBEAT_MAX_GAP:
+            gap = charged_gap(now, last)
+            if gap > 0:
                 day = time.strftime("%Y-%m-%d")
                 r.incrbyfloat(f"study_usage:{day}", gap)
                 r.expire(f"study_usage:{day}", HISTORY_TTL)
@@ -1910,8 +1928,8 @@ def heartbeat():
     last = r.get(f"last_heartbeat:{p}")
     now = time.time()
     if last:
-        gap = now - float(last)
-        if gap <= HEARTBEAT_MAX_GAP:
+        gap = charged_gap(now, last)
+        if gap > 0:
             ph = phase()
             # Usage history: per-day, per-site seconds actually charged. Never cleared
             # by resets/cooldowns (it's history, not budget state); self-prunes after

@@ -204,10 +204,15 @@ def test_heartbeat_charges_gap(client, rdb, day, session):
     assert 584 <= resp.get_json()["remaining"] <= 586
 
 
-def test_heartbeat_ignores_large_gap(client, rdb, day, session):
+def test_heartbeat_caps_a_large_gap_rather_than_ignoring_it(client, rdb, day, session):
+    """Renamed from test_heartbeat_ignores_large_gap, which asserted `spent is None` --
+    "away time is free". That was the design intent and it was the vulnerability: a
+    client pacing its pings just outside the window was away, free, and never logged
+    out. Away now costs one cap, which is the smallest charge that makes pacing pointless."""
     session("reddit", last_gap=budget.HEARTBEAT_MAX_GAP + 30)
     assert hb(client).status_code == 200
-    assert rdb.get("spent:main") is None          # away time is free
+    spent = float(rdb.get("spent:main"))
+    assert abs(spent - budget.HEARTBEAT_MAX_GAP) < 1, spent
 
 
 def test_heartbeat_without_session_is_blocked(client, rdb, day):
@@ -254,11 +259,16 @@ def test_study_heartbeat_logs_study_time(client, rdb, day, session):
     assert rdb.ttl(f"study_usage:{time.strftime('%Y-%m-%d')}") > 0  # self-pruning
 
 
-def test_study_heartbeat_ignores_large_gap(client, rdb, day, session):
+def test_study_heartbeat_caps_a_large_gap_rather_than_ignoring_it(client, rdb, day, session):
+    """Study time is never charged, but it IS logged, and the log answers "am I actually
+    studying?". Discarding long gaps under-reported it in exactly the same shape as the
+    charging path, so both use charged_gap() and neither can drift from the other."""
     session("youtube", mode="study")
-    rdb.set("last_study_beat", time.time() - 300)   # away longer than HEARTBEAT_MAX_GAP
+    rdb.set("last_study_beat", time.time() - 300)
     hb(client, "youtube")
-    assert rdb.get(f"study_usage:{time.strftime('%Y-%m-%d')}") is None
+    logged = float(rdb.get(f"study_usage:{time.strftime('%Y-%m-%d')}"))
+    assert abs(logged - budget.HEARTBEAT_MAX_GAP) < 1, logged
+    assert rdb.get("spent:main") is None            # still never charged
 
 
 def test_study_session_is_never_charged(client, rdb, day, session):
@@ -416,3 +426,54 @@ def test_entering_counts_toward_the_days_entries(client, rdb, day):
     client.post("/enter?site=reddit")
     assert rdb.get(key) == "1"
     assert rdb.ttl(key) > 0                           # self-prunes
+
+
+def test_a_paced_ping_cannot_run_a_session_for_free(client, rdb, day, session):
+    """D1 / the pacing hole. A client that pings just outside HEARTBEAT_MAX_GAP kept its
+    session alive and was charged nothing, indefinitely: the gap was discarded rather
+    than capped, and last_heartbeat advanced regardless of whether anything was charged.
+
+    Proven live before the fix -- 4 pings 31s apart over 124s, spent=0.0, HTTP 200
+    throughout. Charging the cap makes paced pinging strictly worse than honest pinging,
+    which is the property that matters.
+    """
+    session("reddit", last_gap=0)
+    for _ in range(3):                          # three genuine 31s gaps
+        rdb.set("last_heartbeat:main", time.time() - 31)
+        assert hb(client).status_code == 200
+    spent = float(rdb.get("spent:main") or 0)
+    assert spent >= 3 * budget.HEARTBEAT_MAX_GAP - 1, f"paced pinging charged only {spent}s"
+
+
+def test_a_backwards_clock_cannot_refund_spent_time(client, rdb, day, session):
+    """Found while writing the test above. `gap <= HEARTBEAT_MAX_GAP` is also true for a
+    NEGATIVE gap, so a last_heartbeat in the future subtracts from spent. Not exotic on
+    this hardware: the Pi has no RTC, its clock jumps at every boot, and F21 was caused
+    by exactly that. Reproduced at -30.96s before the fix."""
+    session("reddit", last_gap=0)
+    rdb.set("spent:main", 100)
+    rdb.set("last_heartbeat:main", time.time() + 60)   # clock stepped backwards
+    assert hb(client).status_code == 200
+    assert float(rdb.get("spent:main")) >= 100, "a future last_heartbeat refunded spent time"
+
+
+def test_charged_gap_caps_and_floors(client):
+    """Unit-level, because the two protections are redundant at the route level and the
+    integration test therefore cannot tell them apart: removing the floor still yields a
+    negative number that `if gap > 0` discards. Mutation testing showed that -- the
+    floor could be deleted with every route test still green. Tested here directly so
+    each half can fail on its own."""
+    g = budget.charged_gap
+    now = 1_000_000.0
+    assert g(now, now - 10) == 10                              # ordinary ping, unchanged
+    assert g(now, now - 300) == budget.HEARTBEAT_MAX_GAP       # capped, not discarded
+    assert g(now, now + 60) == 0                               # future timestamp floored
+    assert g(now, now) == 0
+
+
+def test_the_two_timing_constants_cannot_drift_apart(client):
+    """The hole existed because SESSION_IDLE_TTL (120) exceeded HEARTBEAT_MAX_GAP (30),
+    leaving a band where a ping refreshed the session but bought free time. Capping
+    closes it for any ratio, but the relationship is still the thing a future edit could
+    break, so it is asserted rather than remembered."""
+    assert budget.SESSION_IDLE_TTL >= budget.HEARTBEAT_MAX_GAP
