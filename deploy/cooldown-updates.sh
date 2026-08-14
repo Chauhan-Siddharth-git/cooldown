@@ -98,7 +98,24 @@ done
 # --- half two: what is pending ----------------------------------------------------
 # dist-upgrade, not upgrade: plain upgrade holds back anything needing a new dependency,
 # which on this box is every kernel. Simulated only -- this script never installs.
-sim="$(apt-get -s dist-upgrade 2>/dev/null || true)"
+# Capture the exit status. `|| true` with stderr discarded turned every apt failure --
+# broken sources, unreachable repo, wedged dpkg -- into an empty simulation, which counts
+# as ZERO pending, which the dashboard renders as "up to date". Demonstrated with a stub
+# apt exiting 100: the state file said pending 0, security 0. Absence read as good news,
+# in the one script whose whole purpose is noticing that patching stopped.
+# mktemp, not a fixed /tmp path. This runs as root, and a predictable name in a
+# world-writable directory can be pre-created as a symlink so the redirect below makes
+# root truncate whatever it points at. deploy.sh already stages into mktemp for exactly
+# this reason; the same rule applies to a two-line error capture.
+APTERR="$(mktemp)" || exit 1
+trap 'rm -f "$TMP" "$APTERR"' EXIT
+sim="$(apt-get -s dist-upgrade 2>"$APTERR")"
+apt_rc=$?
+apt_ok=true
+if [ "$apt_rc" -ne 0 ]; then
+    apt_ok=false
+    logger -t cooldown-updates "apt-get -s dist-upgrade failed (exit $apt_rc): $(head -c 200 "$APTERR" 2>/dev/null)"
+fi
 pending=$(printf '%s\n' "$sim" | grep -c '^Inst ')
 security=$(printf '%s\n' "$sim" | grep '^Inst ' | grep -ci 'security' || true)
 
@@ -124,8 +141,8 @@ last_epoch=0
 [ -n "$last_run" ] && last_epoch="$(date -d "$last_run" +%s 2>/dev/null || echo 0)"
 last_result="$(systemctl show apt-daily-upgrade.service -p Result --value 2>/dev/null || echo unknown)"
 
-printf '{"pending":%d,"security":%d,"reboot_required":%s,"timers_kicked":%d,' \
-       "${pending:-0}" "${security:-0}" "$reboot" "$kicked" > "$TMP"
+printf '{"apt_ok":%s,"pending":%d,"security":%d,"reboot_required":%s,"timers_kicked":%d,' \
+       "$apt_ok" "${pending:-0}" "${security:-0}" "$reboot" "$kicked" > "$TMP"
 printf '"next_install":%d,"auto_reboot":"%s",' \
        "${next_epoch:-0}" "$(apt-config dump 2>/dev/null | awk -F'"' '/Automatic-Reboot-Time/{print $2}' | head -1)" >> "$TMP"
 printf '"packages":"%s","pkg_total":%d,' \
@@ -137,6 +154,12 @@ printf '"last_run":%d,"last_result":"%s","checked":%d}\n' \
 
 # 644 on purpose: the app runs as a different user than this script, and /var/lib for
 # this project is 700. Nothing in here is sensitive -- counts and two booleans.
+# Validate before publishing. A malformed field would make the reader fall back to
+# "no data", which on this dashboard is indistinguishable from "nothing pending".
+if ! python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$TMP" 2>/dev/null; then
+    logger -t cooldown-updates "refusing to publish malformed state file"
+    exit 1
+fi
 chmod 644 "$TMP"
 mv "$TMP" "$STATE"
 trap - EXIT

@@ -7,7 +7,10 @@
 flask>=3.0,<4
 waitress==3.0.2
 redis==7.4.0
-requests==2.31.0
+# Was pinned ==2.31.0 from 2023 and never checked. Three CVEs by 2026 (.netrc leak,
+# Session verify=False persistence, temp-file reuse) -- none reachable here, but a pin
+# that old re-arms them the moment the code grows a Session. 2.33.0 clears all three.
+requests>=2.33.0
 apscheduler==3.11.2
 # A range, not a pin, so this installs on BOTH current Raspberry Pi OS releases:
 #   Bookworm (Debian 12, Python 3.11)  -> resolves to mitmproxy 11.x
@@ -19,3 +22,20 @@ mitmproxy>=11.0.2,<13
 # Provides zoneinfo data so a local TZ (for the midnight daily_reset) resolves
 # inside the slim image without installing system tzdata.
 tzdata==2024.1
+
+# --- security floors, established by tools/check-deps.py against OSV ---------------
+# cryptography wheels below 48.0.1 bundle an OpenSSL vulnerable to CVE-2026-45447
+# (heap use-after-free in PKCS7_verify). mitmproxy capped cryptography at <=46.1 until
+# 12.2.3 lifted it to <=48.1, so this line is also what forces mitmproxy 12.2.3+.
+# Marked for 3.12+ only: Bookworm (3.11) resolves to mitmproxy 11.x, which caps lower.
+cryptography>=48.0.1; python_version >= "3.12"
+# CVE-2026-27448: TLS connection bypass via an unhandled exception in the
+# set_tlsext_servername (SNI) callback -- directly in the path mitmproxy uses to
+# generate a certificate per hostname.
+pyOpenSSL>=26.0.0; python_version >= "3.12"
+# Three DoS advisories in BER/DER decoding, reachable via a hostile upstream cert.
+pyasn1>=0.6.4
+#
+# NOT fixable here: h2 CVE-2026-71554 (duplicate Host header, request smuggling).
+# mitmproxy pins h2==4.3.0 exactly, in 12.2.3 as in 12.2.1, and the fix is 4.4.1. Left
+# at the pinned version deliberately; re-check when mitmproxy moves.

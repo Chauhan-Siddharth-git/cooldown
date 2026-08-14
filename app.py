@@ -3501,13 +3501,19 @@ def _updates(now=None):
         with open(UPDATES_STATE) as fh:
             d = json.load(fh)
     except Exception:
-        return {"fresh": False, "pending": None, "security": None,
+        return {"fresh": False, "apt_ok": True, "pending": None, "security": None,
                 "reboot_required": False, "boot_ok": True, "stuck_jobs": 0,
                 "checked_ago": None}
     checked = float(d.get("checked", 0))
+    # apt_ok false means the simulation failed, so the counts below are zeros by default
+    # rather than by observation. None renders as "unknown"; 0 renders as "up to date",
+    # and those must never be the same pixel. Missing key defaults True for state files
+    # written before this field existed.
+    apt_ok = bool(d.get("apt_ok", True))
     return {"fresh": (now - checked) < UPDATES_STALE_AFTER,
-            "pending": int(d.get("pending", 0)),
-            "security": int(d.get("security", 0)),
+            "apt_ok": apt_ok,
+            "pending": int(d.get("pending", 0)) if apt_ok else None,
+            "security": int(d.get("security", 0)) if apt_ok else None,
             "reboot_required": bool(d.get("reboot_required")),
             # boot_ok defaults True so an older state file does not read as broken; the
             # writer always emits it now.
@@ -3934,7 +3940,7 @@ HEALTH_PAGE = """
            The schedule is read from the timer, never hardcoded here. -->
       {% set u = d.updates %}
       {% set ujam = u.fresh and (not u.get('boot_ok', True) or u.get('stuck_jobs', 0)) %}
-      <div class="srow {{ 'bad' if (ujam or not u.fresh or u.reboot_required) else ('warn' if u.security else ('warn' if u.pending else 'ok')) }}">
+      <div class="srow {{ 'bad' if (ujam or not u.fresh or u.reboot_required or not u.get('apt_ok', True)) else ('warn' if u.security else ('warn' if u.pending else 'ok')) }}">
         <span class="sdot"></span><span class="slabel">Updates</span>
         <span class="sval">
           {%- if ujam -%}
@@ -3943,6 +3949,8 @@ HEALTH_PAGE = """
           Update status unknown
           {%- elif u.reboot_required -%}
           Reboot required to finish a kernel update
+          {%- elif not u.get('apt_ok', True) -%}
+          apt could not read the package lists &mdash; pending count unknown
           {%- elif u.pending -%}
           <b>{{ u.pending }}</b> pending{% if u.security %}, <b>{{ u.security }}</b> security{% endif %}
           {%- else -%}

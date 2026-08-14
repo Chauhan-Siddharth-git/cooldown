@@ -1774,3 +1774,47 @@ def test_alert_never_raises_into_the_request(rdb, monkeypatch):
     monkeypatch.setattr(budget, "_first_line", lambda *a, **k: "new")
     budget.boot_watch()                       # must not raise
     assert rdb.get("unacked_boot") is not None, "the boot was still recorded locally"
+
+
+def test_a_failed_apt_simulation_never_renders_as_up_to_date(rdb, tmp_path, monkeypatch):
+    """cooldown-updates.sh ran `apt-get -s dist-upgrade 2>/dev/null || true`, so any apt
+    failure produced an empty simulation, which counts as zero pending, which this page
+    rendered as "Up to date". Proven with a stub apt exiting 100.
+
+    That is absence-of-signal read as good news, in the one script whose entire job is
+    noticing that patching stopped. The writer now records apt_ok; this asserts the page
+    cannot say "up to date" when it is false."""
+    import json as _json
+    state = tmp_path / "updates.json"
+    state.write_text(_json.dumps({
+        "apt_ok": False, "pending": 0, "security": 0, "reboot_required": False,
+        "boot_ok": True, "stuck_jobs": 0, "checked": time.time(), "packages": "",
+    }))
+    monkeypatch.setattr(budget, "UPDATES_STATE", str(state))
+    # /health is cached to collapse concurrent pollers, so without this the previous
+    # test's page is served to this one. Found by these two tests disagreeing depending
+    # on order -- item 1.7's class, in tests written to fix a different bug.
+    budget._HEALTH_CACHE.clear()
+
+    u = budget._updates()
+    assert u["pending"] is None, "a failed simulation must not report a count of zero"
+    assert u["security"] is None
+
+    page = budget.app.test_client().get("/health", base_url="http://100.64.0.1:5000").data.decode()
+    assert "Up to date" not in page, "a failed apt simulation is being rendered as up to date"
+    assert "pending count unknown" in page
+
+
+def test_a_successful_apt_simulation_with_nothing_pending_still_says_up_to_date(rdb, tmp_path, monkeypatch):
+    """The other direction, so the fix above cannot be satisfied by never saying it."""
+    import json as _json
+    state = tmp_path / "updates.json"
+    state.write_text(_json.dumps({
+        "apt_ok": True, "pending": 0, "security": 0, "reboot_required": False,
+        "boot_ok": True, "stuck_jobs": 0, "checked": time.time(), "packages": "",
+    }))
+    monkeypatch.setattr(budget, "UPDATES_STATE", str(state))
+    budget._HEALTH_CACHE.clear()
+    assert budget._updates()["pending"] == 0
+    page = budget.app.test_client().get("/health", base_url="http://100.64.0.1:5000").data.decode()
+    assert "Up to date" in page
