@@ -102,9 +102,21 @@ fw_dn(){ for ipt in iptables ip6tables; do
           $ipt -P INPUT ACCEPT
           $ipt -D INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
           $ipt -D INPUT -i lo -j ACCEPT 2>/dev/null || true
-          $ipt -D INPUT -i "$IF" -p tcp -m multiport --dports "$PORTS" -j ACCEPT 2>/dev/null || true
-          $ipt -D INPUT -i lo    -p tcp -m multiport --dports "$PORTS" -j ACCEPT 2>/dev/null || true
-          $ipt -D INPUT          -p tcp -m multiport --dports "$PORTS" -j DROP   2>/dev/null || true
+          # Delete by SHAPE, not by today's port list. Matching "$PORTS" only removes
+          # rules created with the current value, so every change to PORTS orphaned the
+          # previous generation -- the live v6 chain was still carrying two rules from
+          # the PORTS=5000,8080,8081 era, months after 22 was added. They were harmless
+          # duplicates here, but a teardown that leaves rules behind is not a teardown,
+          # and the next reader cannot tell an orphan from something deliberate.
+          #
+          # Bounded to the three shapes this script creates: a tcp multiport ACCEPT or
+          # DROP. Nothing else on this box writes those.
+          $ipt -S INPUT 2>/dev/null \
+            | grep -E -- '^-A INPUT .*-p tcp -m multiport --dports [0-9,]+ -j (ACCEPT|DROP)$' \
+            | while read -r spec; do
+                # shellcheck disable=SC2086 -- the spec must expand into separate args
+                $ipt -D ${spec#-A } 2>/dev/null || true
+              done
           if [ "$ipt" = ip6tables ]; then
             $ipt -D INPUT -p icmpv6 -j ACCEPT 2>/dev/null || true
             $ipt -D INPUT -p udp --dport 546 -j ACCEPT 2>/dev/null || true

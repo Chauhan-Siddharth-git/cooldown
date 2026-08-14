@@ -728,8 +728,29 @@ class BudgetAddon:
             return policy                                   # nothing constrains scripts
         values = directives[names.index(target)][1]
         lowered = [v.lower() for v in values]
+        # 'strict-dynamic' belongs in this test, and its absence was a silent fail-open.
+        # CSP3 6.7.3.2 ("Does a source list allow all inline behavior for type?"): when the
+        # type is script and the list contains 'strict-dynamic', the algorithm returns "Does
+        # Not Allow" BEFORE it ever reaches the 'unsafe-inline' branch. The spec spells out
+        # the exact case -- "'unsafe-inline' 'strict-dynamic'" is listed as a source list
+        # that does not allow inline script. So a policy of
+        #     script-src 'unsafe-inline' 'strict-dynamic'
+        # was read here as "our script already runs" and returned unchanged, and the
+        # heartbeat would be blocked with nothing reporting it: no heartbeat means no time
+        # charged while browsing continues. F20's class, one step further out.
+        #
+        # Adding a nonce is the right repair rather than a workaround: 8.2 states that
+        # under 'strict-dynamic' the host, scheme, 'self' and 'unsafe-inline' expressions
+        # are ignored for script while nonce and hash expressions are HONOURED. So the
+        # nonce is precisely what still works, and it cannot break the site's own scripts
+        # here -- 'unsafe-inline' was already being ignored for them too.
+        #
+        # Checked against the CSP3 spec text, not from memory: the review that raised this
+        # flagged its own reasoning as unverified, and the fix is one token in a list,
+        # which is exactly the kind of change that gets made before the diagnosis is.
         already = any(v.startswith("'nonce-") or v.startswith("'sha") for v in lowered)
-        if "'unsafe-inline'" in lowered and not already:
+        inline_ignored = "'strict-dynamic'" in lowered
+        if "'unsafe-inline'" in lowered and not already and not inline_ignored:
             return policy                                   # our script already runs
 
         src = f"'nonce-{nonce}'"

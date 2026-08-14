@@ -450,3 +450,26 @@ def test_non_html_and_budget_pages_are_not_injected(rdb, session):
     gate = mkflow("www.reddit.com", "/budget", body=HTML)
     addon.BudgetAddon().response(gate)
     assert gate.response.text == HTML         # don't inject into the gate itself
+
+
+def test_strict_dynamic_does_not_read_as_unsafe_inline_already_allowing_us():
+    """1.5: CSP3 6.7.3.2 -- when the type is script and the source list contains
+    'strict-dynamic', the algorithm returns "Does Not Allow" before it reaches the
+    'unsafe-inline' branch. The spec lists "'unsafe-inline' 'strict-dynamic'" as an
+    example of a list that does NOT allow inline script.
+
+    So this policy used to be returned unchanged on the grounds that unsafe-inline
+    already permitted us, and the heartbeat would have been blocked with nothing
+    reporting it -- no heartbeat means no time charged while browsing continues.
+    """
+    f = addon.BudgetAddon._csp_with_nonce
+    pol = "script-src 'unsafe-inline' 'strict-dynamic'"
+    out = f(pol, "TESTNONCE")
+    assert "'nonce-TESTNONCE'" in out, (
+        f"strict-dynamic makes unsafe-inline inert for script; a nonce is required. got: {out}")
+
+    # Unchanged where unsafe-inline genuinely does allow us -- otherwise the fix would
+    # be satisfied by always adding a nonce, which breaks the site's own inline scripts.
+    assert f("script-src 'unsafe-inline'", "N") == "script-src 'unsafe-inline'"
+    # And still untouched when a nonce is already present.
+    assert f("script-src 'nonce-abc'", "N").count("nonce-") == 2
