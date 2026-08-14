@@ -78,7 +78,7 @@ PORTS=22,5000,8080,8081
 #
 # The explicit port DROP is KEPT even though the policy now covers it: if anything ever
 # resets the policy to ACCEPT, the named ports stay closed rather than falling wide open.
-fw_up(){ for ipt in iptables ip6tables; do
+fw_up(){ rc=0; for ipt in iptables ip6tables; do
           # inserted last-to-first, so the resulting order reads top-down as written above
           if [ "$ipt" = ip6tables ]; then
             $ipt -C INPUT -p udp --dport 546 -j ACCEPT 2>/dev/null || $ipt -I INPUT 1 -p udp --dport 546 -j ACCEPT
@@ -94,8 +94,37 @@ fw_up(){ for ipt in iptables ip6tables; do
           # DROP policy cannot strand the tailnet if this runs before tailscaled is ready.
           $ipt -nL ts-input >/dev/null 2>&1 && { $ipt -C INPUT -j ts-input 2>/dev/null || $ipt -A INPUT -j ts-input; }
           $ipt -C INPUT -p tcp -m multiport --dports "$PORTS" -j DROP 2>/dev/null || $ipt -A INPUT -p tcp -m multiport --dports "$PORTS" -j DROP
+
+          # Do NOT flip the policy until the rules that keep you reachable are verified
+          # PRESENT. Every insertion above is `-C ... || -I ...`, whose failure is silent,
+          # and this script has no `set -e` -- so a conntrack module that will not load, or
+          # an interface that does not exist yet, left the accepts missing and the policy
+          # flipped to DROP anyway. That is not a degraded state, it is a locked box: the
+          # LAN SSH fallback was deliberately removed (see PORTS above), so recovery means
+          # a monitor and a keyboard.
+          #
+          # Checked with -C, which asks the kernel whether the rule is really in the chain,
+          # rather than trusting the exit status of the command that tried to add it.
+          missing=""
+          $ipt -C INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null \
+              || missing="$missing conntrack-established"
+          $ipt -C INPUT -i lo -j ACCEPT 2>/dev/null \
+              || missing="$missing loopback"
+          $ipt -C INPUT -i "$IF" -p tcp -m multiport --dports "$PORTS" -j ACCEPT 2>/dev/null \
+              || missing="$missing $IF:$PORTS"
+
+          if [ -n "$missing" ]; then
+              # Leaving the policy at ACCEPT is the weaker posture and the right call: an
+              # exposed box can be fixed from anywhere, a locked one cannot be fixed at all.
+              logger -t cooldown-redirect -p user.err \
+                  "REFUSING to set $ipt INPUT policy to DROP -- these accepts are missing:$missing"
+              echo "REFUSING $ipt DROP policy; missing accepts:$missing" >&2
+              rc=1
+              continue
+          fi
           $ipt -P INPUT DROP
-        done; }
+        done
+        return "${rc:-0}"; }
 # Policy back to ACCEPT FIRST, before removing anything: taking the accepts away while
 # the policy is still DROP would cut the connection running the teardown.
 fw_dn(){ for ipt in iptables ip6tables; do
