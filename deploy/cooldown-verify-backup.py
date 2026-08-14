@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # NOTE: needs redis-py, which lives in the deployment venv and NOT in system python.
-# Run it as: /home/pi/cooldown/venv/bin/python3 budget-verify-backup.py
+# Run it as: /home/pi/cooldown/venv/bin/python3 cooldown-verify-backup.py
 """Prove the newest backup actually restores. Weekly, as part of the full audit.
 
 A backup nobody has restored is a hypothesis. The nightly job runs, the file is

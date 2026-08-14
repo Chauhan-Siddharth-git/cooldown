@@ -60,6 +60,28 @@ def mkflow(host, path="/", resp=True, ctype="text/html", body=None, headers=None
 
 # ---------- host matching (suffix, never substring) ----------
 
+@pytest.fixture(autouse=True)
+def _no_ambient_forwarding(monkeypatch):
+    """1.7: these tests used to reach whatever was really listening on 127.0.0.1:5000.
+
+    With nothing there they got a connection error and passed; with a real service there
+    they could fail, or pass for the wrong reason. A leftover harness process caused a
+    failure during one review that looked exactly like a code regression, and the same
+    tests would answer differently when run on the box itself.
+
+    Forwarding is stubbed to raise the same connection error the empty case produced, so
+    the outcome is identical but no longer depends on what else is running. A test that
+    needs a real response monkeypatches req.get itself inside the test body, which takes
+    precedence over this.
+    """
+    def refuse(url, *a, **k):
+        raise addon.req.exceptions.ConnectionError(
+            f"ambient forwarding blocked in tests: {url}. Stub addon.req.get/post in the "
+            f"test if it needs a response.")
+    monkeypatch.setattr(addon.req, "get", refuse)
+    monkeypatch.setattr(addon.req, "post", refuse)
+
+
 @pytest.mark.parametrize("host,expect", [
     ("reddit.com", "reddit"),
     ("www.reddit.com", "reddit"),

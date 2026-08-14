@@ -1818,3 +1818,30 @@ def test_a_successful_apt_simulation_with_nothing_pending_still_says_up_to_date(
     assert budget._updates()["pending"] == 0
     page = budget.app.test_client().get("/health", base_url="http://100.64.0.1:5000").data.decode()
     assert "Up to date" in page
+
+
+def test_the_restart_record_survives_dismissing_the_banner(rdb):
+    """1.6: boot_events was written on every unexplained restart and read by nothing.
+
+    The only surfacing was unacked_boot, a single flag the dismiss button deletes -- so
+    acknowledging a reboot erased the evidence it happened, which is the opposite of what
+    tamper-evidence is for. The list must outlive the dismissal and stay on the page."""
+    now = time.time()
+    rdb.rpush("boot_events", f"{now - 7200:.0f}", f"{now - 300:.0f}")
+    rdb.set("unacked_boot", f"{now - 300:.0f}")
+    budget._HEALTH_CACHE.clear()
+
+    c = budget.app.test_client()
+    page = c.get("/health", base_url="http://100.64.0.1:5000").data.decode()
+    assert "This box restarted" in page, "the banner should be up before dismissal"
+    assert "restarts on record" in page
+
+    c.post("/boot-ack", base_url="http://100.64.0.1:5000")
+    budget._HEALTH_CACHE.clear()
+    page = c.get("/health", base_url="http://100.64.0.1:5000").data.decode()
+
+    assert "This box restarted" not in page, "dismissing should clear the banner"
+    assert "restarts on record" in page, (
+        "dismissing the banner also erased the restart history — the record has to "
+        "outlive the acknowledgement or there is nothing left to audit")
+    assert budget.boot_history(), "boot_events must still hold the entries"

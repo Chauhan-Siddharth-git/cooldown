@@ -17,6 +17,7 @@ So findings are printed with a REACHABLE note where one has been established, an
 absence of a note means nobody has checked, not that it is fine.
 """
 import json
+import os
 import subprocess
 import sys
 import urllib.request
@@ -26,7 +27,7 @@ import urllib.request
 # and it goes stale the moment the code grows the thing it says is absent.
 REVIEWED = {
     "CVE-2024-35195": "requests Session verify=False: grep finds no verify=False outside tests",
-    "CVE-2024-47081": "requests .netrc leak: no ~/.netrc for pi or root on the box",
+    "CVE-2024-47081": "requests .netrc leak: no ~/.netrc for either account on the box",
     "CVE-2026-25645": "requests extract_zipped_paths(): never called",
     "CVE-2026-27205": "Flask session Vary: Cookie: no Flask sessions, no secret_key",
     "CVE-2026-40606": "mitmproxy LDAP injection: proxyauth/ldap not configured in any unit",
@@ -41,9 +42,12 @@ REVIEWED = {
 
 def installed(remote):
     if remote:
+        # Host and path from the environment: hard-coding them here would put a real
+        # tailnet address and deployment path into a public repository.
+        host = os.environ.get("PI", "pi@raspberrypi.local")
+        venv = os.environ.get("COOLDOWN_VENV", "/home/pi/cooldown/venv")
         out = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", "pi@100.112.104.41",
-             "/home/pi/budget-proxy/venv/bin/pip list --format=json"],
+            ["ssh", "-o", "BatchMode=yes", host, f"{venv}/bin/pip list --format=json"],
             capture_output=True, text=True, timeout=60).stdout
     else:
         out = subprocess.run([sys.executable, "-m", "pip", "list", "--format=json"],

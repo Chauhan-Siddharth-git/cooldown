@@ -1,8 +1,8 @@
 #!/bin/bash
 # Security and liveness invariants, in two tiers.
 #
-#   budget-audit.sh quick   hourly  -- everything cheap (~30ms total)
-#   budget-audit.sh full    weekly  -- quick, plus dpkg -V (43 SECONDS on this box)
+#   cooldown-audit.sh quick   hourly  -- everything cheap (~30ms total)
+#   cooldown-audit.sh full    weekly  -- quick, plus dpkg -V (43 SECONDS on this box)
 #
 # The split exists because one check was setting the cadence for all of them. Verifying
 # every packaged file's checksum takes 43 seconds; checking that the CA has not been
@@ -22,9 +22,9 @@
 set -u
 
 MODE="${1:-quick}"
-STATE=/var/lib/budget-audit.json
-PIN=/var/lib/budget-audit-baseline
-TMP="$(mktemp /var/lib/.budget-audit.XXXXXX)" || exit 1
+STATE=/var/lib/cooldown-audit.json
+PIN=/var/lib/cooldown-audit-baseline
+TMP="$(mktemp /var/lib/.cooldown-audit.XXXXXX)" || exit 1
 trap 'rm -f "$TMP"' EXIT
 
 CA_DIR=/var/lib/cooldown/mitmproxy
@@ -35,7 +35,7 @@ CA_CERT="$CA_DIR/mitmproxy-ca-cert.pem"
 # been backing up nightly all along.
 BACKUP_DIR=/var/backups/cooldown
 findings=()
-note() { findings+=("$1"); logger -t budget-audit "$1"; }
+note() { findings+=("$1"); logger -t cooldown-audit "$1"; }
 days_until() { echo $(( ( $1 - $(date +%s) ) / 86400 )); }
 
 # --- the trust anchor -------------------------------------------------------------
@@ -54,7 +54,7 @@ if [ -d "$CA_DIR" ]; then
         [ "$ca_fp" = "$pinned" ] || note "CA FINGERPRINT CHANGED -- was ${pinned:0:20}..., now ${ca_fp:0:20}..."
     elif [ -n "$ca_fp" ]; then
         printf '%s' "$ca_fp" > "$PIN"; chmod 600 "$PIN"
-        logger -t budget-audit "pinned CA fingerprint ${ca_fp:0:20}... (first run)"
+        logger -t cooldown-audit "pinned CA fingerprint ${ca_fp:0:20}... (first run)"
     fi
 
     # The CA expires. When it does, every gated site breaks at once with a certificate
@@ -102,35 +102,82 @@ fw_rules="$(iptables -S INPUT 2>/dev/null | grep -c 'multiport\|tailscale0')"
 # policy became DROP that inverted -- an unnamed port is now blocked, not open. Verified
 # by binding a listener on 9099 and confirming it was unreachable while the old logic
 # still called it exposed.
+# Both families. The listener set below comes from `ss -tlnH`, which reports [::] binds,
+# so judging them against IPv4 rules alone cleared the internet-facing family on evidence
+# from the other one -- and this box holds a globally routable v6 address with mitmdump
+# bound to [::]. The two chains do not agree today (5 ACCEPT rules on v4, 7 on v6), so
+# this was latent only by luck.
+#
+# A port is judged per family and the harsher verdict wins: exposed on either family is
+# exposed. Anything else lets a v4-only rule vouch for a v6 listener.
+fw_ports() {   # $1 = iptables|ip6tables, $2 = ACCEPT|DROP
+    # Two fixes in this pipeline:
+    #
+    #  - `! -i tailscale0 ... -j ACCEPT` accepts from everywhere EXCEPT the tailnet. The
+    #    old `grep -vE -- '-i (lo|tailscale0)'` matched the substring and discarded it as
+    #    interface-scoped, i.e. read the most permissive rule shape as the safest one.
+    #    Negated matches are now kept explicitly.
+    #  - `--dport 8080` (singular) was invisible: only the multiport `--dports` form was
+    #    matched, so a plain wide-open ACCEPT classified the port as contained.
+    "$1" -S INPUT 2>/dev/null \
+        | awk -v want="-j $2" '
+            index($0, want) == 0 { next }
+            /! -i/               { print; next }          # negated: NOT interface-scoped
+            /-i (lo|tailscale0)/ { next }                 # genuinely scoped to a safe iface
+                                 { print }' \
+        | grep -oE -- '--dports? [0-9,]+' \
+        | tr ',' '\n' | grep -oE '[0-9]+' | sort -u | tr '\n' ' '
+}
+
 fw_policy="$(iptables -S INPUT 2>/dev/null | awk '/^-P INPUT/{print $3}')"
+fw_policy6="$(ip6tables -S INPUT 2>/dev/null | awk '/^-P INPUT/{print $3}')"
+fw_open="$(fw_ports iptables ACCEPT)"
+fw_open6="$(fw_ports ip6tables ACCEPT)"
+fw_dropped="$(fw_ports iptables DROP)"
+fw_dropped6="$(fw_ports ip6tables DROP)"
 
-# Ports an ACCEPT rule admits from somewhere other than loopback or the tailnet, i.e.
-# genuinely reachable from off-box regardless of policy.
-fw_open="$(iptables -S INPUT 2>/dev/null | grep -- '-j ACCEPT' \
-           | grep -vE -- '-i (lo|tailscale0)' \
-           | grep -oE 'dports [0-9,]+' | tr ',' '\n' | grep -oE '[0-9]+' | sort -u | tr '\n' ' ')"
-# Ports a DROP rule names -- the only thing that contained anything under ACCEPT policy.
-fw_dropped="$(iptables -S INPUT 2>/dev/null | grep -- '-j DROP' \
-              | grep -oE 'dports [0-9,]+' | tr ',' '\n' | grep -oE '[0-9]+' | sort -u | tr '\n' ' ')"
-
-wildcard="$(ss -tlnH 2>/dev/null | awk '$4 ~ /^(0\.0\.0\.0|\[::\]):/ {print $4}' | sed 's/.*://' | sort -un)"
+# Keep the family with the port: [::]:8080 and 0.0.0.0:8080 are different questions.
+wildcard="$(ss -tlnH 2>/dev/null | awk '$4 ~ /^(0\.0\.0\.0|\[::\]):/ {print $4}' | sort -u)"
 exposed=""; contained=""
-for p in $wildcard; do
+for w in $wildcard; do
+    p="${w##*:}"
+    case "$w" in
+        "[::]"*) pol="$fw_policy6"; opn="$fw_open6"; drp="$fw_dropped6"; fam=v6 ;;
+        *)       pol="$fw_policy";  opn="$fw_open";  drp="$fw_dropped";  fam=v4 ;;
+    esac
     open=no
-    case " $fw_open " in *" $p "*) open=yes ;; esac
-    if [ "$fw_policy" = "DROP" ]; then
+    case " $opn " in *" $p "*) open=yes ;; esac
+    if [ "$pol" = "DROP" ]; then
         # Default-deny: reachable only if something explicitly opened it wide.
-        [ "$open" = yes ] && exposed="$exposed$p " || contained="$contained$p "
+        [ "$open" = yes ] && exposed="$exposed$p/$fam " || contained="$contained$p "
     else
         # Default-allow: contained only if a DROP names it and nothing opened it wide.
-        case " $fw_dropped " in
-            *" $p "*) [ "$open" = yes ] && exposed="$exposed$p " || contained="$contained$p " ;;
-            *) exposed="$exposed$p " ;;
+        case " $drp " in
+            *" $p "*) [ "$open" = yes ] && exposed="$exposed$p/$fam " || contained="$contained$p " ;;
+            *) exposed="$exposed$p/$fam " ;;
         esac
     fi
 done
+
+# The harsher verdict wins across families. Without this a port exposed on v6 and
+# contained on v4 appears in BOTH lists, and /health renders the contained one as a
+# "firewalled" badge -- a false safety claim built from half the evidence, which is
+# the exact failure this whole item is about.
+# A for-loop, not `printf '%s\n' $var`: with an empty variable printf emits a bare
+# newline, which tr turns into a single space, which is not empty -- so the guard below
+# fired and the audit reported "reachable from off-box: " with nothing after the colon.
+# A check that invents findings gets ignored as fast as one that misses them.
+exposed="$(for x in $exposed; do echo "$x"; done | sort -u | tr '\n' ' ')"
+_bare="$(for x in $exposed; do echo "${x%%/*}"; done | sort -u)"
+_kept=""
+for c in $(for x in $contained; do echo "$x"; done | sort -u); do
+    case " $(printf '%s ' $_bare) " in *" $c "*) continue ;; esac
+    _kept="$_kept$c "
+done
+contained="$_kept"
 [ -z "$exposed" ] || note "reachable from off-box and not contained by the firewall: $exposed"
-[ "$fw_policy" = "DROP" ] || note "INPUT policy is $fw_policy, not DROP -- new listeners are exposed by default"
+[ "$fw_policy" = "DROP" ]  || note "INPUT policy is $fw_policy, not DROP -- new listeners are exposed by default"
+[ "$fw_policy6" = "DROP" ] || note "IPv6 INPUT policy is ${fw_policy6:-unreadable}, not DROP -- v6 was previously never checked at all"
 
 # --- is anything still being written down -----------------------------------------
 journal_persistent=false
@@ -184,7 +231,7 @@ if [ "$MODE" = "full" ]; then
     # string rather than a result.
     PYBIN=/home/pi/cooldown/venv/bin/python3
     [ -x "$PYBIN" ] || PYBIN=python3
-    if vb="$("$PYBIN" /usr/local/sbin/budget-verify-backup.py 2>/dev/null)"; then
+    if vb="$("$PYBIN" /usr/local/sbin/cooldown-verify-backup.py 2>/dev/null)"; then
         backup_restores=1
     else
         backup_restores=0
@@ -215,5 +262,5 @@ chmod 644 "$TMP"
 mv "$TMP" "$STATE"
 trap - EXIT
 
-[ "${#findings[@]}" -eq 0 ] && logger -t budget-audit "$MODE audit clean"
+[ "${#findings[@]}" -eq 0 ] && logger -t cooldown-audit "$MODE audit clean"
 exit 0

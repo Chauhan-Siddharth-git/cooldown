@@ -3445,6 +3445,27 @@ def boot_watch():
                 f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(now))}"))
     return r.get("unacked_boot")
 
+def boot_history(now=None, limit=5):
+    """The last few unexplained boots, newest first.
+
+    boot_events has been written since the banner was added and read by nothing, so the
+    only surfacing of a restart was unacked_boot -- a single flag that the dismiss button
+    deletes. Acknowledging one reboot erased the evidence that it ever happened, which is
+    the opposite of tamper-evidence. The list survives the dismissal; this shows it.
+    """
+    now = now if now is not None else time.time()
+    out = []
+    for ts in reversed(_try(lambda: r.lrange("boot_events", -limit, -1), []) or []):
+        try:
+            when = float(ts)
+        except (TypeError, ValueError):
+            continue
+        out.append({"ts": when,
+                    "when": time.strftime("%-d %b, %-I:%M %p", time.localtime(when)),
+                    "ago": _short_ago(now - when)})
+    return out
+
+
 @app.route('/boot-ack', methods=['POST'])
 def boot_ack():
     r.delete("unacked_boot")
@@ -3785,6 +3806,11 @@ HEALTH_PAGE = """
         </form>
     </div>
     {% endif %}
+    {% if boot_history %}
+    <div class="kicker" style="margin:-6px 0 14px">restarts on record:
+      {%- for b in boot_history %} {{ b.when }} ({{ b.ago }}){{ "," if not loop.last }}{% endfor %}
+    </div>
+    {% endif %}
 
     <div class="board">
       <svg viewBox="0 0 380 250" role="img" aria-label="Raspberry Pi board">
@@ -3989,7 +4015,7 @@ HEALTH_PAGE = """
           {%- endif -%}
         </span>
         <span class="sdet">
-          {%- if a.findings %}Details: journalctl -t budget-audit
+          {%- if a.findings %}Details: journalctl -t cooldown-audit
           {%- else -%}
           Checked {{ a.get('checked_human', 'unknown') }}{%
             if a.get('ca_days', 0) %} &middot; CA valid {{ a.ca_days }}d{% endif %}{%
@@ -4009,7 +4035,7 @@ HEALTH_PAGE = """
         </span>
         <span class="sdet">
           {%- if a.get('backup_restores', -1) == 1 %}restore verified{% if a.get('full_ago') %} {{ a.full_ago }}{% endif %} against a scratch database
-          {%- elif a.get('backup_restores', -1) == 0 %}the newest backup did not restore &mdash; journalctl -t budget-audit
+          {%- elif a.get('backup_restores', -1) == 0 %}the newest backup did not restore &mdash; journalctl -t cooldown-audit
           {%- else %}restore not yet verified this week{% endif -%}
         </span>
       </div>
@@ -4122,7 +4148,7 @@ def health():
     ts = _try(boot_watch)
     boot_alert = time.strftime("%a %-d %b, %-I:%M %p", time.localtime(float(ts))) if ts else None
     return render_page(HEALTH_PAGE,
-        d=d, boot_alert=boot_alert,
+        d=d, boot_alert=boot_alert, boot_history=_try(boot_history, []),
         cpu_lines=_cpu_lines(d["cpu"].get("hist", [])[-CPU_CARD_SAMPLES:]),
         cpu_colors=CPU_LINE_COLORS,
         card_min=max(1, round(CPU_CARD_SAMPLES * 4 / 60)),

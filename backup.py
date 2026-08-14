@@ -30,7 +30,11 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import redis  # noqa: E402
 
-PATTERNS = ["usage:*", "cooldown_events:*", "soft_pauses:*", "reflect:*", "study_usage:*"]
+# worth:* belongs with reflect:* -- they are the two halves of one join ("why did you
+# open it" against "was it worth it"), and saving only the first backs up half a
+# sentence. The docstring calls this the record of what you actually did.
+PATTERNS = ["usage:*", "cooldown_events:*", "soft_pauses:*", "reflect:*", "worth:*",
+            "study_usage:*"]
 BACKUP_DIR = os.environ.get("COOLDOWN_BACKUP_DIR", "/var/backups/cooldown")
 KEEP = 30
 

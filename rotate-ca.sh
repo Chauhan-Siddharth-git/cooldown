@@ -106,7 +106,7 @@ NEWFP="$(fingerprint "$CONF/mitmproxy-ca-cert.pem")"
 # A detector that cries wolf after every legitimate rotation is one you learn to ignore,
 # which is the same failure as not having it. Rotating is the one moment we KNOW the
 # change was intended, so it is the right place to say so.
-AUDIT_PIN="${COOLDOWN_AUDIT_PIN:-/var/lib/budget-audit-baseline}"
+AUDIT_PIN="${COOLDOWN_AUDIT_PIN:-/var/lib/cooldown-audit-baseline}"
 if sudo test -e "$AUDIT_PIN"; then
   printf '%s' "$NEWFP" | sudo tee "$AUDIT_PIN" >/dev/null
   sudo chmod 600 "$AUDIT_PIN"

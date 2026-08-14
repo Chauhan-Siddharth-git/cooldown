@@ -4,6 +4,6 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/budget-audit.sh quick
+ExecStart=/usr/local/sbin/cooldown-audit.sh quick
 Nice=10
 IOSchedulingClass=idle
