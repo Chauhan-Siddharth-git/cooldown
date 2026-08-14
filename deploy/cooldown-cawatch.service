@@ -1,0 +1,33 @@
+[Unit]
+Description=Budget: alert on reads of the CA private key
+# Not After=cooldown-proxy.service: this must be watching BEFORE the proxy starts, or the startup
+# read it is meant to classify as benign happens unobserved and the baseline is a guess.
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/cooldown-cawatch.sh
+Restart=always
+RestartSec=5
+
+# Root, deliberately. The directory is 0700 cooldownproxy, and the compromise this exists to
+# report is most likely the network-facing proxy itself -- a watcher running as cooldownproxy
+# would be killed by the same breach. Everything below strips what root does not need.
+User=root
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+# Read-only on the thing it watches: this must never be able to alter the CA it guards.
+ReadOnlyPaths=/var/lib/cooldown
+# No WriteablePaths at all -- it writes only to the journal (logger) and the network (curl).
+
+[Install]
+WantedBy=multi-user.target

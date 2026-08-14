@@ -156,7 +156,10 @@ fi
 # ---------------------------------------------------------------- packages
 step "Installing dependencies"
 MISSING=()
-for p in redis-server python3-venv python3-pip iptables openssl; do
+# inotify-tools is for cooldown-cawatch: it alerts when the CA private key is read.
+# The alternative was hand-rolling inotify buffer parsing in Python to avoid one
+# 50KB package; the parsing is the part that goes subtly wrong, so the package wins.
+for p in redis-server python3-venv python3-pip iptables openssl inotify-tools; do
   dpkg -s "$p" >/dev/null 2>&1 || MISSING+=("$p")
 done
 if [ ${#MISSING[@]} -eq 0 ]; then ok "all present"

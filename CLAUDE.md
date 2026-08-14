@@ -17,7 +17,7 @@ usually need checking against both.
 | **Box origin** (`http://<box>:5000`) | The dashboard: `/stats`, `/health`, `/devices`, `/remaining`, `/boot-ack`. Cross-origin from every gated site, which **is** the control for *reading* (F9). It is not a control for *writing* — Flask refuses cross-origin writes itself (F25). Do not put these back behind the proxy. |
 | **Loopback** `127.0.0.1:5000` | Flask. The addon reaches it here; this listener must never depend on the tailnet. |
 | **Privileged** | Exactly one sudo rule: an `iptables` counter read. Services run as `cooldownapp` / `cooldownproxy`, no shell, no password. |
-| **The trust anchor** | The CA at `/var/lib/cooldown/mitmproxy`, mode 700. Never leaves the box, never enters git. |
+| **The trust anchor** | The CA at `/var/lib/cooldown/mitmproxy`, mode 700. Never leaves the box, never enters git. `cooldown-cawatch` alerts on any read of the private half outside the proxy's own startup — it reports *that* a read happened, never *who*, and an offline copy of the SD card produces no event at all. |
 
 ## Before you change anything
 
