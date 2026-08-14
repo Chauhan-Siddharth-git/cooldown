@@ -1699,3 +1699,72 @@ def test_health_page_does_not_invent_a_schedule_it_does_not_know(client, monkeyp
          "last_result": "success", "last_run_ago": 60, "checked_ago": 300})
     assert "Installs automatically." in html
     assert "reboots" not in html
+
+
+# ---------- D2: off-box alert on an unexplained reboot ----------
+
+def test_alert_is_off_unless_the_url_is_set(rdb, monkeypatch):
+    """Off by default is the whole shape of this feature. No URL, no thread, no send."""
+    monkeypatch.setattr(budget, "ALERT_URL", "")
+    sent = []
+    monkeypatch.setattr(budget.urllib.request, "urlopen", lambda *a, **k: sent.append(1))
+    assert budget.send_alert("anything") is False
+    assert sent == []
+
+
+def test_alert_carries_no_address_token_or_hostname(rdb, monkeypatch):
+    """It goes to a third party by definition. Putting the box's address in it would
+    repeat the Referer leak that earned Referrer-Policy in the first place."""
+    captured = {}
+
+    class FakeResp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req_, timeout=None):
+        captured["body"] = req_.data.decode()
+        return FakeResp()
+
+    monkeypatch.setattr(budget, "ALERT_URL", "http://example.invalid/hook")
+    monkeypatch.setattr(budget.urllib.request, "urlopen", fake_urlopen)
+    rdb.set("last_boot_id", "old-boot-id")
+    monkeypatch.setattr(budget, "_first_line", lambda *a, **k: "new-boot-id")
+    budget.boot_watch()
+    for _ in range(50):
+        if "body" in captured:
+            break
+        time.sleep(0.05)
+    body = captured.get("body", "")
+    assert body, "no alert was sent on an unexplained reboot"
+    assert "reboot" in body
+    for leak in ("100.", "tail", ".ts.net", "token", "tok="):
+        assert leak not in body.lower(), f"alert payload contains {leak!r}: {body!r}"
+
+
+def test_a_failed_alert_is_recorded_not_swallowed(rdb, monkeypatch):
+    """A send that silently failed is indistinguishable from no alert, which is the exact
+    failure this feature exists to prevent."""
+    monkeypatch.setattr(budget, "ALERT_URL", "http://example.invalid/hook")
+
+    def boom(*a, **k):
+        raise OSError("unreachable")
+    monkeypatch.setattr(budget.urllib.request, "urlopen", boom)
+    assert budget.send_alert("test") is True
+    for _ in range(50):
+        if rdb.get("alert_last"):
+            break
+        time.sleep(0.05)
+    last = rdb.get("alert_last") or ""
+    assert "failed" in last, f"a failed send left {last!r}"
+
+
+def test_alert_never_raises_into_the_request(rdb, monkeypatch):
+    """boot_watch() runs inside a request. The alert path must not be able to break it."""
+    monkeypatch.setattr(budget, "ALERT_URL", "http://example.invalid/hook")
+    monkeypatch.setattr(budget.threading, "Thread",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no threads")))
+    rdb.set("last_boot_id", "old")
+    monkeypatch.setattr(budget, "_first_line", lambda *a, **k: "new")
+    budget.boot_watch()                       # must not raise
+    assert rdb.get("unacked_boot") is not None, "the boot was still recorded locally"

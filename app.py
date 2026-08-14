@@ -9,8 +9,10 @@ import re
 import random
 import redis
 import secrets
+import threading
 import time
 import traceback
+import urllib.request
 import uuid
 from apscheduler.schedulers.background import BackgroundScheduler
 from news_domains import NEWS_DOMAINS
@@ -3362,6 +3364,54 @@ def _spark_points(hist, w=100, h=32, lo=30, hi=85):
         out.append(f"{x:.1f},{y:.1f}")
     return " ".join(out)
 
+# D2. Off unless COOLDOWN_ALERT_URL is set. A generic webhook rather than a named
+# service: it points at ntfy, Discord, Slack or a mail API equally, and adds no account,
+# no dependency and no credential beyond the URL itself.
+#
+# Deliberately NOT email-by-SMTP. A residential IP cannot deliver mail, so it would need
+# a relay credential on the box -- and a Gmail app password is not scoped to one alert,
+# it can send as you. The thing we are trying to detect is this box being compromised;
+# storing a credential here that is worth stealing makes the failure worse than silence.
+ALERT_URL = os.environ.get("COOLDOWN_ALERT_URL", "").strip()
+ALERT_TIMEOUT = 5
+
+
+def send_alert(text):
+    """POST one line off the box. Never raises, never blocks, never leaks.
+
+    NOT BLOCKING: boot_watch() runs inside a request, so a webhook that hangs would hang
+    the dashboard with it. Sent on a daemon thread with a timeout.
+
+    NOT LEAKING: the payload carries no address, hostname or token. This goes to a third
+    party by definition, and "the box rebooted at T" is the entire message. Putting the
+    tailnet address in it would repeat the Referer leak that earned Referrer-Policy.
+
+    RESULT RECORDED: a send that silently failed is indistinguishable from no alert,
+    which is the exact failure this feature exists to prevent. The outcome lands in
+    `alert_last` and shows on /health.
+
+    Honest limit: an attacker with root can read ALERT_URL and suppress this. Nothing on
+    the box survives the box. The half that catches that is an OFF-box liveness detector
+    noticing the machine went quiet, which is not this.
+    """
+    if not ALERT_URL:
+        return False
+
+    def go():
+        outcome = "unknown"
+        try:
+            req_ = urllib.request.Request(ALERT_URL, data=text.encode("utf-8"),
+                                          headers={"Content-Type": "text/plain"})
+            with urllib.request.urlopen(req_, timeout=ALERT_TIMEOUT) as resp:
+                outcome = "ok" if 200 <= resp.status < 300 else f"http {resp.status}"
+        except Exception as e:
+            outcome = f"failed: {type(e).__name__}"
+        _try(lambda: r.set("alert_last", f"{time.time():.0f} {outcome}"))
+
+    threading.Thread(target=go, daemon=True, name="cooldown-alert").start()
+    return True
+
+
 def boot_watch():
     """Notice that the box has rebooted, and remember it until you say it was you.
 
@@ -3388,6 +3438,11 @@ def boot_watch():
             r.rpush("boot_events", f"{now:.0f}")
             r.ltrim("boot_events", -50, -1)
             r.set("unacked_boot", f"{now:.0f}")
+            # Off the box at the moment it happens. The banner can be cleared by whoever
+            # holds the card; a sent notification cannot be un-sent.
+            _try(lambda: send_alert(
+                f"cooldown: unexplained reboot at "
+                f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(now))}"))
     return r.get("unacked_boot")
 
 @app.route('/boot-ack', methods=['POST'])
