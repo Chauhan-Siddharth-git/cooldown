@@ -1307,6 +1307,62 @@ it runs precisely when everything else is already going wrong.
 
 ---
 
+## F37 — The constrained CA broke the sites it was constrained to  ·  HIGH  ·  FIXED
+
+**What it is.** Within minutes of the F26 rotation, YouTube stopped loading on every device.
+So did the BBC. Reddit and CNN were fine. The proxy logged
+`Client TLS handshake failed. The client does not trust the proxy's certificate`, which
+points squarely at the trust store — and the trust store was innocent.
+
+mitmproxy fetches the real server certificate and **mirrors its SAN list** into the one it
+mints, so that its forgery looks like the original. Google's certificate for
+`www.youtube.com` carries **66 SANs** — `*.google.com`, `*.gstatic.com`, `*.google.de` and
+sixty more. The generated leaf claimed all 66 names. The CA permits `youtube.com`. Sixty-odd
+of those names fall outside every permitted subtree, which is a **permitted-subtree
+violation** (`X509_V_ERR 47`), and RFC 5280 requires a conformant validator to reject the
+chain.
+
+Reddit survived by luck: its upstream certificate has three SANs, all inside `reddit.com`.
+The failure therefore looked device-specific and site-specific at the same time, which is
+the worst possible shape for diagnosis.
+
+**Two settings, correct in isolation, three months apart.** `--allow-hosts` and the CA's
+name constraints were both derived from the same domain list, verified equal (96 = 96)
+before rotating. That check passed and proved nothing, because the constraint is not
+violated by the *host being visited* — it is violated by names the upstream operator chose
+to put in *their* certificate, which no list in this repo can predict.
+
+**The fix.** `--set upstream_cert=false`. mitmproxy then generates the leaf from SNI/Host
+alone, so it carries exactly the name that was asked for, which is inside a permitted
+subtree by construction. Verified after: youtube, bbc, reddit, cnn and nytimes all
+`verify=0` with their gates rendering, and the YouTube leaf reduced from 66 SANs to
+`DNS:www.youtube.com`.
+
+**What the diagnosis cost, and why.** The error message named trust, so the first hour went
+into the phone's trust store — reinstalling the profile, checking Certificate Trust
+Settings. All of it irrelevant. Two things eventually broke it open: noticing that YouTube
+had been intercepted successfully **627 times earlier the same day** and zero times after
+the rotation, which turns "the phone is misconfigured" into "something changed at 22:10";
+and reproducing it on a second client, which turns a device problem into a certificate
+problem. A failure on one device is a device story until you try another one.
+
+**A false lead worth recording.** An intermediate test appeared to show the leaf carrying
+`IP Address:<the box's own address>`, violating the CA's IP exclusion — a tidy, wrong answer. It was
+an artifact of the test command: `s_client -connect <box-ip>:8081` asks mitmproxy to mint a
+certificate for an *IP*, so the IP SAN was manufactured by the measurement. Re-running it
+the way a real client connects gave a clean chain. **A diagnostic that constructs the
+request differently from the client constructs a different bug.**
+
+**The concept — a constraint is only as narrow as the certificates you have to sign, and
+those are authored by someone else.** Name constraints bound what a stolen key can vouch
+for; they also bound what your proxy can legitimately impersonate, and multi-domain
+certificates are the norm for anything behind a CDN or a large platform. Anyone adopting
+F26's approach needs `upstream_cert=false` with it. The two are one change, and shipping
+the first without the second breaks every gated site whose operator uses a shared
+certificate.
+
+---
+
 ## Accepted by design
 
 Some risks are the cost of what the tool *is* — understood, bounded, documented,

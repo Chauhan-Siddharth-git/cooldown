@@ -41,6 +41,10 @@ usually need checking against both.
   Adding a site used to be a proxy restart. Batch them. The failure mode if you skip it is
   quiet in the wrong way — the proxy intercepts a site it cannot produce a valid
   certificate for, so that site breaks with a cert warning and nothing else says why.
+  **The unit must keep `--set upstream_cert=false`.** Without it mitmproxy mirrors the
+  upstream certificate's SAN list into the leaf it mints, and a multi-domain cert (YouTube
+  ships 66 SANs) puts names outside the permitted subtrees, so the chain is rejected —
+  presenting as "this device doesn't trust the CA" on every device at once (F37).
 
 ## The shadow meter: read out 2026-08-10, still running
 
