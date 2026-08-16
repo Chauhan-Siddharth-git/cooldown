@@ -1100,8 +1100,11 @@ def test_spontaneous_themes_are_occasional_not_constant(rdb):
 def test_theme_override_and_off(rdb, client):
     plain = client.get("/budget?site=reddit&theme=off").get_data(as_text=True)
     assert '<style id="cd-theme"></style>' in plain
+    # Derived from THEMES, not a pinned hex. Hardcoding the colour meant every palette
+    # tweak broke this test for a reason unrelated to what it asserts -- which is that the
+    # override applies a theme at all, not that Christmas is one particular green.
     xmas = client.get("/budget?site=reddit&theme=christmas").get_data(as_text=True)
-    assert "--bg:#0a1410" in xmas
+    assert f'--bg:{budget.THEMES["christmas"]["vars"]["bg"]}' in xmas
     junk = client.get("/budget?site=reddit&theme=../../etc/passwd").get_data(as_text=True)
     assert "passwd" not in junk and '<style id="cd-theme"></style>' in junk
 
@@ -1192,10 +1195,15 @@ def test_blunt_lines_are_a_fallback_not_the_default(rdb):
 def test_the_status_bar_tint_follows_the_theme(rdb, client):
     """Hardcoded, it left Christmas repainting the whole gate and then sitting under a
     cold grey bar — the one piece of chrome a phone user always has in frame."""
-    for theme, expect in [("off", "#070b0e"), ("christmas", "#0a1410"),
-                          ("terminal", "#080a07")]:
+    # Every theme, and each expectation read from THEMES rather than pinned here. The
+    # pinned version checked three of ten and broke on a palette change; this asserts the
+    # property -- the bar follows whatever the theme's backdrop is -- for all of them.
+    assert budget.THEMES, "no themes defined, so the loop below would assert nothing"
+    for theme, th in budget.THEMES.items():
         html = client.get(f"/budget?site=reddit&theme={theme}").get_data(as_text=True)
-        assert f'name="theme-color" content="{expect}"' in html, theme
+        assert f'name="theme-color" content="{th["vars"]["bg"]}"' in html, theme
+    off = client.get("/budget?site=reddit&theme=off").get_data(as_text=True)
+    assert 'name="theme-color" content="#070b0e"' in off, "the un-themed default moved"
 
 
 def test_the_pass_screen_rotates(rdb):

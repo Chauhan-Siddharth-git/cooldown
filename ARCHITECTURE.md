@@ -464,3 +464,45 @@ attacker who boots a modified image with the alarm suppressed.
 ---
 
 *See also: [README](README.md) · [SETUP](SETUP.md) · [SECURITY](SECURITY.md) · [SECURITY-CASESTUDY](SECURITY-CASESTUDY.md)*
+
+
+## Is the box running what the repo says?
+
+`deploy.sh` stamps `/var/lib/cooldown-deployed.manifest` with a sha256 and a git revision
+**per file**, and `cooldown-audit.sh` re-checks every entry hourly. `/health` shows the
+result:
+
+```
+Checked just now · CA valid 3649d · running a4baaa4, 12 file(s) reconciled
+```
+
+Read `running <rev>` first, before anything else on that page. `mixed(2): …` means the two
+deploy targets are at different revisions — routine if you ran `code` without `units`, and
+worth knowing before you conclude anything about what is deployed. `-dirty` means it was
+deployed from an uncommitted tree, so the revision does not describe what is running.
+
+Alongside the manifest the audit asserts five things about the live system, not the repo:
+
+| | |
+|---|---|
+| the CA carries **name constraints** | the fingerprint pin proves the key was not *swapped*; it says nothing about what the key may vouch for, and was green for three days while the live CA was unconstrained |
+| every `ExecStart=` is present and executable | otherwise the unit fails 203/EXEC at the moment you need it |
+| every unit declaring `[Install]` is **enabled** | `deploy.sh units` installs and daemon-reloads, which reads like completion |
+| every active timer has a **next elapse** | a timer with `Trigger: n/a` reports active and enabled and will never fire again |
+| `-P INPUT DROP` on **both** families | previously read, but only to classify listeners — the value itself was never asserted |
+
+Check it by hand:
+
+```bash
+ssh <pi> 'sudo python3 -c "import json;d=json.load(open(\"/var/lib/cooldown-audit.json\"));\
+  print(d[\"deployed_rev\"], d[\"manifest_files\"], \"files, drift\", d[\"deploy_drift\"])"'
+```
+
+**Why this exists.** Six findings were the same shape: correct in the repo, absent or stale
+on the machine (F11, F21, F22, F26, F27, F29). Each was found by hand, once, after the
+fact. The review that prompted it began with `app.py` and `addon.py` a commit behind on the Pi — the CSP
+fail-open still live, every other deployed file current, so nothing looked wrong — and
+nearly ended with a `rotate-ca.sh` ten days stale that would have regenerated an
+unconstrained CA. Intent lived in the repo, reality lived on the box, and nothing compared
+them. This is that comparison.
+

@@ -379,7 +379,7 @@ THEMES = {
         "lines": ["It's Christmas. This will be the exact same feed on the 27th.",
                   "Today's posts are mostly people being bored in a different house.",
                   "The whole internet is doing this today. Doesn't make it worth doing."],
-        "vars": {"bg": "#0a1410", "card": "#10201a", "line": "#1e3a2c", "fg": "#f2f8f4",
+        "vars": {"bg": "#04140d", "card": "#0d2318", "line": "#1e4230", "fg": "#f2f8f4",
                  "muted": "#8fa89a", "faint": "#5d7568", "go": "#3ecf7c",
                  "wait": "#e0b458", "bad": "#d1495b", "sleep": "#7fb3a0",
                  "accent": "#d1495b", "good": "#3ecf7c", "warn": "#e0b458"},
@@ -390,7 +390,7 @@ THEMES = {
         "lines": ["Nothing in here is scarier than the screen-time report.",
                   "The feed is a haunted house with no exit. You know this one.",
                   "You can leave. That's the twist."],
-        "vars": {"bg": "#100a14", "card": "#19111f", "line": "#2e2038", "fg": "#f5f1f8",
+        "vars": {"bg": "#140a1c", "card": "#20122c", "line": "#3a2450", "fg": "#f5f1f8",
                  "muted": "#a294ad", "faint": "#6b5c78", "go": "#8f57d4",
                  "wait": "#e8892b", "bad": "#d1495b", "sleep": "#8f57d4",
                  "accent": "#e8892b", "good": "#8f57d4", "warn": "#e8892b"},
@@ -402,59 +402,59 @@ THEMES = {
         "lines": ["Whatever you resolved, this probably wasn't it.",
                   "New year, same feed. It didn't change over the holiday.",
                   "Day one of the new you, and here you are."],
-        "vars": {"bg": "#0a0a0f", "card": "#15151d", "line": "#2b2b3a", "fg": "#f8f5ee",
-                 "muted": "#a39c8b", "faint": "#6d6758", "go": "#3ecf7c",
+        "vars": {"bg": "#0a0a12", "card": "#171724", "line": "#2e2e45", "fg": "#f7f5ef",
+                 "muted": "#a09cae", "faint": "#6a6678", "go": "#3ecf7c",
                  "wait": "#d9b45c", "bad": "#d1495b", "sleep": "#7aa2ff",
                  "accent": "#d9b45c", "good": "#3ecf7c", "warn": "#d9b45c"},
     },
     # Spontaneous — no season, so they only ever turn up unannounced.
     "retro": {
         "label": "Outrun", "emoji": "\U0001F31E", "season": None,
-        "vars": {"bg": "#0d0916", "card": "#170f24", "line": "#33204a", "fg": "#f4eeff",
-                 "muted": "#a892c0", "faint": "#6f5c8a", "go": "#0fa8b8",
+        "vars": {"bg": "#12061f", "card": "#1f0d33", "line": "#3a1a5c", "fg": "#fbeffb",
+                 "muted": "#b494c4", "faint": "#7c5f8e", "go": "#0fa8b8",
                  "wait": "#d9548f", "bad": "#d9548f", "sleep": "#8f57d4",
                  "accent": "#d9548f", "good": "#0fa8b8", "warn": "#d9548f"},
     },
     "terminal": {
         "label": "Phosphor", "emoji": "\U0001F4DF", "season": None,
-        "vars": {"bg": "#080a07", "card": "#11140e", "line": "#26301c", "fg": "#e6e4c4",
-                 "muted": "#96a077", "faint": "#616a4c", "go": "#7a9e2f",
+        "vars": {"bg": "#050a05", "card": "#0d160d", "line": "#1c3320", "fg": "#e8f5e4",
+                 "muted": "#8fae87", "faint": "#5e7a58", "go": "#7a9e2f",
                  "wait": "#c9a227", "bad": "#c05a3a", "sleep": "#7a9e2f",
                  "accent": "#7a9e2f", "good": "#7a9e2f", "warn": "#c9a227"},
     },
     # No emoji on purpose — see the note above _personal_theme.
     "birthday": {
         "label": "", "emoji": "", "season": None,
-        "vars": {"bg": "#0f0a14", "card": "#1a1020", "line": "#3a2450", "fg": "#f8f0ff",
-                 "muted": "#b79ccc", "faint": "#7d6390", "go": "#3ecf7c",
+        "vars": {"bg": "#140a1e", "card": "#20122e", "line": "#3d2352", "fg": "#f8f2fb",
+                 "muted": "#b096be", "faint": "#77608a", "go": "#3ecf7c",
                  "wait": "#e0b458", "bad": "#d1495b", "sleep": "#a678de",
                  "accent": "#e0b458", "good": "#3ecf7c", "warn": "#e0b458"},
     },
     "anniversary": {
         "label": "", "emoji": "", "season": None,
-        "vars": {"bg": "#080d12", "card": "#101820", "line": "#1e3040", "fg": "#eef6fa",
-                 "muted": "#8fa9bb", "faint": "#5d7788", "go": "#3ecf7c",
+        "vars": {"bg": "#0a1218", "card": "#132029", "line": "#264150", "fg": "#eef6f8",
+                 "muted": "#8fb0b8", "faint": "#5d7d86", "go": "#3ecf7c",
                  "wait": "#5aa8d8", "bad": "#d1495b", "sleep": "#7aa2ff",
                  "accent": "#5aa8d8", "good": "#3ecf7c", "warn": "#5aa8d8"},
     },
     "ember": {
         "label": "Ember", "emoji": "\U0001F525", "season": None,
-        "vars": {"bg": "#120b08", "card": "#1d1210", "line": "#3a221a", "fg": "#faf0ea",
-                 "muted": "#b8968a", "faint": "#7d6055", "go": "#3ecf7c",
+        "vars": {"bg": "#180904", "card": "#26120a", "line": "#4a2414", "fg": "#fdf1e8",
+                 "muted": "#c29c86", "faint": "#8a6b58", "go": "#3ecf7c",
                  "wait": "#d1732b", "bad": "#d1495b", "sleep": "#c08420",
                  "accent": "#d1732b", "good": "#3ecf7c", "warn": "#d1732b"},
     },
     "slate": {
         "label": "Slate", "emoji": "\U0001F5FF", "season": None,
-        "vars": {"bg": "#0a0d11", "card": "#12161c", "line": "#232b34", "fg": "#eef1f4",
-                 "muted": "#93a0ad", "faint": "#616d79", "go": "#3ecf7c",
+        "vars": {"bg": "#0b0f14", "card": "#161d26", "line": "#2b3644", "fg": "#f0f4f8",
+                 "muted": "#94a2b4", "faint": "#647287", "go": "#3ecf7c",
                  "wait": "#8fa3b8", "bad": "#d1495b", "sleep": "#7aa2ff",
                  "accent": "#8fa3b8", "good": "#3ecf7c", "warn": "#c98500"},
     },
     "frost": {
         "label": "Frost", "emoji": "\U00002744", "season": None,
-        "vars": {"bg": "#080d12", "card": "#101820", "line": "#1e2f3d", "fg": "#eef5fa",
-                 "muted": "#8ba3b5", "faint": "#5a7183", "go": "#3ecf7c",
+        "vars": {"bg": "#04101c", "card": "#0d1f2e", "line": "#1d3a52", "fg": "#eef6fb",
+                 "muted": "#8fb4cc", "faint": "#5b7f99", "go": "#3ecf7c",
                  "wait": "#5aa8d8", "bad": "#d1495b", "sleep": "#7aa2ff",
                  "accent": "#5aa8d8", "good": "#3ecf7c", "warn": "#5aa8d8"},
     },
@@ -516,9 +516,39 @@ def active_theme(now=None, override=None):
     return None, None
 
 def theme_css(theme):
+    """The theme's variables, plus a backdrop wash derived from its own accent.
+
+    Variables alone were not enough to read as a theme. Every palette kept `bg` and `card`
+    within a few points of the default near-black -- frost shipped bg #080d12 against a
+    default of #0b0d10 -- so the only thing that actually changed on screen was the accent
+    and the emoji in the corner. The feedback was exact: "if the snowflake wasn't there I
+    wouldn't have known there was a winter theme."
+
+    The palettes are now genuinely hued, and the wash gives the page atmosphere rather
+    than a flat backdrop. It is DERIVED from --accent rather than stored per theme, so a
+    new theme cannot forget to define it and the two cannot drift apart.
+
+    Still bound by the one hard rule: this paints the BODY, never --card. The chart
+    palettes are validated against a #14171d surface and every card here stays inside
+    1.6x its luminance, which test_no_theme_may_lighten_the_surface_the_charts_sit_on
+    enforces. A wash behind the cards is free; a lighter card is not.
+    """
     if not theme:
         return ""
-    return ":root{" + "".join(f"--{k}:{v};" for k, v in theme["vars"].items()) + "}"
+    v = theme["vars"]
+    css = ":root{" + "".join(f"--{k}:{val};" for k, val in v.items()) + "}"
+    acc = v.get("accent") or v.get("go") or ""
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", acc or ""):
+        r, g, b = (int(acc[i:i + 2], 16) for i in (1, 3, 5))
+        # Two soft pools, top and bottom, at low alpha. fixed attachment so scrolling a
+        # long page does not drag the gradient with it.
+        css += (
+            "body{background:"
+            f"radial-gradient(1100px 620px at 50% -14%, rgba({r},{g},{b},.13) 0%, rgba({r},{g},{b},0) 68%),"
+            f"radial-gradient(900px 520px at 12% 108%, rgba({r},{g},{b},.09) 0%, rgba({r},{g},{b},0) 62%),"
+            "var(--bg);background-attachment:fixed;}"
+        )
+    return css
 
 BUDGET_PAGE = """
 <!DOCTYPE html>
