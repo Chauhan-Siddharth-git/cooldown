@@ -149,6 +149,16 @@ Read this part first, then **read the code before reading `SECURITY-CASESTUDY.md
    there. Shape checks (is the reason written down? is the needle specific?) do not catch
    this. Only recomputing the thing the entry claims to describe does.
 
+11. **Ask the box, not the repo.** `cooldown-audit.sh` reconciles hourly: every file in
+   `/var/lib/cooldown-deployed.manifest` (stamped by `deploy.sh`, sha256 + revision per
+   file) must still hash the same, the CA must carry name constraints, every `ExecStart`
+   must be executable, every unit declaring `[Install]` must be enabled, every active
+   timer must have a next elapse, and `-P INPUT DROP` must hold on both families.
+   `/health` shows the deployed revision. Six findings were "correct in the repo, absent
+   or stale on the machine" (F11, F21, F22, F26, F27, F29) and each was found by hand,
+   once. If you are reviewing, `deployed_rev` is the first thing to read: a review of code
+   the box is not running is a review of nothing.
+
 **When to review at all:** on a new endpoint, origin, listener, privileged operation, or
 new reliance on browser behaviour — those five account for all twenty findings. Plus after
 any deploy that changes services, firewall rules or accounts. Plus twice a year for rot

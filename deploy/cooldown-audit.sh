@@ -248,12 +248,19 @@ boot_pct="$(df --output=pcent /boot/firmware 2>/dev/null | tail -1 | tr -dc '0-9
 
 # 1. The deploy manifest: is every file we shipped still byte-identical, and from what?
 MANIFEST=/var/lib/cooldown-deployed.manifest
-deployed_rev="unknown"; drifted=0; manifest_files=0
+deployed_rev="unknown"; drifted=0; manifest_files=0; revs=""
 if [ -r "$MANIFEST" ]; then
     while read -r want rev path; do
         [ -n "${path:-}" ] || continue
         manifest_files=$((manifest_files + 1))
-        deployed_rev="$rev"
+        # COLLECT the revisions, do not overwrite. `deployed_rev="$rev"` inside the loop
+        # reported whichever path happened to sort last -- one arbitrary file's revision,
+        # printed on /health as though it described the box. Caught immediately after
+        # shipping this section, when the dashboard said d8af11a while HEAD was c6e6402
+        # and six files were from each: `units` and `code` stamp different sets, which is
+        # the whole reason the manifest is per-file. A single authoritative-looking number
+        # that is not authoritative is the exact defect this section exists to catch.
+        case " $revs " in *" $rev "*) ;; *) revs="$revs $rev" ;; esac
         got="$(sha256sum "$path" 2>/dev/null | cut -d' ' -f1)"
         if [ -z "$got" ]; then
             note "deployed file is MISSING: $path (manifest: $rev)"
@@ -266,6 +273,15 @@ if [ -r "$MANIFEST" ]; then
     # An empty manifest reconciles nothing while looking like a clean pass -- the exact
     # shape this whole section exists to catch, so it is called out rather than assumed.
     [ "$manifest_files" -gt 0 ] || note "deploy manifest is EMPTY -- nothing was reconciled"
+    set -- $revs
+    if [ "$#" -eq 1 ]; then
+        deployed_rev="$1"
+    elif [ "$#" -gt 1 ]; then
+        # Not a finding: `code` and `units` are deployed separately and units rarely
+        # change, so a mixed box is routine. It must still be VISIBLE, because "running
+        # <one rev>" would be a claim the manifest cannot support.
+        deployed_rev="mixed($#): $*"
+    fi
 else
     note "no deploy manifest at $MANIFEST -- cannot tell whether the box matches the repo"
 fi
