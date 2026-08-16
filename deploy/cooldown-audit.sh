@@ -233,6 +233,115 @@ boot_pct="$(df --output=pcent /boot/firmware 2>/dev/null | tail -1 | tr -dc '0-9
 [ "${root_pct:-0}" -lt 85 ] || note "root filesystem ${root_pct}% full"
 [ "${boot_pct:-0}" -lt 85 ] || note "boot partition ${boot_pct}% full -- old kernels may not be getting removed"
 
+# --- does the RUNNING BOX match what the repo claims? ------------------------------
+# The category this file was missing. Every check above asks "is the box in a safe
+# state"; these ask "is the box the thing we think we deployed". That is a different
+# question, and it is the one this project keeps failing:
+#
+#   F11 enabled != working.   F21 a timer firing != its job running.
+#   F22 documented != true.   F26 correct in the repo != applied to the key.
+#   F27 checked on v4 != checked.  F29 ran != succeeded.
+#
+# Each was found once, by hand, after the fact. The through-line is that intent lived in
+# the repo and reality lived on the box and nothing compared them. This section is that
+# comparison, and it runs hourly.
+
+# 1. The deploy manifest: is every file we shipped still byte-identical, and from what?
+MANIFEST=/var/lib/cooldown-deployed.manifest
+deployed_rev="unknown"; drifted=0; manifest_files=0
+if [ -r "$MANIFEST" ]; then
+    while read -r want rev path; do
+        [ -n "${path:-}" ] || continue
+        manifest_files=$((manifest_files + 1))
+        deployed_rev="$rev"
+        got="$(sha256sum "$path" 2>/dev/null | cut -d' ' -f1)"
+        if [ -z "$got" ]; then
+            note "deployed file is MISSING: $path (manifest: $rev)"
+            drifted=$((drifted + 1))
+        elif [ "$got" != "$want" ]; then
+            note "deployed file CHANGED since it was deployed: $path"
+            drifted=$((drifted + 1))
+        fi
+    done < "$MANIFEST"
+    # An empty manifest reconciles nothing while looking like a clean pass -- the exact
+    # shape this whole section exists to catch, so it is called out rather than assumed.
+    [ "$manifest_files" -gt 0 ] || note "deploy manifest is EMPTY -- nothing was reconciled"
+else
+    note "no deploy manifest at $MANIFEST -- cannot tell whether the box matches the repo"
+fi
+case "$deployed_rev" in
+    *-dirty) note "deployed from a DIRTY working tree ($deployed_rev) -- the revision does not describe what is running" ;;
+esac
+
+# 2. The CA carries name constraints -- not merely exists. The fingerprint pin above
+# proves the key has not been SWAPPED; it says nothing about what the key may vouch for.
+# F26 was marked FIXED for three days while the live CA was unconstrained, and the pin
+# was green throughout because the unconstrained key was exactly the one it had pinned.
+ca_nc=0
+if [ -r "$CA_CERT" ]; then
+    ca_nc="$(openssl x509 -in "$CA_CERT" -noout -text 2>/dev/null | grep -c 'X509v3 Name Constraints' || true)"
+    [ "${ca_nc:-0}" -gt 0 ] || note "the CA has NO name constraints -- a stolen key can vouch for any host (F26)"
+fi
+
+# 3. Every unit's ExecStart points at a file that exists and is executable. A unit whose
+# program was never installed fails with 203/EXEC at the moment you need it, and looks
+# perfectly installed until then -- cooldown-cawatch.service shipped that way.
+missing_exec=0
+for u in /etc/systemd/system/cooldown-*.service; do
+    [ -e "$u" ] || continue
+    while read -r prog; do
+        case "$prog" in /usr/local/*|/usr/bin/*|/home/pi/*) ;; *) continue ;; esac
+        if [ ! -x "$prog" ]; then
+            note "$(basename "$u") ExecStart points at $prog which is not executable/present"
+            missing_exec=$((missing_exec + 1))
+        fi
+    done <<EOF2
+$(sed -n 's/^ExecStart=[-@+!]*\([^ ]*\).*/\1/p' "$u")
+EOF2
+done
+
+# 4. Units that declare [Install] are actually enabled. Installing a unit file and
+# enabling it are different acts, and `deploy.sh units` only does the first -- it
+# daemon-reloads and says so, which reads like completion.
+not_enabled=0
+for u in /etc/systemd/system/cooldown-*.service /etc/systemd/system/cooldown-*.timer; do
+    [ -e "$u" ] || continue
+    grep -q '^\[Install\]' "$u" || continue          # no [Install] = not meant to be enabled
+    n="$(basename "$u")"
+    case "$(systemctl is-enabled "$n" 2>/dev/null)" in
+        enabled|enabled-runtime|static|indirect) ;;
+        *) note "$n declares [Install] but is not enabled -- it will not start on boot"
+           not_enabled=$((not_enabled + 1)) ;;
+    esac
+done
+
+# 5. Every timer has a next elapse. F21's lesson generalised: a timer with Trigger: n/a
+# reports active and enabled and will never fire again.
+dead_timers=0
+for t in /etc/systemd/system/cooldown-*.timer; do
+    [ -e "$t" ] || continue
+    n="$(basename "$t")"
+    systemctl is-active --quiet "$n" || continue
+    nrt="$(systemctl show "$n" -p NextElapseUSecRealtime --value 2>/dev/null)"
+    nmo="$(systemctl show "$n" -p NextElapseUSecMonotonic --value 2>/dev/null)"
+    if [ -z "$nrt" ] && { [ -z "$nmo" ] || [ "$nmo" = "0" ]; }; then
+        note "$n is active but has NO next elapse -- it will never fire again"
+        dead_timers=$((dead_timers + 1))
+    fi
+done
+
+# 6. The INPUT policy really is DROP, on BOTH families. fw_policy is read above, but only
+# to decide whether a listener counts as exposed -- its VALUE was never asserted. F28's
+# refusal path leaves the box at ACCEPT on purpose, and until tonight the caller threw
+# that refusal away, so "we set DROP" was an assumption with nothing behind it.
+for fam in "v4:${fw_policy:-unknown}" "v6:${fw_policy6:-unknown}"; do
+    case "${fam#*:}" in
+        DROP) ;;
+        *) note "INPUT policy on ${fam%%:*} is ${fam#*:}, expected DROP" ;;
+    esac
+done
+
+
 # --- the expensive tier -----------------------------------------------------------
 KNOWN_MODIFIED='/usr/lib/modprobe.d/g_ether.conf'
 
@@ -285,6 +394,11 @@ printf '"ts_days":%d,"listeners":"%s","firewall_rules":%d,"exposed_ports":"%s",'
 printf '"fw_policy":"%s","fw_contained":"%s",' "${fw_policy:-unknown}" "$(esc "$contained")"
 printf '"journal_persistent":%s,"backup_age":%d,"root_pct":%d,"boot_pct":%d,' \
        "$journal_persistent" "${backup_age:--1}" "${root_pct:-0}" "${boot_pct:-0}"
+printf '"deployed_rev":"%s","deploy_drift":%d,"manifest_files":%d,"ca_constrained":%s,' \
+       "$(esc "$deployed_rev")" "${drifted:-0}" "${manifest_files:-0}" \
+       "$([ "${ca_nc:-0}" -gt 0 ] && echo true || echo false)"
+printf '"missing_exec":%d,"not_enabled":%d,"dead_timers":%d,"fw_policy6":"%s",' \
+       "${missing_exec:-0}" "${not_enabled:-0}" "${dead_timers:-0}" "${fw_policy6:-unknown}"
 printf '"tampered_files":%d,"tampered_all":%d,"backup_restores":%d,"full_checked":%d,"findings":%d,"checked":%d}\n' \
        "${tampered:--1}" "${tampered_all:--1}" "${backup_restores:--1}" "${full_checked:-0}" "${#findings[@]}" "$(date +%s)"
 } > "$TMP"

@@ -13,6 +13,59 @@ PI="${PI:-pi@raspberrypi.local}"
 DIR=/home/pi/cooldown
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=8 "$PI")
 
+
+# --- what did we actually put on the box? -------------------------------------------
+# Written at deploy time and verified hourly by cooldown-audit.sh. The gap this closes is
+# the one that opened this whole review: app.py and addon.py sat a commit behind on the
+# Pi with the CSP fail-open still live, while every other deployed file was current, so
+# nothing looked wrong. "Correct in the repo" and "running on the box" are different
+# claims and only one of them was ever checked.
+#
+# Recorded per file rather than as a single revision, because the two targets deploy
+# different sets: `code` alone leaves units from an older revision, and a manifest that
+# claimed otherwise would assert exactly the thing it exists to disprove.
+MANIFEST=/var/lib/cooldown-deployed.manifest
+REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+git diff --quiet HEAD 2>/dev/null || REV="$REV-dirty"
+
+stamp(){   # each arg: "<installed path on box>=<local source file>"
+    local new; new="$(mktemp)" || return 0
+    local pair dst src
+    for pair in "$@"; do
+        dst="${pair%%=*}"; src="${pair#*=}"
+        [ -f "$src" ] || continue
+        printf '%s %s %s\n' "$(sha256sum "$src" | cut -d" " -f1)" "$REV" "$dst" >> "$new"
+    done
+    if [ ! -s "$new" ]; then rm -f "$new"; return 0; fi
+    local cur; cur="$(mktemp)" || { rm -f "$new"; return 0; }
+    "${SSH[@]}" "cat $MANIFEST 2>/dev/null" > "$cur" || true
+    local merged; merged="$(mktemp)" || { rm -f "$new" "$cur"; return 0; }
+    # Newest entry per path wins; merged locally so the box needs no tooling.
+    python3 - "$cur" "$new" > "$merged" <<'PYEOF'
+import sys
+rows = {}
+for f in sys.argv[1:]:
+    for line in open(f, encoding="utf-8", errors="replace"):
+        parts = line.split(None, 2)
+        if len(parts) == 3:
+            rows[parts[2].strip()] = (parts[0], parts[1])
+for path in sorted(rows):
+    h, rev = rows[path]
+    print(f"{h} {rev} {path}")
+PYEOF
+    # mktemp on the box, not a fixed /tmp name (F17). This file is installed as root, so a
+    # predictable path in a world-writable directory can be pre-created and swapped between
+    # the scp and the install -- turning a manifest write into an arbitrary root write. The
+    # units target already stages this way; the pre-commit hook caught this one.
+    local dest; dest="$("${SSH[@]}" 'mktemp /tmp/.deployed-manifest.XXXXXXXX')"
+    if [ -n "$dest" ]; then
+        scp -q -o BatchMode=yes "$merged" "$PI:$dest" \
+            && "${SSH[@]}" "sudo install -m644 $dest $MANIFEST; rm -f $dest" \
+            && echo "stamped     $(wc -l < "$merged") file(s) at $REV"
+    fi
+    rm -f "$new" "$cur" "$merged"
+}
+
 remote_md5() { "${SSH[@]}" "md5sum $DIR/$1 2>/dev/null | cut -d' ' -f1"; }
 local_md5()  { md5sum "$1" | cut -d' ' -f1; }
 
@@ -57,6 +110,12 @@ case "${1:-code}" in
                  sudo install -D -m644 $STAGE/cooldown-journald.conf /etc/systemd/journald.conf.d/50-cooldown-persistent.conf &&
                  rm -rf $STAGE &&
                  sudo systemctl daemon-reload && echo 'units installed + daemon-reloaded'"
+    stamp /usr/local/sbin/cooldown-redirect.sh=deploy/cooldown-redirect.sh \
+          /usr/local/sbin/cooldown-updates.sh=deploy/cooldown-updates.sh \
+          /usr/local/sbin/cooldown-audit.sh=deploy/cooldown-audit.sh \
+          /usr/local/sbin/cooldown-cawatch.sh=deploy/cooldown-cawatch.sh \
+          /usr/local/sbin/cooldown-alert-test.sh=deploy/cooldown-alert-test.sh \
+          /usr/local/sbin/cooldown-verify-backup.py=deploy/cooldown-verify-backup.py
     echo "NOTE: restart services yourself if a unit changed (sudo systemctl restart <svc>)."
     echo "NOTE: journald.conf.d is NOT covered by daemon-reload. If cooldown-journald.conf"
     echo "      changed:  sudo systemctl restart systemd-journald"
@@ -98,6 +157,10 @@ case "${1:-code}" in
             addon.py) restart+=(cooldown-proxy.service) ;;
         esac
     done
+    stamp "$DIR/app.py=app.py" "$DIR/addon.py=addon.py" \
+          "$DIR/rotate-ca.sh=rotate-ca.sh" "$DIR/deploy/gen_ca.sh=deploy/gen_ca.sh" \
+          "$DIR/deploy/gen_allow_hosts.py=deploy/gen_allow_hosts.py" \
+          "$DIR/news_domains.py=news_domains.py"
     if [ "${#restart[@]}" -gt 0 ]; then
         echo "Restarting: ${restart[*]}"
         "${SSH[@]}" "sudo systemctl restart ${restart[*]} && sleep 2"

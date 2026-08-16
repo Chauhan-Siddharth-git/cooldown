@@ -789,3 +789,34 @@ def test_re_entering_during_a_live_session_does_not_reset_the_charge_baseline(rd
     assert abs(float(rdb.get(f"last_heartbeat:{p}")) - baseline) < 0.5, (
         "re-entering during a live session moved the charge baseline forward, "
         "which zeroes the next charge")
+
+def test_every_stamped_file_is_a_file_deploy_actually_pushes():
+    """The deploy manifest must not claim a file that was never sent.
+
+    cooldown-audit.sh reconciles the box against this manifest, so a stamped path that no
+    deploy step writes would be verified against whatever happened to be there -- and a
+    manifest entry that agrees with a stale file is worse than no entry, because it
+    reports "reconciled, no drift" about a file nobody deployed.
+
+    Derived from deploy.sh both ways rather than from a list kept alongside it.
+    """
+    import re
+    src = open(os.path.join(ROOT, "deploy.sh"), encoding="utf-8").read()
+
+    stamped = set()
+    for m in re.finditer(r'(?:^|\s)"?(/[^\s"=]+|\$DIR/[^\s"=]+)=([^\s"\\]+)', src):
+        stamped.add(m.group(2))
+    assert stamped, "parsed no stamp() pairs out of deploy.sh -- this test checks nothing"
+
+    # Everything deploy.sh sends: the `code` loop's file list, and the units scp list.
+    sent = set()
+    loop = re.search(r"for f in ([^;]+?); do", src, re.S)
+    if loop:
+        sent |= {t for t in loop.group(1).replace("\\\n", " ").split() if "/" in t or t.endswith((".py", ".sh", ".md"))}
+    for m in re.finditer(r"(deploy/[A-Za-z0-9_.-]+)", src):
+        sent.add(m.group(1))
+
+    unsent = sorted(p for p in stamped if p not in sent)
+    assert not unsent, (
+        f"deploy.sh stamps {unsent} into the manifest but never pushes them; the audit "
+        f"would reconcile the box against a file no deploy step writes")
