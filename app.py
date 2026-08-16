@@ -452,7 +452,12 @@ THEMES = {
                  "accent": "#8fa3b8", "good": "#93aecb", "warn": "#f0a63a", "enc": "#7fc4e8"},
     },
     "frost": {
-        "label": "Frost", "emoji": "\U00002744", "season": None,
+        # No emoji. The palette carries it now -- a blue backdrop, blue board, blue traffic
+        # stream -- and a snowflake in the corner announcing "this is the winter one"
+        # reads as a label stuck on a thing that already speaks for itself. The field is
+        # already optional (the gate's kicker is wrapped in `{% if theme_emoji %}`), which
+        # is how the personal themes ship unlabelled, so this needs no new machinery.
+        "label": "Frost", "emoji": "", "season": None,
         "vars": {"bg": "#04101c", "card": "#0d1f2e", "line": "#1d3a52", "fg": "#eef6fb",
                  "muted": "#8fb4cc", "faint": "#5b7f99", "go": "#5ec8f0",
                  "wait": "#f0a63a", "bad": "#e05663", "sleep": "#7aa2ff",
