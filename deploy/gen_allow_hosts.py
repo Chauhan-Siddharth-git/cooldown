@@ -55,16 +55,38 @@ def name_constraints():
       (evil-reddit.com, reddit.com.attacker.io) at the trust layer.
 
     · A name TYPE absent from the permitted subtrees is UNCONSTRAINED, not forbidden.
-      Permitting only DNS while saying nothing about IP would leave a stolen CA free to
-      issue certs for IP addresses. Hence the explicit excludes.
+      Permitting only DNS while saying nothing about email or URI would leave a stolen CA
+      free to issue for those. Hence the explicit excludes for the two types nothing here
+      ever legitimately needs.
+
+    · IP is DELIBERATELY NOT EXCLUDED, and that is a trade made with evidence (F38).
+      It was excluded originally, for the reason above, and it broke every gated site on
+      the phone. In TRANSPARENT mode mitmproxy learns the destination from SO_ORIGINAL_DST
+      -- an IP -- and addons/tlsconfig.py appends it to the SAN unconditionally:
+
+          if conn_context.server.address:
+              altnames.append(_ip_or_dns_name(conn_context.server.address[0]))
+
+      So every certificate minted for a transparently-proxied client carried an IP SAN
+      inside the excluded subtree, which RFC 5280 requires validators to reject. Devices
+      using the REGULAR proxy port were unaffected, because there the destination arrives
+      as a hostname via CONNECT -- which is why the laptop passed every test while the
+      phone failed everything.
+
+      What excluding IP actually bought: a stolen key could not vouch for https://<an-ip>.
+      Exploiting that needs the victim to browse to a bare IP and disregard the hostname,
+      which is close to worthless. What it cost: the tool did not work. The DNS constraint
+      is the one that matters and it is untouched -- a stolen key still cannot produce a
+      certificate for your bank.
 
     Emitted as a config SECTION rather than one long value: there are ~96 domains and a
     single line is both unreadable and close to openssl's comfort with long values.
     """
     out = ["nameConstraints=critical,@cooldown_nc", "", "[cooldown_nc]"]
     out += [f"permitted;DNS.{i}={d}" for i, d in enumerate(domains())]
-    out += ["excluded;IP.0=0.0.0.0/0.0.0.0", "excluded;IP.1=::/::",
-            "excluded;email.0=.", "excluded;URI.0=."]
+    # No excluded;IP here -- see the note above. Transparent-mode certificates legitimately
+    # carry the destination IP, so excluding IP rejects every one of them.
+    out += ["excluded;email.0=.", "excluded;URI.0=."]
     return "\n".join(out)
 
 

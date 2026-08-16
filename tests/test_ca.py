@@ -33,7 +33,7 @@ def ca(tmp_path_factory):
     return d
 
 
-def _verify(ca_dir, host):
+def _verify(ca_dir, host, extra_san=None):
     """Sign a leaf for `host` with the CA and ask openssl to verify the chain.
     True = the CA is able to vouch for that host."""
     key, csr, crt = (str(ca_dir / f"probe.{x}") for x in ("key", "csr", "crt"))
@@ -42,7 +42,8 @@ def _verify(ca_dir, host):
                    capture_output=True, timeout=60, check=True)
     ext = str(ca_dir / "probe.ext")
     with open(ext, "w") as f:
-        f.write(f"subjectAltName=DNS:{host}\n")
+        san = f"DNS:{host}" + (f",{extra_san}" if extra_san else "")
+        f.write(f"subjectAltName={san}\n")
     subprocess.run(["openssl", "x509", "-req", "-in", csr,
                     "-CA", str(ca_dir / "mitmproxy-ca-cert.pem"),
                     "-CAkey", str(ca_dir / "mitmproxy-ca.pem"),
@@ -79,6 +80,47 @@ def test_a_stolen_ca_cannot_vouch_for_anything_else(ca, host):
     assert not _verify(ca, host), (
         f"the CA signed a usable cert for {host}, which is outside its constraints — "
         f"a stolen key is a trust anchor for the whole internet again")
+
+
+# The destination IP mitmproxy puts in the SAN in transparent mode. Any address works;
+# these are just plausible ones.
+TRANSPARENT_IPS = ["IP:142.250.190.46", "IP:151.101.65.140", "IP:2607:f8b0:4006:802::200e"]
+
+
+@pytest.mark.parametrize("ip_san", TRANSPARENT_IPS)
+def test_the_ca_can_vouch_for_a_transparently_proxied_host(ca, ip_san):
+    """A leaf carrying the destination IP alongside the hostname must still validate.
+
+    This is the shape mitmproxy actually mints for a transparently-proxied client, and it
+    is not optional: addons/tlsconfig.py appends the server address to the SAN
+    unconditionally, and in transparent mode that address is an IP from SO_ORIGINAL_DST.
+
+    The CA used to carry `excluded;IP:0.0.0.0/0` on the reasoning that a name type absent
+    from the permitted subtrees is unconstrained. Correct in the abstract, and it rejected
+    every certificate the box issued to the phone -- an excluded-subtree violation on every
+    gated site. Devices on the REGULAR proxy port were fine, because there the destination
+    arrives as a hostname via CONNECT, so the laptop passed every test while the phone
+    failed completely and the constraint looked innocent.
+
+    Kept as a standing test because the exclusion is the obvious thing to re-add: it reads
+    like tightening, and nothing else here would notice it had broken every device that
+    reaches the box transparently.
+    """
+    assert _verify(ca, "www.reddit.com", extra_san=ip_san), (
+        f"the CA cannot vouch for a leaf carrying {ip_san} -- transparent-mode clients "
+        "will reject every gated site (see F38)")
+
+
+@pytest.mark.parametrize("host", OUT_OF_SCOPE)
+def test_an_ip_san_does_not_smuggle_an_out_of_scope_host(ca, host):
+    """Permitting IPs must not weaken the DNS bound, which is the property that matters.
+
+    Attaching an IP SAN is not a way to get a certificate for a name the CA may not vouch
+    for: the DNS name is still checked against the permitted subtrees on its own.
+    """
+    assert not _verify(ca, host, extra_san="IP:142.250.190.46"), (
+        f"the CA signed {host} when an IP SAN was attached -- the DNS constraint is "
+        "being bypassed")
 
 
 def test_the_constraints_and_the_decrypt_allowlist_come_from_one_list(ca):

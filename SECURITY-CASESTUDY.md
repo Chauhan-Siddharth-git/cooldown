@@ -1363,6 +1363,67 @@ certificate.
 
 ---
 
+## F38 — The IP exclusion rejected every certificate the box issues transparently  ·  HIGH  ·  FIXED
+
+**What it is.** F26's CA excluded all IP addresses from its permitted subtrees, reasoning
+that a name type absent from the permitted set is *unconstrained* rather than forbidden —
+correct in the abstract, and it broke every gated site on the phone the moment the CA was
+rotated in.
+
+In **transparent** mode mitmproxy learns the destination from `SO_ORIGINAL_DST`, which is an
+IP, and `addons/tlsconfig.py` appends it to the SAN unconditionally:
+
+```python
+# If we already know of a server address, include that in the SANs as well.
+if conn_context.server.address:
+    altnames.append(_ip_or_dns_name(conn_context.server.address[0]))
+```
+
+So every certificate minted for a transparently-proxied client carried an IP SAN inside the
+excluded subtree — an excluded-subtree violation, which RFC 5280 requires validators to
+reject. Not some sites. All of them.
+
+**Why it looked like a device problem for an hour.** Clients on the **regular** proxy port
+were entirely unaffected: there the destination arrives as a hostname via `CONNECT`, so
+`server.address[0]` is `www.youtube.com` and no IP SAN is minted. The laptop reaches the box
+that way (via a locked Firefox enterprise policy) and the phone reaches it transparently. So
+the laptop passed every test while the phone failed completely, and the obvious reading —
+"the phone's trust store is wrong" — was wrong. Hours went into reinstalling profiles.
+
+**Three misreadings, each worth more than the fix.**
+
+- **A successful interception was read as proof of trust.** The phone briefly "worked" on
+  Reddit; the logs showed real intercepted `GET https://…` requests. The user had clicked
+  through the browser warning. A click-through and genuine trust produce *identical* server-side
+  logs. The proxy can see that a handshake completed; it cannot see whether the client was
+  happy about it.
+- **`prefs.js` was read as the laptop's proxy configuration.** It said `network.proxy.type=0`,
+  so the laptop looked unproxied and therefore not a control at all. A `Locked` enterprise
+  policy overrides `prefs.js` entirely, and the laptop was proxied the whole time.
+- **A diagnostic constructed the bug it found.** An early test appeared to show the leaf
+  carrying an IP SAN — the right answer — but it came from `s_client -connect <ip>:8081`,
+  which asks mitmproxy to mint a certificate *for an IP*. The observation was an artifact, so
+  it was dismissed; the real mechanism was the same shape arriving by a different route. A
+  test that builds the request differently from the client finds a different bug, and
+  discarding its result discards the real one too.
+
+**The fix.** Drop `excluded;IP`. The DNS constraint — the one that matters — is untouched: a
+stolen key still cannot produce a certificate for a bank. What is given up is that the key
+could vouch for `https://<an-ip>`, which requires a victim to browse to a bare IP and
+disregard the hostname. Two standing tests now cover it: a leaf carrying an IP SAN must
+validate, and attaching an IP SAN must not smuggle an out-of-scope DNS name past the
+constraint. Both mutation-tested by re-adding the exclusion.
+
+**The concept — a constraint has to be checked against the certificates you actually issue,
+not the ones you imagine.** The pre-flight before rotating compared the CA's permitted set
+against `--allow-hosts` and got 96 = 96. It passed and proved nothing, because the violation
+was never about the *host being visited*. It came from a name the proxy itself adds, in a
+mode that was never exercised. The general form: when you narrow what a credential may
+assert, enumerate what the issuing code actually puts in it — including the parts added for
+you.
+
+---
+
 ## Accepted by design
 
 Some risks are the cost of what the tool *is* — understood, bounded, documented,
