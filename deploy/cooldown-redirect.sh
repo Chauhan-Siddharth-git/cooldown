@@ -179,6 +179,20 @@ acct_dn(){
   iptables -t mangle -X TRAFFIC_ACCT 2>/dev/null || true
 }
 case "$1" in
-  up)   r4 80; r4 443; r6 80; r6 443; q_up; fw_up; acct_up ;;
+  # fw_up's status is CHECKED, not discarded. It refuses to flip the INPUT policy to
+  # DROP when the accepts that keep you reachable are missing (see the block above) and
+  # returns 1 to say so -- but `fw_up; acct_up` threw that away, acct_up's status became
+  # the script's, and the unit is Type=oneshot, so systemd recorded a clean activation.
+  # The box then sat at policy ACCEPT with 8080/8081/5000/22 reachable while
+  # `systemctl status cooldown-redirect` was green: the refusal was designed to be loud
+  # and its only listener was ignoring it. F29's shape (a failed step rendered as
+  # success), in the script written to fix F28.
+  #
+  # acct_up still runs first -- traffic accounting is unrelated to the firewall and
+  # skipping it would trade one silent gap for another -- but the exit status is fw_up's.
+  up)   r4 80; r4 443; r6 80; r6 443; q_up
+        fw_rc=0; fw_up || fw_rc=$?
+        acct_up
+        exit "$fw_rc" ;;
   down) d4 80; d4 443; d6 80; d6 443; q_dn; fw_dn; acct_dn ;;
 esac

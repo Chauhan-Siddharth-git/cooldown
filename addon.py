@@ -49,8 +49,14 @@ IGNORED_HOSTS = [
 # Shorts, other channels) bounces back to the course.
 STUDY_PLAYLISTS = []   # OFF by default; must match app.py. See the note there.
 
+# Timeouts, because these calls run on mitmproxy's event loop. Without them a Redis
+# that is reachable but wedged (swapping, blocked on an AOF rewrite) hangs the proxy
+# itself rather than failing a request -- and a hung proxy is every gated site hanging.
+# Two seconds is far above a healthy round trip and far below a user's patience.
+# Failing fast is what lets the fail-closed path above actually run.
 r = redis.Redis(host=os.environ.get("REDIS_HOST", "localhost"),
-                port=int(os.environ.get("REDIS_PORT", "6379")), decode_responses=True)
+                port=int(os.environ.get("REDIS_PORT", "6379")), decode_responses=True,
+                socket_timeout=2, socket_connect_timeout=2)
 
 # Injected into real pages of a gated site. Pings the budget server only while the
 # tab is actually visible, so only foreground viewing time is charged. The site is
@@ -942,7 +948,28 @@ class BudgetAddon:
             )
             return
 
-        mode = session_mode(site)
+        # FAIL CLOSED. This is the read the gate is decided on, and it was the one
+        # Redis call in this file not wrapped -- every other goes through _try_redis
+        # (the docstring even states the principle, for the shadow meter). session_mode
+        # is two bare r.get()s, so a dead Redis raised straight out of this hook, into
+        # mitmproxy's addon wrapper, which logs and forwards the flow. Redis unhealthy
+        # therefore meant every gated site open, silently, for as long as it lasted --
+        # and invisibly, because _note_error is downstream of here so proxy_errors never
+        # moved and /health stayed green. enforcement_looks_dead() cannot catch it
+        # either; it reads Redis to decide.
+        #
+        # Not hypothetical: unattended-upgrades restarting redis-server overnight is
+        # enough. F12/F20's failure -- the clock stops while browsing continues --
+        # reached by a third route.
+        #
+        # Treating the failure as "no session" serves the gate. That is the safe
+        # direction: a tool that blocks Reddit while its state store is broken still
+        # works; one that opens it does not.
+        try:
+            mode = session_mode(site)
+        except Exception as exc:
+            _note_error("request/session_mode", exc)
+            mode = None
         fetch_mode = flow.request.headers.get("Sec-Fetch-Mode", "")
         fetch_dest = flow.request.headers.get("Sec-Fetch-Dest", "")
         is_navigation = fetch_mode == "navigate" or fetch_dest == "document"
@@ -1023,7 +1050,11 @@ class BudgetAddon:
             injection = SW_KILL + ov["inject"]
         else:
             # Only inject during a live session (budgeted or study).
-            mode = session_mode(site)
+            # Wrapped for the same reason as the request-side read, but quieter: the
+            # outcome on failure (no injection) is identical to the outcome this branch
+            # already produces for "no session", and request() has by then both failed
+            # closed and logged. A second log line per response would only add noise.
+            mode = _try_redis(lambda: session_mode(site))
             if mode is None:
                 return
             injection = HEARTBEAT_SCRIPT.replace("__SITE__", site)

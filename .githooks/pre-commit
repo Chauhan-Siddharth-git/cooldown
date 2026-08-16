@@ -133,7 +133,17 @@ if git diff --cached --name-only --diff-filter=ACM | grep -qE '\.py$'; then
       fails=$((fails+1))
     fi
   else
-    printf "  ${YEL}!${N} redis is down — invariant tests skipped. ${DIM}Run them before you push.${N}\n"
+    # Counts as a FAILURE, not a note. This branch used to print a warning and leave
+    # `fails` alone, so control fell through to "✓ security checks passed" and exit 0 --
+    # the hook announced success having run no tests at all. Every invariant pinning
+    # F3, F9, F13, F14 and F25 was skipped on any machine without a running Redis, and
+    # the commit was blessed. That is the defect three lines above this one describes:
+    # a gate that checks the empty subset and reads as if it reported on everything.
+    # It is also F29 exactly -- a tool that could not run, rendered as a clean result.
+    printf "  ${RED}✗${N} ${B}redis is down — the test suite did not run${N}\n"
+    printf "    ${DIM}Start it (sudo systemctl start redis-server) so the invariants can be checked.${N}\n"
+    printf "    ${DIM}If you genuinely need to commit without them, --no-verify says so out loud.${N}\n"
+    fails=$((fails+1))
   fi
 fi
 
