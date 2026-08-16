@@ -105,6 +105,14 @@ fw_up(){ rc=0; for ipt in iptables ip6tables; do
           #
           # Checked with -C, which asks the kernel whether the rule is really in the chain,
           # rather than trusting the exit status of the command that tried to add it.
+          # ALL FIVE, not three. The comment above calls every one of them a survival
+          # requirement and names ICMPv6 as "NOT optional... dropping it does not block
+          # pings, it breaks IPv6 entirely" -- and then only conntrack, loopback and the
+          # tailnet port accept were ever checked. The ICMP and DHCP-client rules are
+          # inserted with the same silent `-C ... || -I ...` pattern and were never
+          # re-verified, so the invariant as written was not the invariant as enforced.
+          # F28 exists because a missing accept plus a DROP policy is a locked box; that is
+          # just as true of the two nobody checked.
           missing=""
           $ipt -C INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null \
               || missing="$missing conntrack-established"
@@ -112,6 +120,18 @@ fw_up(){ rc=0; for ipt in iptables ip6tables; do
               || missing="$missing loopback"
           $ipt -C INPUT -i "$IF" -p tcp -m multiport --dports "$PORTS" -j ACCEPT 2>/dev/null \
               || missing="$missing $IF:$PORTS"
+          # Family-specific, and checked with the same rule shape they were inserted with.
+          if [ "$ipt" = ip6tables ]; then
+              $ipt -C INPUT -p icmpv6 -j ACCEPT 2>/dev/null \
+                  || missing="$missing icmpv6(neighbour-discovery)"
+              $ipt -C INPUT -p udp --dport 546 -j ACCEPT 2>/dev/null \
+                  || missing="$missing dhcpv6-client"
+          else
+              $ipt -C INPUT -p icmp -j ACCEPT 2>/dev/null \
+                  || missing="$missing icmp"
+              $ipt -C INPUT -p udp --sport 67 --dport 68 -j ACCEPT 2>/dev/null \
+                  || missing="$missing dhcp-client"
+          fi
 
           if [ -n "$missing" ]; then
               # Leaving the policy at ACCEPT is the weaker posture and the right call: an

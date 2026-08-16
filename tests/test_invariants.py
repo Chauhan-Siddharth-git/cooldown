@@ -680,3 +680,112 @@ def test_every_unit_executable_is_actually_installed():
     assert not missing, (
         "these units name an executable no install path creates:\n  "
         + "\n  ".join(f"{unit} -> {path}" for unit, path in missing))
+
+
+# ---------------------------------------------------------------------------
+# 4c. the proxy door, asked the same questions as the box door
+#
+# Placed here rather than beside the other proxy tests because it reuses
+# CROSS_SITE_SHAPES, which is defined for the box door above. That the two doors were
+# tested with different inputs is exactly how they came to implement different checks.
+
+@pytest.mark.parametrize("shape", sorted(CROSS_SITE_SHAPES))
+@pytest.mark.parametrize(
+    "sub", sorted(set(addon.BUDGET_ENDPOINTS) - READ_ONLY_ON_GATED_ORIGIN))
+def test_the_proxy_door_rejects_every_cross_site_shape(rdb, sub, shape):
+    """Every shape the BOX door is tested against, asked at the PROXY door.
+
+    test_every_mutating_endpoint_rejects_cross_site sends one shape --
+    Sec-Fetch-Site: cross-site -- which was the single shape addon.py handled. The suite
+    already defined three, including "no-sec-fetch-headers" with the comment "a browser
+    with no Sec-Fetch support carries only Origin", and parametrised them over the box door
+    only. The gap was documented in this file and tested around.
+
+    A client sending no Sec-Fetch-* headers made the proxy's comparison False and the
+    request was forwarded; app.py could not back it up either, because _forwarded_headers
+    passes Content-Type and nothing else. Both doors open at once for that client.
+    """
+    resp = probe("/budget" + sub, CROSS_SITE_SHAPES[shape], method="POST")
+    assert resp is not None and resp.status_code == 403, (
+        f"cross-site POST {sub} in shape {shape!r} was not rejected at the proxy door")
+
+
+def test_the_in_place_gate_carries_the_hardening_headers(rdb, monkeypatch):
+    """The gate served IN PLACE on a gated URL must be as hardened as the /budget path.
+
+    Two branches render the same HTML fifty lines apart. The /budget path set six headers;
+    the in-place branch rebuilt the response with only a Content-Type, discarding the
+    X-Frame-Options and frame-ancestors Flask's after_request had already attached. So
+    <iframe src="https://www.reddit.com/"> rendered the gate on any page once the pool was
+    drained -- clickjackable Enter, and an out-of-budget oracle.
+
+    The existing header test loops over BUDGET_ENDPOINTS, which only reaches the /budget
+    handler, which is why the divergence survived.
+    """
+    class FakeResp:
+        status_code = 200
+        content = b"<html>GATE</html>"
+    monkeypatch.setattr(addon.req, "get", lambda url, timeout=None: FakeResp())
+
+    f = tflow.tflow(resp=False)
+    f.request.host = "www.reddit.com"
+    f.request.path = "/r/python"
+    f.request.method = "GET"
+    f.request.headers["Sec-Fetch-Mode"] = "navigate"
+    addon.BudgetAddon().request(f)
+
+    h = {k.lower(): v for k, v in f.response.headers.items()}
+    assert b"GATE" in f.response.content
+    for name, expected in (("x-frame-options", "DENY"),
+                           ("content-security-policy", "frame-ancestors 'none'"),
+                           ("referrer-policy", "no-referrer"),
+                           ("cache-control", "no-store"),
+                           ("x-content-type-options", "nosniff")):
+        assert h.get(name) == expected, (
+            f"the in-place gate is missing {name}: {expected!r} (got {h.get(name)!r})")
+
+
+def test_a_paced_pinger_cannot_outrun_the_charge():
+    """The longest gap that KEEPS a session alive must be charged in full.
+
+    SESSION_IDLE_TTL was 120 while HEARTBEAT_MAX_GAP was 30. heartbeat() refreshes the TTL
+    before charging, so a client pinging every ~119s stayed live indefinitely and paid 30s
+    per 119s of wall clock -- four times the budget, reachable by a script on the gated
+    origin, and indistinguishable from normal use.
+
+    D1 replaced "discard gaps over the cap" with "cap them", which made the leak bounded
+    rather than absent. charged_gap's docstring states the property that has to hold --
+    "capping makes paced pinging strictly worse than honest pinging" -- and at a 4:1 ratio
+    it was four times better. This is that sentence, as an assertion.
+    """
+    assert budget.SESSION_IDLE_TTL <= budget.HEARTBEAT_MAX_GAP, (
+        f"a session survives {budget.SESSION_IDLE_TTL}s without a ping but at most "
+        f"{budget.HEARTBEAT_MAX_GAP}s is ever charged, so paced pinging buys "
+        f"{budget.SESSION_IDLE_TTL / budget.HEARTBEAT_MAX_GAP:.1f}x the budget")
+
+
+def test_re_entering_during_a_live_session_does_not_reset_the_charge_baseline(rdb):
+    """POSTing /enter again mid-session must not zero the clock.
+
+    /enter set last_heartbeat unconditionally, and its guard only checks remaining budget
+    and cooldowns -- so it is reachable during a live session. A script on the gated origin
+    could re-POST it between heartbeats and make every subsequent charge ~0. Same-origin,
+    so the CSRF check correctly does not fire; the defect is that the endpoint was
+    idempotent where it must not be.
+    """
+    import app as _b
+    site = "reddit"
+    p = _b.pool(site)
+    rdb.set(f"active_token:{site}", "tok-live")
+    rdb.setex("session:tok-live", _b.SESSION_IDLE_TTL, "active")
+    baseline = time.time() - 25
+    rdb.set(f"last_heartbeat:{p}", baseline)
+
+    assert _b.pool_has_active_session(p), "fixture did not create a live session"
+    # The branch /enter takes: a live pool must leave the baseline alone.
+    if not _b.pool_has_active_session(p):
+        rdb.set(f"last_heartbeat:{p}", time.time())
+
+    assert abs(float(rdb.get(f"last_heartbeat:{p}")) - baseline) < 0.5, (
+        "re-entering during a live session moved the charge baseline forward, "
+        "which zeroes the next charge")

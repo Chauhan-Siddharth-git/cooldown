@@ -140,8 +140,22 @@ def main():
                 unreviewed.append((name, key))
             print()
 
+    # SUPPRESSED when any query failed, because `used` is only populated by a SUCCESSFUL
+    # query. With no network on the box, or OSV down, or a TLS error, nothing gets marked
+    # used and every reviewed entry is reported as stale -- with an instruction to delete
+    # it. F31's whole value is that each entry names the check that established it, so a
+    # transient outage was inviting you to delete exactly that, permanently, on the say-so
+    # of a run that checked nothing.
+    #
+    # Same shape as F29's apt_ok: distinguish "I looked and found nothing" from "I could
+    # not look". The second is not a result.
     stale = sorted(set(REVIEWED) - used)
-    if stale:
+    if failed:
+        print(f"NOT checking for stale reviewed entries: {len(failed)} package(s) could "
+              f"not be queried, so 'matched nothing' would mean 'nothing was asked'.")
+        print()
+        stale = []
+    elif stale:
         print("STALE reviewed entries — they match nothing now. Delete them; the thing "
               "they excused is gone:")
         for s in stale:

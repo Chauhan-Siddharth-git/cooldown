@@ -302,8 +302,27 @@ COOLDOWN_SECONDS = COOLDOWN_LADDER[0]   # base / back-compat default
 CLUSTER_WINDOW = 2 * 60 * 60        # rolling look-back window
 CLUSTER_THRESHOLD = 3               # the Nth cap-hit inside the window trips it
 CLUSTER_COOLDOWN_SECONDS = 25 * 60  # a short breather, not the 1h hard wall
-SESSION_IDLE_TTL = 120         # 2 min without a foreground ping = session expires
 HEARTBEAT_MAX_GAP = 30         # gaps between pings larger than this aren't charged (idle/away)
+# TIED to the cap above, deliberately, and the two must not drift apart.
+#
+# These were 120 and 30, and that ratio was a 4x budget leak. A session stays alive for
+# SESSION_IDLE_TTL without a ping (heartbeat() refreshes the TTL before charging), while
+# charged_gap() bills at most HEARTBEAT_MAX_GAP. So a client pinging every ~119s stayed
+# live indefinitely and paid 30s per 119s of wall clock. D1's cap made the leak bounded
+# rather than unbounded; it did not make it absent, and charged_gap's own docstring claims
+# the property that fails here -- "capping makes paced pinging strictly worse than honest
+# pinging". At 4:1 it is four times better.
+#
+# The invariant: the longest gap that KEEPS a session alive must be no longer than the
+# longest gap that is charged IN FULL. Equivalently SESSION_IDLE_TTL <= HEARTBEAT_MAX_GAP.
+# Pinned by test_a_paced_pinger_cannot_outrun_the_charge.
+#
+# Fixed by lowering the TTL rather than raising the cap, because raising the cap would
+# start charging for genuine absence and "background tabs cost nothing" is the design.
+# The cost is real and worth knowing: leaving a gated tab for 30s now ends the session
+# instead of 120s, so you land on the gate again. Raise BOTH numbers together if that is
+# too twitchy -- 60 and 60 keeps the invariant.
+SESSION_IDLE_TTL = HEARTBEAT_MAX_GAP
 # Passive refill: while nothing in the pool is being actively used, spent ticks back
 # down so partial use recovers over time. Rate is set so a fully-drained bucket (the
 # largest cap) refills to full after this many seconds fully idle (~1 hour).
@@ -1859,8 +1878,18 @@ def enter():
 
     token = str(uuid.uuid4())
     r.setex(f"session:{token}", SESSION_IDLE_TTL, "active")
+    # Only when the pool has no live session. Setting it unconditionally reset the charge
+    # baseline, and /enter is reachable DURING a live session -- the guard above only
+    # checks remaining budget and cooldowns -- so a script on the gated origin could
+    # re-POST it and make the next heartbeat charge ~0, indefinitely. Same-origin, so the
+    # CSRF check does not fire and should not: the request is legitimate in shape and the
+    # bug is that it is idempotent when it must not be.
+    # pool_has_active_session(), not a bare active_token read: active_token is written
+    # with set() and outlives the session:{token} it points at, so it is present long
+    # after a session has idled out. The helper checks the session key too.
+    if not _try(lambda: pool_has_active_session(pool(site)), False):
+        r.set(f"last_heartbeat:{pool(site)}", time.time())
     r.set(f"active_token:{site}", token)
-    r.set(f"last_heartbeat:{pool(site)}", time.time())
 
     # Return to the original link the user clicked (validated same-site), else home.
     return redirect(_safe_next(site, request.args.get("next", "")) or SITES[site]["home"])

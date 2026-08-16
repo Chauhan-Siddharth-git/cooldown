@@ -104,13 +104,79 @@ def _provably_nonempty(node):
     return False
 
 
+def _asserts_nonempty(test, target_src):
+    """Does this assert's expression actually establish NON-emptiness of the target?
+
+    The first version asked only whether the target was MENTIONED anywhere in the assert:
+    `target_src in ast.dump(n.test)`. So `assert len(rows) == 0` exonerated a loop over
+    `rows` exactly as well as `assert rows` did. It checked that the collection had been
+    talked about, not that anything had been established about it -- the same
+    mentioned-vs-established flaw this project hit in the unit-executable test and in the
+    parity needle check.
+
+    Accepted forms, and only these:
+        assert rows                     bare truthiness
+        assert len(rows)                same, spelled out
+        assert len(rows) > 0            and >= 1, != 0
+        assert len(rows) == <positive>  an exact expected count
+    """
+    def mentions(node):
+        return target_src and target_src in ast.dump(node)
+
+    if mentions(test) and isinstance(test, (ast.Name, ast.Attribute, ast.Call)):
+        # `assert rows` / `assert rows.values()` / `assert derive()` -- truthiness of the
+        # thing itself. A Call is accepted because `assert list(x)` is idiomatic.
+        if isinstance(test, ast.Call):
+            f = test.func
+            name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+            if name == "len":
+                return mentions(test)          # assert len(rows)
+        return True
+
+    if isinstance(test, ast.Compare) and len(test.ops) == 1:
+        left, op, right = test.left, test.ops[0], test.comparators[0]
+        is_len = (isinstance(left, ast.Call)
+                  and getattr(left.func, "id", "") == "len" and mentions(left))
+        if not is_len or not isinstance(right, ast.Constant):
+            return False
+        v = right.value
+        if not isinstance(v, int):
+            return False
+        # len(x) > 0 | >= 1 | != 0 | == n (n positive)
+        if isinstance(op, ast.Gt):    return v >= 0
+        if isinstance(op, ast.GtE):   return v >= 1
+        if isinstance(op, ast.NotEq): return v == 0
+        if isinstance(op, ast.Eq):    return v > 0
+        return False
+    return False
+
+
 def _guards_nonempty(stmts, target_src):
     """Did anything before the loop establish that the iterable has contents?"""
     for s in stmts:
         for n in ast.walk(s):
-            if isinstance(n, ast.Assert) and target_src and target_src in ast.dump(n.test):
+            if isinstance(n, ast.Assert) and _asserts_nonempty(n.test, target_src):
                 return True
     return False
+
+
+
+def _decorator_finding(fn):
+    """Decorators the walk never looked at, both of which make a test check nothing.
+
+    audit_function only reads the body, so `@pytest.mark.skip` and `@parametrize` over an
+    empty list both counted as clean -- a test that never runs is the purest form of a
+    test that cannot fail.
+    """
+    for d in fn.decorator_list:
+        src = ast.dump(d)
+        if "'skip'" in src and "skipif" not in src:
+            return ("NO_ASSERT", "permanently skipped -- @pytest.mark.skip, never runs")
+        if "'parametrize'" in src and isinstance(d, ast.Call) and len(d.args) >= 2:
+            arg = d.args[1]
+            if isinstance(arg, (ast.List, ast.Tuple, ast.Set)) and not arg.elts:
+                return ("NO_ASSERT", "parametrized over an empty list -- never runs")
+    return None
 
 
 def audit_function(fn, source):
@@ -193,7 +259,7 @@ def main():
             if not isinstance(fn, ast.FunctionDef) or not fn.name.startswith("test_"):
                 continue
             total += 1
-            r = audit_function(fn, src)
+            r = audit_function(fn, src) or _decorator_finding(fn)
             if r and fn.name in REVIEWED:
                 r = ("REVIEWED", REVIEWED[fn.name])
             if r:
@@ -223,7 +289,17 @@ def main():
     print(f"summary: {hard} test(s) can pass without checking anything; "
           f"{len(by_kind.get('COND_ONLY', []))} may not check on every run; "
           f"{len(by_kind.get('DELEGATED', []))} assert via a helper (unverifiable here).")
-    if strict and hard:
+    # Stale entries and an empty corpus FAIL under --strict, they do not merely print.
+    #
+    # F32's stated fix was that "each exemption list now fails when an entry stops
+    # matching". This one computed `stale`, printed it with !!, and then exited 0, because
+    # the status only looked at `hard`. A warning that cannot fail a run is a warning
+    # people learn to scroll past -- which is the whole finding it was written for.
+    #
+    # `not total` matters for the same reason: zero test functions examined means the glob
+    # matched nothing, and the vacuousness checker would exit 0 having checked nothing. The
+    # tool would pass vacuously, which is the exact shape it exists to find.
+    if strict and (hard or stale or not total):
         return 1
     return 0
 

@@ -654,6 +654,56 @@ def _note_error(where, exc):
     print(f"[ERROR] {where}: {exc}")
 
 
+# Hardening headers for any HTML this proxy synthesises on a gated origin. One dict so the
+# /budget path and the in-place gate cannot drift apart -- they did, and only the endpoint
+# set had a test.
+_GATE_HEADERS = {
+    "Content-Type": "text/html; charset=utf-8",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": "frame-ancestors 'none'",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
+}
+
+
+def _is_cross_origin(flow):
+    """Is this request driven from another site? Deliberately identical to app.py's
+    _cross_origin_to_guarded_route() predicate.
+
+    F25's lesson was that a control belongs to the path, not to the door somebody
+    remembered -- and the two doors then disagreed anyway. This one tested exactly
+    `Sec-Fetch-Site == "cross-site"`, which is narrower than the box's check in two ways
+    that both fail OPEN:
+
+      · A client sending no Sec-Fetch-* headers at all made the comparison False, so the
+        request was forwarded. app.py could not back it up either, because
+        _forwarded_headers passes Content-Type and nothing else -- Flask saw neither
+        signal and allowed by design. Both doors open at once, for that client.
+      · `Sec-Fetch-Site: same-site` was allowed here and refused at the box.
+
+    Modern Chrome, Firefox and Safari 16.4+ always send the header, so the practical
+    exposure was older iOS and in-app webviews on the tailnet -- narrow, not empty.
+
+    The suite already knew: CROSS_SITE_SHAPES defines a "no-sec-fetch-headers" shape with
+    the comment "a browser with no Sec-Fetch support carries only Origin", and those shapes
+    were parametrised over the box door only. The proxy-door test hardcoded the single
+    shape the code handled. Tests written against the implementation agree with it.
+    """
+    fetch_site = flow.request.headers.get("Sec-Fetch-Site")
+    if fetch_site:
+        # "none" is a user-initiated navigation (typed, bookmarked) -- a page cannot
+        # produce it. Anything else foreign ("cross-site", "same-site") is refused.
+        return fetch_site not in ("same-origin", "none")
+    origin = flow.request.headers.get("Origin")
+    if origin:
+        # A sandboxed iframe sends Origin: null, which parses to "" and is refused.
+        # host_header carries the port when there is one, matching Flask's request.host.
+        host = flow.request.host_header or flow.request.pretty_host
+        return urlsplit(origin).netloc != host
+    return False
+
+
 def session_mode(site):
     """Return the active session's mode ('active' or 'study'), or None if there's
     no live session for this site."""
@@ -817,6 +867,14 @@ class BudgetAddon:
 
     def responseheaders(self, flow: http.HTTPFlow):
         host = flow.request.pretty_host
+        # IGNORED_HOSTS is consulted HERE too, not only in request(). It was enforced at
+        # one hook and both response hooks keyed off site_for_host() alone -- and
+        # api.puzzmo.com / cdn.puzzmo.com are subdomains of a gated domain, so
+        # site_for_host matches them. Their responses were therefore buffered
+        # (stream = False), CSP-amended and script-injected despite being listed as
+        # exempt. F18 fixed how this list MATCHES; this is where it is asked.
+        if host_matches(host, IGNORED_HOSTS):
+            return
         if site_for_host(host):
             flow.response.stream = False
             self._strip_csp(flow)
@@ -872,13 +930,13 @@ class BudgetAddon:
 
             # CSRF: the mutating endpoints (/enter, /study, /exit, /heartbeat, ...) are
             # driven same-origin from the gate page / injected script. A forged request
-            # from another site the user is visiting is "cross-site" — reject it so a
-            # malicious page can't drive the budget state (or the return redirect).
+            # from another site the user is visiting must be refused, so a malicious page
+            # can't drive the budget state (or the return redirect).
             # Covers GET too: /exit is reachable by GET (the study-mode exit button is a
             # plain navigation), so a cross-site <img src=".../budget/exit"> would
             # otherwise end the session.
             if (flow.request.method != "GET" or sub in STATE_CHANGING) and \
-               flow.request.headers.get("Sec-Fetch-Site") == "cross-site":
+               _is_cross_origin(flow):
                 flow.response = http.Response.make(
                     403, b"cross-site request blocked",
                     {"Content-Type": "text/plain; charset=utf-8"})
@@ -1035,14 +1093,27 @@ class BudgetAddon:
                 # success. The fallback below already says the right thing.
                 if resp.status_code != 200:
                     raise RuntimeError(f"budget page returned {resp.status_code}")
+                # SAME headers as the /budget path fifty lines up. This branch rebuilt the
+                # response with only a Content-Type, so Flask's after_request hardening
+                # (X-Frame-Options, frame-ancestors, Referrer-Policy) was attached and then
+                # thrown away, and no Cache-Control was added.
+                #
+                # Framing is the cost. Because the proxy synthesises this response, the real
+                # site's own X-Frame-Options and CSP never arrive either, so
+                # <iframe src="https://www.reddit.com/"> renders your gate on any page once
+                # the pool is drained -- an iframe sends Sec-Fetch-Mode: navigate, which this
+                # path counts as a navigation. Cross-origin, so the attacker cannot read it;
+                # they can clickjack Enter (which posts same-origin, so the CSRF check
+                # correctly does not fire) and use it as an out-of-budget oracle.
+                # The gate also carries feed_token in <meta name="cd-tok">, and app.py's
+                # comment claims "the token-bearing gate is served through it and is still
+                # no-store (addon.py)" -- which was false here specifically.
                 flow.response = http.Response.make(
-                    200, resp.content,
-                    {"Content-Type": "text/html; charset=utf-8"}
+                    200, resp.content, _GATE_HEADERS
                 )
             except Exception:
                 flow.response = http.Response.make(
-                    200, b"Budget server unreachable",
-                    {"Content-Type": "text/html; charset=utf-8"}
+                    200, b"Budget server unreachable", _GATE_HEADERS
                 )
         else:
             flow.response = http.Response.make(503, b"", {})
@@ -1053,11 +1124,17 @@ class BudgetAddon:
         # foreground time is charged), OR the frosted "tap to reveal" overlay into
         # Facebook (no budget — decrypted for injection only).
         host = flow.request.pretty_host
+        if host_matches(host, IGNORED_HOSTS):
+            return                      # exempt: never inject into assets or APIs
         site = site_for_host(host)
         ov = None if site else overlay_for_host(host)
         if not site and not ov:
             return
-        if flow.request.path.startswith("/budget"):
+        # EXACT match, like the request-side check. startswith("/budget") also swallowed a
+        # genuine page at /budget-something on a gated site -- served with no heartbeat, so
+        # uncharged -- and several news domains do run a /budget section. The request side
+        # deliberately requires an exact match; these two disagreeing is the whole bug.
+        if flow.request.path == "/budget" or flow.request.path.startswith("/budget/"):
             return  # don't inject into the budget/enter pages themselves
 
         if "text/html" not in flow.response.headers.get("content-type", ""):

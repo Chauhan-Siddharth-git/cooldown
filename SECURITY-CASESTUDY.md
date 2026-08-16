@@ -1424,6 +1424,78 @@ you.
 
 ---
 
+## F39 — The rest of the fifth review  ·  MEDIUM  ·  FIXED
+
+Seven findings closed together. They are separate defects, but four of them are one habit:
+**a control implemented at the door someone was looking at, and tested with the input that
+door already handled.**
+
+**The two CSRF doors were never the same check.** The box read `Sec-Fetch-Site` (refusing
+anything but `same-origin`/`none`) and fell back to `Origin`. The proxy read exactly
+`Sec-Fetch-Site == "cross-site"`. Two consequences, both fail-open: a client sending no
+`Sec-Fetch-*` headers made the comparison False and was forwarded — and `app.py` could not
+back it up, because `_forwarded_headers` passes `Content-Type` and nothing else, so Flask
+saw neither signal and allowed by design. Both doors open at once. And `same-site` was
+allowed at one door, refused at the other.
+
+The sharp part is the test suite. `CROSS_SITE_SHAPES` already defined three shapes,
+including one named `no-sec-fetch-headers` with the comment *"a browser with no Sec-Fetch
+support carries only Origin"* — parametrised over the box door only. The proxy-door test
+hardcoded the single shape the code handled. **The suite documented the gap and tested
+around it.** Tests written against an implementation agree with it.
+
+**The in-place gate dropped every hardening header.** Two branches render the same HTML
+fifty lines apart; one set six headers, the other rebuilt the response with just a
+`Content-Type`, discarding the `X-Frame-Options` and `frame-ancestors` Flask had already
+attached. Since the proxy synthesises the response, the real site's headers never arrive
+either — so `<iframe src="https://www.reddit.com/">` rendered the gate on any page once the
+pool was drained. Cross-origin, so unreadable, but clickjackable (Enter posts same-origin,
+so the CSRF check correctly does not fire) and an out-of-budget oracle. The header test
+loops over `BUDGET_ENDPOINTS`, which only reaches the other branch.
+
+**`IGNORED_HOSTS` was consulted at one hook of three.** `api.puzzmo.com` and
+`cdn.puzzmo.com` are subdomains of a gated domain, so `site_for_host()` matches them; both
+response hooks keyed off that alone and buffered, CSP-amended and injected into hosts
+listed as exempt. F18 fixed how that list *matches*; this is where it is *asked*.
+
+**A paced pinger bought 4x the budget.** `SESSION_IDLE_TTL` was 120 and `HEARTBEAT_MAX_GAP`
+30, and `heartbeat()` refreshes the TTL before charging — so pinging every ~119s stayed live
+and paid 30s per 119s. D1 replaced "discard gaps over the cap" with "cap them", which made
+the leak bounded, not absent; `charged_gap`'s docstring asserts the property that fails
+here. The invariant is now pinned: *the longest gap that keeps a session alive must be no
+longer than the longest gap charged in full.* Separately, `/enter` set `last_heartbeat`
+unconditionally and is reachable during a live session, so re-POSTing it zeroed the next
+charge — same-origin, legitimate in shape, and idempotent where it must not be.
+
+**Three tools that could not fail**, which is F32's own subject recurring inside the tools
+written for F32:
+
+- `audit-tests.py` printed stale exemptions and exited 0, because the status only counted
+  `hard`. Zero test functions examined also exited 0 — the vacuousness checker passing
+  vacuously. And its non-empty guard accepted any *mention* of the target, so
+  `assert len(rows) == 0` exonerated a loop over `rows` exactly as well as `assert rows`.
+  Decorators were never read, so a permanent `@skip` and an empty `@parametrize` counted
+  as clean.
+- `check-deps.py` populates `used` only on a successful query, so if every query failed —
+  no network, OSV down — it reported every reviewed entry as stale and told you to delete
+  it. F31's value is that each entry names the check that established it; a transient
+  outage invited deleting exactly that.
+- `fw_up` verified three of the five rules its own comment calls survival requirements. The
+  ICMP and DHCP-client accepts are inserted with the same silent `-C … || -I …` pattern and
+  never re-checked, so the invariant as written was not the invariant as enforced — in the
+  function written for F28, whose entire point is that a missing accept plus a DROP policy
+  is a locked box.
+
+**The concept — "we fixed the class" is a claim to check, not a phrase to write.** F25
+concluded that a control belongs to the path, not the door; the two doors then disagreed
+for weeks. F32 concluded that every exemption list needs a staleness test; the tool built
+to enforce that printed its own stale entries and exited 0. Both conclusions were correct
+and neither propagated. The cheap test is mechanical: after fixing a class, grep for every
+other site that shares the shape and assert the property at each, in one commit — not the
+instance you found, and not the door you were standing at.
+
+---
+
 ## Accepted by design
 
 Some risks are the cost of what the tool *is* — understood, bounded, documented,
