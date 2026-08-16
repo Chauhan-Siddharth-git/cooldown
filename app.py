@@ -409,14 +409,16 @@ THEMES = {
     },
     # Spontaneous — no season, so they only ever turn up unannounced.
     "retro": {
-        "label": "Outrun", "emoji": "\U0001F31E", "season": None,
+        # No emoji: spontaneous themes have no occasion to announce. See "frost".
+        "label": "Outrun", "emoji": "", "season": None,
         "vars": {"bg": "#12061f", "card": "#1f0d33", "line": "#3a1a5c", "fg": "#fbeffb",
                  "muted": "#b494c4", "faint": "#7c5f8e", "go": "#2ec9dd",
                  "wait": "#f5a623", "bad": "#f0559a", "sleep": "#8f57d4",
                  "accent": "#d9548f", "good": "#2ec9dd", "warn": "#f5a623", "enc": "#5ad2f0"},
     },
     "terminal": {
-        "label": "Phosphor", "emoji": "\U0001F4DF", "season": None,
+        # No emoji: spontaneous themes have no occasion to announce. See "frost".
+        "label": "Phosphor", "emoji": "", "season": None,
         "vars": {"bg": "#050a05", "card": "#0d160d", "line": "#1c3320", "fg": "#e8f5e4",
                  "muted": "#8fae87", "faint": "#5e7a58", "go": "#4fd6c9",
                  "wait": "#ffb020", "bad": "#ff5470", "sleep": "#7a9e2f",
@@ -438,14 +440,16 @@ THEMES = {
                  "accent": "#5aa8d8", "good": "#48c4b0", "warn": "#f0a63a", "enc": "#48c4b0"},
     },
     "ember": {
-        "label": "Ember", "emoji": "\U0001F525", "season": None,
+        # No emoji: spontaneous themes have no occasion to announce. See "frost".
+        "label": "Ember", "emoji": "", "season": None,
         "vars": {"bg": "#180904", "card": "#26120a", "line": "#4a2414", "fg": "#fdf1e8",
                  "muted": "#c29c86", "faint": "#8a6b58", "go": "#6bb8e0",
                  "wait": "#f2c14e", "bad": "#e0564f", "sleep": "#c08420",
                  "accent": "#d1732b", "good": "#6bb8e0", "warn": "#f2c14e", "enc": "#5aa8d8"},
     },
     "slate": {
-        "label": "Slate", "emoji": "\U0001F5FF", "season": None,
+        # No emoji: spontaneous themes have no occasion to announce. See "frost".
+        "label": "Slate", "emoji": "", "season": None,
         "vars": {"bg": "#0b0f14", "card": "#161d26", "line": "#2b3644", "fg": "#f0f4f8",
                  "muted": "#94a2b4", "faint": "#647287", "go": "#93aecb",
                  "wait": "#f0a63a", "bad": "#e05663", "sleep": "#7aa2ff",

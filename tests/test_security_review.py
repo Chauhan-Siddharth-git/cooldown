@@ -1373,6 +1373,33 @@ def test_no_personal_date_is_committed_to_the_repository():
     assert not re.search(r'BIRTHDAY\s*=\s*["\']\d{2}-\d{2}["\']', src), "a date is hardcoded"
 
 
+def test_spontaneous_themes_carry_no_emoji():
+    """A theme that turns up on a random Tuesday has no occasion to announce.
+
+    The emoji earned its place when a theme was a near-black page with one accent colour
+    and the glyph in the corner was the only signal there was. Once the palette reaches
+    the backdrop, the board, the bars and the traffic stream, it labels something that
+    already speaks -- and a label on a self-evident thing reads as cheaper than no label.
+
+    Calendar themes keep theirs: christmas and halloween mark an occasion deliberately,
+    which is a different job. Personal themes are covered separately and for a stronger
+    reason -- the gate is served on the gated site's own origin, so a cake emoji would
+    hand any script there the date once a year.
+    """
+    spontaneous = [n for n, th in budget.THEMES.items()
+                   if not th["season"] and n not in budget.PERSONAL_THEMES]
+    assert spontaneous, "no spontaneous themes, so this test would assert nothing"
+    for name in spontaneous:
+        assert budget.THEMES[name]["emoji"] == "", (
+            f"{name} is spontaneous but ships an emoji; it has no occasion to announce")
+    # The other half of the property: the calendar themes still DO announce theirs, so
+    # this cannot be satisfied by quietly stripping every emoji in the file.
+    calendar = [n for n, th in budget.THEMES.items() if th["season"]]
+    assert calendar, "no calendar themes, so the check below would assert nothing"
+    assert all(budget.THEMES[n]["emoji"] for n in calendar), (
+        "a calendar theme lost its emoji -- those mark an occasion and should keep it")
+
+
 def test_the_birthday_theme_is_unlabelled_on_the_gated_origin(rdb):
     """The gate is served on reddit.com, so any script there can fetch it. A cake emoji
     would hand that script the date once a year; nice colours reveal nothing."""
