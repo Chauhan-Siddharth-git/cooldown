@@ -93,6 +93,52 @@ for db in $(find "${HOME}/.mozilla/firefox" "${HOME}/.pki/nssdb" "${HOME}/snap/f
 done
 
 echo
+echo "=== policy-installed certificates (Firefox enterprise policy) ==="
+# THE PLACE THIS TOOL MISSED. Firefox enterprise policy can both force a proxy and INSTALL
+# a CA -- `"Certificates": {"Install": [...]}` -- and it reinstalls that file into every
+# profile at each launch. So a rotation that updates the system store and every profile is
+# still incomplete: the next Firefox start puts the old CA back from a path nobody looked
+# at. Found on 2026-08-15 during the F26 rotation, when this script reported "4 places, all
+# updated" while /etc/firefox/mitmproxy-ca.crt still held the superseded CA.
+#
+# The policy file is also where the proxy MODE lives, and that turned out to matter more
+# than the certificate: it pointed Firefox at the regular proxy port while the phone used
+# the transparent one, so the two devices exercised different certificate-generation paths
+# and only one of them failed. An inventory that lists trust stores but not how each client
+# reaches the proxy cannot explain a device-specific failure.
+pol_found=0
+for pol in /etc/firefox/policies/policies.json \
+           /usr/lib/firefox/distribution/policies.json \
+           /usr/lib64/firefox/distribution/policies.json \
+           /opt/firefox/distribution/policies.json; do
+    [ -f "$pol" ] || continue
+    pol_found=1
+    printf "  %s\n" "$pol"
+    # Proxy mode, because it decides which cert path a client takes.
+    px="$(python3 - "$pol" <<'PYEOF' 2>/dev/null
+import json,sys
+p=(json.load(open(sys.argv[1])).get("policies") or {}).get("Proxy") or {}
+if p: print(f"{p.get('Mode','?')} http={p.get('HTTPProxy','-')} ssl={p.get('SSLProxy','-')} locked={p.get('Locked')}")
+PYEOF
+)"
+    [ -n "$px" ] && printf "    proxy: %s\n" "$px"
+    # Every certificate the policy installs.
+    python3 - "$pol" <<'PYEOF' 2>/dev/null | while read -r crt; do
+import json,sys
+c=(json.load(open(sys.argv[1])).get("policies") or {}).get("Certificates") or {}
+for f in (c.get("Install") or []): print(f)
+PYEOF
+        if [ -f "$crt" ]; then
+            cfp="$(openssl x509 -in "$crt" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2)"
+            printf "    %-44s %-12s %s\n" "$crt" "$(verdict "$cfp" "policy:$crt")" "${cfp:0:23}…"
+        else
+            printf "    %-44s %s\n" "$crt" "MISSING — policy names a file that does not exist"
+        fi
+    done
+done
+[ "$pol_found" = 0 ] && echo "  (no Firefox policy files found)"
+
+echo
 echo "=== stale CA material with a private key ==="
 # mitmproxy's default confdir. start.sh pins CONFDIR precisely so this is not created, but
 # a CA generated before that fix does not disappear when the bug does.
