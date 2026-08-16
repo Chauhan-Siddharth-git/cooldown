@@ -1112,6 +1112,46 @@ def test_the_encrypted_stream_stays_distinguishable_from_the_unencrypted_one():
         assert p > 0.25, f"{name}: enc {enc} collapses under protanopia ({p:.2f})"
 
 
+def test_the_healthy_and_unhealthy_status_colours_stay_apart():
+    """--go and --bad are a pair on /health: bars, metric values, the ethernet jack.
+
+    A theme may recolour them -- and should, since 6 of 10 shipped the same #3ecf7c green
+    regardless of palette, which is why the memory/disk/temp bars looked identical under
+    every theme. But the pair still has to survive colour-blind vision, and green-against-
+    red is the exact axis that does not.
+
+    The floor is measured, not invented: the app's own un-themed pair (#3ecf7c against
+    #e5484d) separates at 0.47 deuteranope / 0.33 protanope, so that is what a theme has
+    to roughly match. The terminal theme did NOT -- olive #7a9e2f against rust #c05a3a is
+    0.14 / 0.06, effectively one colour to a protanope, and it shipped that way. It now
+    uses an amber alert, which keeps the phosphor identity and lands at 0.40 / 0.33.
+    """
+    def rgbt(h):
+        return tuple(int(h[i:i + 2], 16) for i in (1, 3, 5))
+
+    def deuter(c):
+        r, g, b = [v / 255 for v in c]
+        return (0.625 * r + 0.375 * g, 0.70 * r + 0.30 * g, 0.30 * g + 0.70 * b)
+
+    def prot(c):
+        r, g, b = [v / 255 for v in c]
+        return (0.567 * r + 0.433 * g, 0.558 * r + 0.442 * g, 0.242 * g + 0.758 * b)
+
+    def dist(a, b):
+        return sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
+
+    assert budget.THEMES, "no themes, so the loop below would assert nothing"
+    for name, th in budget.THEMES.items():
+        go, bad = th["vars"].get("go"), th["vars"].get("bad")
+        assert go and bad, f"{name} is missing --go or --bad"
+        g, b = rgbt(go), rgbt(bad)
+        normal = dist(tuple(v / 255 for v in g), tuple(v / 255 for v in b))
+        dd, pp = dist(deuter(g), deuter(b)), dist(prot(g), prot(b))
+        assert normal > 0.35, f"{name}: go {go} and bad {bad} are only {normal:.2f} apart"
+        assert dd > 0.30, f"{name}: go/bad collapse under deuteranopia ({dd:.2f})"
+        assert pp > 0.24, f"{name}: go/bad collapse under protanopia ({pp:.2f})"
+
+
 def test_seasonal_themes_own_their_dates(rdb):
     import time as _t
     for date, expect in [("2026-12-25", "christmas"), ("2026-10-31", "halloween"),

@@ -381,7 +381,7 @@ THEMES = {
                   "The whole internet is doing this today. Doesn't make it worth doing."],
         "vars": {"bg": "#04140d", "card": "#0d2318", "line": "#1e4230", "fg": "#f2f8f4",
                  "muted": "#8fa89a", "faint": "#5d7568", "go": "#3ecf7c",
-                 "wait": "#e0b458", "bad": "#d1495b", "sleep": "#7fb3a0",
+                 "wait": "#e0b458", "bad": "#e05663", "sleep": "#7fb3a0",
                  "accent": "#d1495b", "good": "#3ecf7c", "warn": "#e0b458", "enc": "#49d6b0"},
     },
     "halloween": {
@@ -391,9 +391,9 @@ THEMES = {
                   "The feed is a haunted house with no exit. You know this one.",
                   "You can leave. That's the twist."],
         "vars": {"bg": "#140a1c", "card": "#20122c", "line": "#3a2450", "fg": "#f5f1f8",
-                 "muted": "#a294ad", "faint": "#6b5c78", "go": "#8f57d4",
-                 "wait": "#e8892b", "bad": "#d1495b", "sleep": "#8f57d4",
-                 "accent": "#e8892b", "good": "#8f57d4", "warn": "#e8892b", "enc": "#9d7bf0"},
+                 "muted": "#a294ad", "faint": "#6b5c78", "go": "#a06ef0",
+                 "wait": "#e8892b", "bad": "#e05663", "sleep": "#8f57d4",
+                 "accent": "#e8892b", "good": "#a06ef0", "warn": "#e8892b", "enc": "#9d7bf0"},
     },
     "newyear": {
         "label": "New Year", "emoji": "\U00002728",
@@ -403,60 +403,60 @@ THEMES = {
                   "New year, same feed. It didn't change over the holiday.",
                   "Day one of the new you, and here you are."],
         "vars": {"bg": "#0a0a12", "card": "#171724", "line": "#2e2e45", "fg": "#f7f5ef",
-                 "muted": "#a09cae", "faint": "#6a6678", "go": "#3ecf7c",
-                 "wait": "#d9b45c", "bad": "#d1495b", "sleep": "#7aa2ff",
-                 "accent": "#d9b45c", "good": "#3ecf7c", "warn": "#d9b45c", "enc": "#7fb6ff"},
+                 "muted": "#a09cae", "faint": "#6a6678", "go": "#7fb6ff",
+                 "wait": "#d9b45c", "bad": "#e05663", "sleep": "#7aa2ff",
+                 "accent": "#d9b45c", "good": "#7fb6ff", "warn": "#d9b45c", "enc": "#7fb6ff"},
     },
     # Spontaneous — no season, so they only ever turn up unannounced.
     "retro": {
         "label": "Outrun", "emoji": "\U0001F31E", "season": None,
         "vars": {"bg": "#12061f", "card": "#1f0d33", "line": "#3a1a5c", "fg": "#fbeffb",
-                 "muted": "#b494c4", "faint": "#7c5f8e", "go": "#0fa8b8",
-                 "wait": "#d9548f", "bad": "#d9548f", "sleep": "#8f57d4",
-                 "accent": "#d9548f", "good": "#0fa8b8", "warn": "#d9548f", "enc": "#5ad2f0"},
+                 "muted": "#b494c4", "faint": "#7c5f8e", "go": "#2ec9dd",
+                 "wait": "#d9548f", "bad": "#f0559a", "sleep": "#8f57d4",
+                 "accent": "#d9548f", "good": "#2ec9dd", "warn": "#d9548f", "enc": "#5ad2f0"},
     },
     "terminal": {
         "label": "Phosphor", "emoji": "\U0001F4DF", "season": None,
         "vars": {"bg": "#050a05", "card": "#0d160d", "line": "#1c3320", "fg": "#e8f5e4",
-                 "muted": "#8fae87", "faint": "#5e7a58", "go": "#7a9e2f",
-                 "wait": "#c9a227", "bad": "#c05a3a", "sleep": "#7a9e2f",
-                 "accent": "#7a9e2f", "good": "#7a9e2f", "warn": "#c9a227", "enc": "#59d98a"},
+                 "muted": "#8fae87", "faint": "#5e7a58", "go": "#8fbf3a",
+                 "wait": "#c9a227", "bad": "#ffb020", "sleep": "#7a9e2f",
+                 "accent": "#7a9e2f", "good": "#8fbf3a", "warn": "#c9a227", "enc": "#59d98a"},
     },
     # No emoji on purpose — see the note above _personal_theme.
     "birthday": {
         "label": "", "emoji": "", "season": None,
         "vars": {"bg": "#140a1e", "card": "#20122e", "line": "#3d2352", "fg": "#f8f2fb",
-                 "muted": "#b096be", "faint": "#77608a", "go": "#3ecf7c",
-                 "wait": "#e0b458", "bad": "#d1495b", "sleep": "#a678de",
-                 "accent": "#e0b458", "good": "#3ecf7c", "warn": "#e0b458", "enc": "#8f9dff"},
+                 "muted": "#b096be", "faint": "#77608a", "go": "#9b8cff",
+                 "wait": "#e0b458", "bad": "#e05663", "sleep": "#a678de",
+                 "accent": "#e0b458", "good": "#9b8cff", "warn": "#e0b458", "enc": "#8f9dff"},
     },
     "anniversary": {
         "label": "", "emoji": "", "season": None,
         "vars": {"bg": "#0a1218", "card": "#132029", "line": "#264150", "fg": "#eef6f8",
-                 "muted": "#8fb0b8", "faint": "#5d7d86", "go": "#3ecf7c",
-                 "wait": "#5aa8d8", "bad": "#d1495b", "sleep": "#7aa2ff",
-                 "accent": "#5aa8d8", "good": "#3ecf7c", "warn": "#5aa8d8", "enc": "#48c4b0"},
+                 "muted": "#8fb0b8", "faint": "#5d7d86", "go": "#48c4b0",
+                 "wait": "#5aa8d8", "bad": "#e05663", "sleep": "#7aa2ff",
+                 "accent": "#5aa8d8", "good": "#48c4b0", "warn": "#5aa8d8", "enc": "#48c4b0"},
     },
     "ember": {
         "label": "Ember", "emoji": "\U0001F525", "season": None,
         "vars": {"bg": "#180904", "card": "#26120a", "line": "#4a2414", "fg": "#fdf1e8",
-                 "muted": "#c29c86", "faint": "#8a6b58", "go": "#3ecf7c",
-                 "wait": "#d1732b", "bad": "#d1495b", "sleep": "#c08420",
-                 "accent": "#d1732b", "good": "#3ecf7c", "warn": "#d1732b", "enc": "#5aa8d8"},
+                 "muted": "#c29c86", "faint": "#8a6b58", "go": "#6bb8e0",
+                 "wait": "#d1732b", "bad": "#e0564f", "sleep": "#c08420",
+                 "accent": "#d1732b", "good": "#6bb8e0", "warn": "#d1732b", "enc": "#5aa8d8"},
     },
     "slate": {
         "label": "Slate", "emoji": "\U0001F5FF", "season": None,
         "vars": {"bg": "#0b0f14", "card": "#161d26", "line": "#2b3644", "fg": "#f0f4f8",
-                 "muted": "#94a2b4", "faint": "#647287", "go": "#3ecf7c",
-                 "wait": "#8fa3b8", "bad": "#d1495b", "sleep": "#7aa2ff",
-                 "accent": "#8fa3b8", "good": "#3ecf7c", "warn": "#c98500", "enc": "#7fc4e8"},
+                 "muted": "#94a2b4", "faint": "#647287", "go": "#93aecb",
+                 "wait": "#8fa3b8", "bad": "#e05663", "sleep": "#7aa2ff",
+                 "accent": "#8fa3b8", "good": "#93aecb", "warn": "#c98500", "enc": "#7fc4e8"},
     },
     "frost": {
         "label": "Frost", "emoji": "\U00002744", "season": None,
         "vars": {"bg": "#04101c", "card": "#0d1f2e", "line": "#1d3a52", "fg": "#eef6fb",
-                 "muted": "#8fb4cc", "faint": "#5b7f99", "go": "#3ecf7c",
-                 "wait": "#5aa8d8", "bad": "#d1495b", "sleep": "#7aa2ff",
-                 "accent": "#5aa8d8", "good": "#3ecf7c", "warn": "#5aa8d8", "enc": "#5ec8f0"},
+                 "muted": "#8fb4cc", "faint": "#5b7f99", "go": "#5ec8f0",
+                 "wait": "#5aa8d8", "bad": "#e05663", "sleep": "#7aa2ff",
+                 "accent": "#5aa8d8", "good": "#5ec8f0", "warn": "#5aa8d8", "enc": "#5ec8f0"},
     },
 }
 
@@ -556,6 +556,26 @@ def theme_css(theme):
     if re.fullmatch(r"#[0-9a-fA-F]{6}", cd):
         cr, cg, cb = (int(cd[i:i + 2], 16) for i in (1, 3, 5))
         css += f".card,.tile,.board,.metric,.dcard{{background:rgba({cr},{cg},{cb},.46);}}"
+    # The circuit board on /health. Its PCB was three hardcoded greens -- #0c1a12,
+    # #2f5d43, #123522 -- so the board stayed a green Raspberry Pi drawing under every
+    # palette. Representational, but it is the largest single object on the page and it
+    # made "the theme is very green" true no matter what the theme was. Derived from the
+    # accent so a new theme gets a board for free; the CSS keeps the old greens as
+    # fallbacks, so an un-themed page looks exactly as it did.
+    def _blend(fg, bg, a):
+        fr, fg_, fb = (int(fg[i:i + 2], 16) for i in (1, 3, 5))
+        br, bg_, bb = (int(bg[i:i + 2], 16) for i in (1, 3, 5))
+        mix = lambda f, b: round(f * a + b * (1 - a))
+        return f"#{mix(fr, br):02x}{mix(fg_, bg_):02x}{mix(fb, bb):02x}"
+
+    bgc = v.get("bg") or ""
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", acc or "") and re.fullmatch(r"#[0-9a-fA-F]{6}", bgc):
+        css += (f":root{{--pcb:{_blend(acc, bgc, .10)};"
+                f"--pcb-line:{_blend(acc, bgc, .42)};}}")
+    go = v.get("go") or ""
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", go) and re.fullmatch(r"#[0-9a-fA-F]{6}", bgc):
+        css += f":root{{--go-dim:{_blend(go, bgc, .22)};}}"
+
     # Component form for the canvas, which needs an alpha it varies at runtime.
     enc = v.get("enc") or ""
     if re.fullmatch(r"#[0-9a-fA-F]{6}", enc):
@@ -3772,19 +3792,19 @@ HEALTH_PAGE = """
         .board svg{display:block;width:100%;height:auto}
         .caption{text-align:center;font-size:11.5px;color:var(--faint);margin:2px 0 6px}
         /* board line-art */
-        .pcb{fill:#0c1a12;stroke:#2f5d43;stroke-width:1.5}
-        .hole{fill:var(--bg);stroke:#2f5d43;stroke-width:1.2}
-        .chip{fill:#161b22;stroke:#3a4150;stroke-width:1.2}
-        .port{fill:#0f1319;stroke:#3a4150;stroke-width:1.2}
+        .pcb{fill:var(--pcb,#0c1a12);stroke:var(--pcb-line,#2f5d43);stroke-width:1.5}
+        .hole{fill:var(--bg);stroke:var(--pcb-line,#2f5d43);stroke-width:1.2}
+        .chip{fill:var(--card);stroke:var(--line);stroke-width:1.2}
+        .port{fill:var(--bg);stroke:var(--line);stroke-width:1.2}
         .port.dark{fill:#090b0e}
-        .pin{stroke:#3a4150;stroke-width:2;stroke-dasharray:2 4}
+        .pin{stroke:var(--line);stroke-width:2;stroke-dasharray:2 4}
         .lbl{fill:var(--muted);font:600 9px -apple-system,Roboto,Arial,sans-serif;text-anchor:middle}
         .lbl.r{text-anchor:end}
-        .ctext{fill:#6b7686;font:700 9px ui-monospace,Menlo,monospace;text-anchor:middle}
-        .led{fill:#2a2f3a}
+        .ctext{fill:var(--faint);font:700 9px ui-monospace,Menlo,monospace;text-anchor:middle}
+        .led{fill:var(--line)}
         /* ethernet — the star: green when the link is up */
-        #eth .jack{fill:#0f1319;stroke:#3a4150;stroke-width:1.5;transition:.4s}
-        #eth.on .jack{fill:#123522;stroke:var(--go)}
+        #eth .jack{fill:var(--bg);stroke:var(--line);stroke-width:1.5;transition:.4s}
+        #eth.on .jack{fill:var(--go-dim,#123522);stroke:var(--go)}
         #eth.on .lbl{fill:var(--go)}
         #eth.on .led.link{fill:var(--go)}
         #eth.on .led.act{fill:var(--go);animation:blink 1.5s steps(1) infinite}
