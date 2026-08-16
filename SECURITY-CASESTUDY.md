@@ -1125,6 +1125,115 @@ simply wrong — applying the mechanical fix broke 42 cases. They are covered in
 test that the harness forwards anything at all, which is the real hole: if forwarding
 broke, every case would iterate an empty list and the whole set would go green.
 
+---
+
+## F33 — Stopping Redis stopped the gate, and nothing started it again  ·  MEDIUM  ·  FIXED
+
+**What it is.** `cooldown-app.service` declared `Requires=redis-server.service`, and
+`cooldown-proxy.service` declared `Requires=cooldown-app.service`. `Requires=` propagates a
+*stop*: taking Redis down took both of them down behind it. `Restart=always` did not fire —
+systemd does not restart a unit it deliberately stopped — and starting Redis again does not
+run the dependency in reverse. The box was left with no proxy at all.
+
+That is worse than it first sounds when the box is a Tailscale exit node. A dead proxy is
+not "Reddit is ungated"; it is the phone having no internet, until a human notices and runs
+`systemctl start` by hand.
+
+**Found by accident, which is the honest version.** It surfaced while testing something
+else — a review had predicted that a dead Redis would let the proxy forward gated traffic
+unchecked, and the command to test that was `systemctl stop redis-server`. The prediction
+was wrong. The cascade was not, and it had been shipped for months.
+
+**The distinction that matters, and that nobody had tested.** Measured, both directions:
+
+| Action | Dependents | Recovered? |
+|---|---|---|
+| `systemctl restart redis-server` | cycled with it | yes, automatically |
+| `systemctl stop`, crash, OOM | stopped | **no — stayed down** |
+
+So the nightly `apt` run, the scenario that first looked alarming, was always safe. The
+dangerous case was the one no schedule produces and no test covered: Redis dying on its own.
+
+**The fix.** `Requires=` → `Wants=` on both, keeping `After=`. Ordering is preserved,
+propagation is dropped, and `Restart=always` still covers a genuine crash. Verified by
+re-running the exact command that caused the outage: Redis goes inactive, both units stay
+active, and everything is healthy again the moment Redis returns.
+
+Failing closed never required the process to die. With Flask gone the addon's loopback
+fetch raises and the handler already serves "Budget server unreachable" on navigations and
+503 on sub-requests — gated sites stay shut while the rest of the network keeps working.
+
+**The concept — a dependency declaration is a failure-propagation policy, and it is
+usually written as if it were a startup-ordering one.** `After=` says *when*. `Requires=`
+says *my fate is yours*. The unit file already made that distinction correctly one line
+above, for `tailscaled`: "this ordering is an optimisation, not a dependency." The same
+sentence was true of Redis and nobody wrote it there. The test that would have caught this
+is not a clever one — stop each dependency in turn and see what is still running.
+
+---
+
+## F34 — Two deployments hardened separately, one of them never  ·  MEDIUM  ·  FIXED
+
+**What it is.** Redis AOF persistence was off on the native deployment. Without it an
+unclean stop loses every write since the last RDB snapshot — up to an hour under the
+default save policy, and that is your spent time, your cooldowns and your history.
+
+**Why it survived.** This project ships two deployment shapes, and they were hardened at
+different times by different routes. `docker-compose.yml` sets `--appendonly yes
+--appendfsync everysec` on the Redis service and always has. `install.sh` started
+`redis-server` from the distro package and never touched persistence, and Debian ships
+`appendonly no`. Both were "done"; only one was ever checked, and the record of the work
+did not distinguish them.
+
+There is also a `redis.conf` in the repo that promises AOF — and nothing installs it. The
+compose path sets the flags directly rather than mounting it, and the native path does not
+read it at all. `grep -rn redis.conf` finds no consumer. An artifact that documents an
+intention nobody executes reads exactly like a configuration that is in force.
+
+**The fix.** `install.sh` now enables AOF and persists it with `CONFIG REWRITE`, and the
+hourly audit checks it. The check asks the *running server*, not the config file, because
+those are different claims: `appendonly yes` on disk proves somebody typed it, while
+`aof_enabled` proves it is in force — and a package upgrade rewriting the config leaves the
+first true and the second false. Mutation-tested by turning AOF off at runtime and
+confirming the check fires.
+
+**The concept — "we hardened it" is a claim about a machine, not about a project.** Where
+two deployment shapes exist, every hardening step has to be answered twice, and a checklist
+that does not name which target it was done against will be read as covering both. The same
+question applies to every other control here: the firewall, the journal, the service
+accounts. Each is answered by one installer and should be verified on whichever one you
+actually run.
+
+---
+
+## F35 — The audit crashed on the SSH key count, hourly, and published the wrong number  ·  LOW  ·  FIXED
+
+**What it is.** The line tallying authorized SSH keys was
+
+    key_count=$((key_count + $(grep -c '^ssh-...' "$f" 2>/dev/null || echo 0)))
+
+`grep -c` prints `0` when it matches nothing **and exits 1 while doing it**. So the `||`
+fallback fired on top of the zero grep had already printed, the substitution expanded to
+two lines, and `$(( ))` aborted with *"syntax error in expression"*. Every hour, in the
+journal, since the check was written. The arithmetic died, `key_count` kept its previous
+value, and the number published to the dashboard undercounted — a single key file with no
+keys in it was enough to corrupt the whole tally.
+
+**Why it matters more than an off-by-one.** The reason this count exists is to notice an
+SSH key you did not put there. It was reporting a number derived from a crashed
+calculation, and reporting it as data.
+
+**The concept — a fallback is only as good as your reading of the failure it catches.**
+`grep -c`'s non-zero exit means *found nothing*, not *could not count*, and "found nothing"
+is a successful count of zero. This project has now made the same mistake three times in
+different clothes (`grep | head || echo`, twice, where the pipeline's status comes from
+`head` and the fallback can never fire). The rule that generalises: before writing `||`,
+say what the left side's failure status actually reports. If it reports a *result* rather
+than an *error*, the fallback is not a safety net — it is a second, conflicting answer.
+
+Caught by reading the journal after deploying an unrelated change to the same script, which
+is the only reason anyone saw it: nothing tests this script, and its own output looked
+plausible.
 
 ---
 

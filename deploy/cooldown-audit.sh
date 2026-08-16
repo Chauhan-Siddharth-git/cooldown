@@ -71,7 +71,20 @@ fi
 shell_accounts="$(awk -F: '$7 !~ /(nologin|false)$/ {print $1}' /etc/passwd | sort | tr '\n' ' ')"
 key_count=0
 for f in /home/*/.ssh/authorized_keys /root/.ssh/authorized_keys; do
-    [ -f "$f" ] && key_count=$((key_count + $(grep -c '^ssh-\|^ecdsa-\|^sk-' "$f" 2>/dev/null || echo 0)))
+    # NOT `$(grep -c ... || echo 0)`. grep -c ALREADY prints 0 when it matches nothing,
+    # and exits 1 while doing it -- so the fallback fired on top of the 0 grep had just
+    # printed, the substitution became two lines, and $(( )) died with "syntax error in
+    # expression". Observed in the journal every hour: the arithmetic aborted, key_count
+    # kept its old value, and the SSH key count published at the bottom of this script
+    # silently undercounted. A file with no keys made the whole tally wrong.
+    #
+    # Same shape as the `grep | head || echo` mistake this project has now made three
+    # times: reaching for a fallback on a command whose failure exit status does not mean
+    # what it looks like. grep -c's exit code reports "found nothing", not "could not
+    # count" -- and "found nothing" is a successful count of zero.
+    [ -f "$f" ] || continue
+    n="$(grep -c '^ssh-\|^ecdsa-\|^sk-' "$f" 2>/dev/null)"
+    key_count=$((key_count + ${n:-0}))
 done
 pw_auth="$(sshd -T 2>/dev/null | awk '/^passwordauthentication/{print $2}')"
 [ "${pw_auth:-no}" = "no" ] || note "sshd now accepts password authentication"
@@ -183,6 +196,24 @@ contained="$_kept"
 journal_persistent=false
 [ "$(find /var/log/journal -name '*.journal' 2>/dev/null | wc -l)" -gt 0 ] && journal_persistent=true
 [ "$journal_persistent" = true ] || note "journal is not persisting -- a future audit will have no history to read"
+
+# Redis durability, asked of the RUNNING server rather than of the config file. AOF was
+# recorded as done back when this project was planned around Docker, where the route to it
+# was mounting the shipped redis.conf as a persistent volume. That deployment was later
+# dropped in favour of running natively, and the durability requirement went with its
+# carrier -- nobody re-derived what "harden state" meant once the shape changed. The
+# redis.conf in this repo is still not installed by anything and still points at /data, a
+# path that exists only inside a container.
+#
+# Asking the server, not the file, is the point: `appendonly yes` in redis.conf proves
+# somebody typed it, while aof_enabled proves it is in force. A package upgrade rewriting
+# the config would leave the first true and the second false.
+aof="$(redis-cli info persistence 2>/dev/null | sed -n 's/^aof_enabled:\([0-9]*\).*/\1/p')"
+if [ -z "$aof" ]; then
+    note "could not read Redis persistence state -- durability is unverified, not fine"
+elif [ "$aof" != "1" ]; then
+    note "Redis AOF is OFF -- an unclean stop loses every write since the last RDB snapshot"
+fi
 
 # A backup that quietly stopped is the classic silent failure: you find out when you
 # need it. The timer runs nightly, so anything older than two days has stopped.

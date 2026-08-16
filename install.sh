@@ -288,6 +288,23 @@ if [ "$HAVE_SYSTEMD" = 1 ]; then
   systemctl is-enabled redis-server >/dev/null 2>&1 || run systemctl enable redis-server >/dev/null
   systemctl is-active  redis-server >/dev/null 2>&1 || run systemctl start  redis-server
   [ "$DRY" = 1 ] || { redis-cli ping >/dev/null 2>&1 && ok "responding on localhost:6379" || warn "redis not responding yet"; }
+  # Durability, which the distro package does NOT give you: Debian ships appendonly no,
+  # so an unclean stop loses every write back to the last RDB snapshot -- up to an hour
+  # under the default save policy. That is your spent time, your cooldowns and your
+  # history. The Docker path has always set this via compose flags; this native path
+  # never did, and the gap went unnoticed for months because the two deployments were
+  # hardened separately and only one of them was checked.
+  # CONFIG REWRITE persists it into redis.conf so it survives a restart, and the hourly
+  # audit re-checks aof_enabled on the running server afterwards -- the config file only
+  # records an intention.
+  if [ "$DRY" = 1 ]; then would "enable Redis AOF persistence (appendonly yes)"
+  elif [ "$(redis-cli config get appendonly 2>/dev/null | tail -1)" = "yes" ]; then
+    ok "AOF persistence already on"
+  elif redis-cli config set appendonly yes >/dev/null 2>&1 && redis-cli config rewrite >/dev/null 2>&1; then
+    did "AOF persistence enabled and written to redis.conf"
+  else
+    warn "could not enable Redis AOF -- state will only be as fresh as the last RDB snapshot"
+  fi
 else info "skipped (no systemd)"; fi
 
 # ---------------------------------------------------------------- accounts

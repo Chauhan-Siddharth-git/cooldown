@@ -156,4 +156,8 @@ Substring matching where suffix matching was meant · security controls keyed to
 instance found rather than the class · convenience launchers skipping the hardened flags ·
 silent fail-open in the enforcement path (a blocked heartbeat means time stops being
 charged, and nothing reports it) · docs that outlive the code and become the next
-reviewer's premise.
+reviewer's premise · `||` fallbacks written without checking what the left side's failure
+status actually means (three times now: `grep -c` exits 1 having already printed `0`, and
+`grep | head` takes its status from `head`, so the fallback either double-answers or can
+never fire) · requirements that were satisfied on one deployment shape and quietly lost
+when another replaced it.

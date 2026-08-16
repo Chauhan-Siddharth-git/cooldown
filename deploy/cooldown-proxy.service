@@ -1,7 +1,16 @@
 [Unit]
-Description=Cooldown mitmproxy (transparent + regular)
+Description=Budget mitmproxy (transparent + regular)
 After=network.target cooldown-app.service
-Requires=cooldown-app.service
+# Wants=, NOT Requires=, and here the stakes are higher than for the app. This box is a
+# Tailscale exit node: every packet from the phone crosses this proxy, gated or not. Under
+# Requires= a stopped Flask stopped the proxy too, which does not merely un-gate Reddit --
+# it breaks the phone's entire internet, with no auto-recovery.
+#
+# Failing closed does not need the process to die. With Flask gone the addon's loopback
+# fetch raises and the handler already serves "Budget server unreachable" on navigations
+# and 503 on sub-requests, so gated sites stay shut while everything else keeps flowing.
+# That is a strictly better outage than no network at all.
+Wants=cooldown-app.service
 [Service]
 User=cooldownproxy
 WorkingDirectory=/home/pi/cooldown

@@ -1,12 +1,25 @@
 [Unit]
-Description=Cooldown Flask app
+Description=Budget proxy Flask app
 # tailscaled too: the app adds the tailscale0 address as a second listener so the
 # dashboard is reachable from your phone. It waits for the interface at startup and
 # falls back to loopback-only, so this ordering is an optimisation, not a dependency —
 # the gate itself never needs the tailnet.
 After=network.target redis-server.service tailscaled.service
 Wants=tailscaled.service
-Requires=redis-server.service
+# Wants=, NOT Requires=. Requires= propagates a STOP: `systemctl stop redis-server` took
+# this unit down with it, and cooldown-proxy down after that (it Requires= this one), and
+# nothing brought either back -- Restart=always does not fire for a unit systemd stopped
+# deliberately, and starting Redis again does not run the dependency in reverse. Measured
+# on a live deployment: the proxy sat dead until someone noticed. A Redis crash or an OOM
+# does the same thing, unattended.
+#
+# (A `restart` is fine either way -- systemd cycles the dependents and they return. It is
+# stop and failure that strand them, which is the case nobody tested.)
+#
+# Wants= keeps the ordering and drops the propagation. If Redis goes away this app stays
+# up and errors, Restart=always covers an actual crash, and it recovers by itself when
+# Redis returns. Same reasoning as the tailscaled line above: ordering is not a dependency.
+Wants=redis-server.service
 [Service]
 User=cooldownapp
 WorkingDirectory=/home/pi/cooldown
