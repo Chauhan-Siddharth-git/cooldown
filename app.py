@@ -3624,6 +3624,14 @@ def _audit(now=None):
             "tampered_files": int(d.get("tampered_files", 0)),
             "ts_days": int(d.get("ts_days", -1)),
             "ca_days": int(d.get("ca_days", 0)),
+            # Reconciliation: does the box match what was deployed? A dashboard that shows
+            # only "audit clean" cannot distinguish a box running the reviewed code from
+            # one running whatever was there in June -- which is the state this box was
+            # actually in when the review started.
+            "deployed_rev": d.get("deployed_rev") or "unknown",
+            "deploy_drift": int(d.get("deploy_drift", 0)),
+            "manifest_files": int(d.get("manifest_files", 0)),
+            "ca_constrained": bool(d.get("ca_constrained", False)),
             "backup_age": int(d.get("backup_age", -1)),
             "mode": d.get("mode", "quick"),
             # -1 until the weekly full tier has run at least once. Unknown is not a pass.
@@ -4064,6 +4072,12 @@ HEALTH_PAGE = """
             if a.get('ca_days', 0) %} &middot; CA valid {{ a.ca_days }}d{% endif %}{%
             if a.get('ts_days', -1) > 0 %} &middot; tailnet key {{ a.ts_days }}d{% endif %}
           {%- endif -%}
+          {%- if a.get('manifest_files', 0) %} &middot; running
+            <code>{{ a.deployed_rev }}</code>{% if a.deploy_drift %},
+            <b>{{ a.deploy_drift }} file(s) changed since deploy</b>{% else %},
+            {{ a.manifest_files }} file(s) reconciled{% endif %}
+            {%- if not a.ca_constrained %} &middot; <b>CA UNCONSTRAINED</b>{% endif %}
+          {%- else %} &middot; <b>no deploy manifest &mdash; cannot tell what is running</b>{% endif -%}
         </span>
       </div>
 
