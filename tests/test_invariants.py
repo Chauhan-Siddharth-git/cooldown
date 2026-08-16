@@ -620,3 +620,63 @@ def test_overflow_never_recycles_another_sites_hue():
     assert budget.series_color(n) == budget.SERIES_OVERFLOW
     assert budget.series_color(n + 5) == budget.SERIES_OVERFLOW
     assert budget.SERIES_OVERFLOW not in budget.SERIES_COLORS
+
+
+def _unit_executables():
+    """Every local executable a shipped unit names in ExecStart=/ExecStop=.
+
+    Returns (unit filename, absolute path). Venv paths are excluded: those are created by
+    the install's own virtualenv step, not by copying a file out of deploy/.
+    """
+    import glob
+    out = []
+    for svc in sorted(glob.glob(os.path.join(ROOT, "deploy", "*.service"))):
+        for line in open(svc, encoding="utf-8"):
+            line = line.strip()
+            for key in ("ExecStart=", "ExecStop="):
+                if not line.startswith(key):
+                    continue
+                # Strip systemd's optional prefixes (-, @, +, !) and take argv[0].
+                cmd = line[len(key):].lstrip("-@+!").split()
+                if cmd and cmd[0].startswith("/usr/local/"):
+                    out.append((os.path.basename(svc), cmd[0]))
+    return out
+
+
+def test_every_unit_executable_is_actually_installed():
+    """A unit may only name an executable that some install path really creates.
+
+    cawatch.service shipped with ExecStart=/usr/local/sbin/<project>-cawatch.sh while
+    deploy.sh's install chain listed five other scripts and not that one. The unit landed
+    anyway -- the scp uses a *.service glob -- so the box got a unit pointing at a path
+    nothing creates, and starting it yields status=203/EXEC. That is the CA-theft alarm
+    from F30, unable to run, while SECURITY.md states "a read of the key is now noticed".
+
+    What made it survive review: the ExecStart= string was the ONLY reference to that
+    script anywhere in the repo, so there was nothing for a grep or a diff to disagree
+    with. The unit and the installer were each internally consistent and wrong together.
+
+    This checks the class, not the instance. It is the same lesson as F25 and F9 -- a
+    control belongs to the path, not to the file someone remembered -- applied to
+    installation rather than to request handling.
+    """
+    # Match the DESTINATION path on an install line, not the filename anywhere in the
+    # file. The first version of this test checked `basename in installer`, and its
+    # mutation run passed: deleting the install line left the scp line still naming
+    # deploy/<project>-cawatch.sh, so the basename was still "present" and the test
+    # reported clean. Staging a file without installing it is precisely the bug, so a
+    # check that cannot tell those apart is worthless -- the same "mentioned, not
+    # established" flaw this project just found in audit-tests.py's guard detection.
+    install_lines = [ln for ln in open(os.path.join(ROOT, "deploy.sh"), encoding="utf-8")
+                     if "install " in ln]
+    execs = _unit_executables()
+    # Non-empty guard: if the parse silently stopped finding ExecStart lines this test
+    # would pass by checking nothing, which is exactly the shape F32 was about.
+    assert execs, "parsed no /usr/local executables out of deploy/*.service"
+    assert install_lines, "found no install lines in deploy.sh -- parse is broken"
+
+    missing = [(unit, path) for unit, path in execs
+               if not any(path in ln for ln in install_lines)]
+    assert not missing, (
+        "these units name an executable no install path creates:\n  "
+        + "\n  ".join(f"{unit} -> {path}" for unit, path in missing))
