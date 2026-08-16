@@ -1072,6 +1072,46 @@ def test_every_theme_keeps_body_text_readable():
         assert ratio >= 7, f"{name}: fg on card is only {ratio:.1f}:1"
 
 
+def test_the_encrypted_stream_stays_distinguishable_from_the_unencrypted_one():
+    """The traffic canvas colours are SEMANTIC, so theming them needs a floor.
+
+    Red means in-the-clear and the other colour means encrypted. That distinction is the
+    only thing the animation actually communicates, so a theme may flavour it but may not
+    collapse it -- an ember theme picking a warm orange for "encrypted" would make the two
+    halves of a security signal look the same.
+
+    Checked under simulated deuteranopia and protanopia as well as normal vision, because
+    the colour this replaces was GREEN and green-on-red is the worst available pair for
+    the ~8% of men with red-green colour blindness. The replacements separate better under
+    both simulations than the green did, which is the argument for the change: it is an
+    accessibility fix that happens to also look like the theme.
+    """
+    RED = (240, 96, 96)                       # rgba(240,96,96) in BG_BLOCK, unencrypted
+
+    def deuter(c):
+        r, g, b = [v / 255 for v in c]
+        return (0.625 * r + 0.375 * g, 0.70 * r + 0.30 * g, 0.30 * g + 0.70 * b)
+
+    def prot(c):
+        r, g, b = [v / 255 for v in c]
+        return (0.567 * r + 0.433 * g, 0.558 * r + 0.442 * g, 0.242 * g + 0.758 * b)
+
+    def dist(a, b):
+        return sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
+
+    rednorm = tuple(v / 255 for v in RED)
+    assert budget.THEMES, "no themes, so the loop below would assert nothing"
+    for name, th in budget.THEMES.items():
+        enc = th["vars"].get("enc")
+        assert enc, f"{name} defines no --enc; the canvas would fall back to green"
+        c = tuple(int(enc[i:i + 2], 16) for i in (1, 3, 5))
+        normal = dist(tuple(v / 255 for v in c), rednorm)
+        d, p = dist(deuter(c), deuter(RED)), dist(prot(c), prot(RED))
+        assert normal > 0.35, f"{name}: enc {enc} is only {normal:.2f} from the unencrypted red"
+        assert d > 0.25, f"{name}: enc {enc} collapses under deuteranopia ({d:.2f})"
+        assert p > 0.25, f"{name}: enc {enc} collapses under protanopia ({p:.2f})"
+
+
 def test_seasonal_themes_own_their_dates(rdb):
     import time as _t
     for date, expect in [("2026-12-25", "christmas"), ("2026-10-31", "halloween"),

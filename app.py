@@ -382,7 +382,7 @@ THEMES = {
         "vars": {"bg": "#04140d", "card": "#0d2318", "line": "#1e4230", "fg": "#f2f8f4",
                  "muted": "#8fa89a", "faint": "#5d7568", "go": "#3ecf7c",
                  "wait": "#e0b458", "bad": "#d1495b", "sleep": "#7fb3a0",
-                 "accent": "#d1495b", "good": "#3ecf7c", "warn": "#e0b458"},
+                 "accent": "#d1495b", "good": "#3ecf7c", "warn": "#e0b458", "enc": "#49d6b0"},
     },
     "halloween": {
         "label": "Halloween", "emoji": "\U0001F383",
@@ -393,7 +393,7 @@ THEMES = {
         "vars": {"bg": "#140a1c", "card": "#20122c", "line": "#3a2450", "fg": "#f5f1f8",
                  "muted": "#a294ad", "faint": "#6b5c78", "go": "#8f57d4",
                  "wait": "#e8892b", "bad": "#d1495b", "sleep": "#8f57d4",
-                 "accent": "#e8892b", "good": "#8f57d4", "warn": "#e8892b"},
+                 "accent": "#e8892b", "good": "#8f57d4", "warn": "#e8892b", "enc": "#9d7bf0"},
     },
     "newyear": {
         "label": "New Year", "emoji": "\U00002728",
@@ -405,7 +405,7 @@ THEMES = {
         "vars": {"bg": "#0a0a12", "card": "#171724", "line": "#2e2e45", "fg": "#f7f5ef",
                  "muted": "#a09cae", "faint": "#6a6678", "go": "#3ecf7c",
                  "wait": "#d9b45c", "bad": "#d1495b", "sleep": "#7aa2ff",
-                 "accent": "#d9b45c", "good": "#3ecf7c", "warn": "#d9b45c"},
+                 "accent": "#d9b45c", "good": "#3ecf7c", "warn": "#d9b45c", "enc": "#7fb6ff"},
     },
     # Spontaneous — no season, so they only ever turn up unannounced.
     "retro": {
@@ -413,14 +413,14 @@ THEMES = {
         "vars": {"bg": "#12061f", "card": "#1f0d33", "line": "#3a1a5c", "fg": "#fbeffb",
                  "muted": "#b494c4", "faint": "#7c5f8e", "go": "#0fa8b8",
                  "wait": "#d9548f", "bad": "#d9548f", "sleep": "#8f57d4",
-                 "accent": "#d9548f", "good": "#0fa8b8", "warn": "#d9548f"},
+                 "accent": "#d9548f", "good": "#0fa8b8", "warn": "#d9548f", "enc": "#5ad2f0"},
     },
     "terminal": {
         "label": "Phosphor", "emoji": "\U0001F4DF", "season": None,
         "vars": {"bg": "#050a05", "card": "#0d160d", "line": "#1c3320", "fg": "#e8f5e4",
                  "muted": "#8fae87", "faint": "#5e7a58", "go": "#7a9e2f",
                  "wait": "#c9a227", "bad": "#c05a3a", "sleep": "#7a9e2f",
-                 "accent": "#7a9e2f", "good": "#7a9e2f", "warn": "#c9a227"},
+                 "accent": "#7a9e2f", "good": "#7a9e2f", "warn": "#c9a227", "enc": "#59d98a"},
     },
     # No emoji on purpose — see the note above _personal_theme.
     "birthday": {
@@ -428,35 +428,35 @@ THEMES = {
         "vars": {"bg": "#140a1e", "card": "#20122e", "line": "#3d2352", "fg": "#f8f2fb",
                  "muted": "#b096be", "faint": "#77608a", "go": "#3ecf7c",
                  "wait": "#e0b458", "bad": "#d1495b", "sleep": "#a678de",
-                 "accent": "#e0b458", "good": "#3ecf7c", "warn": "#e0b458"},
+                 "accent": "#e0b458", "good": "#3ecf7c", "warn": "#e0b458", "enc": "#8f9dff"},
     },
     "anniversary": {
         "label": "", "emoji": "", "season": None,
         "vars": {"bg": "#0a1218", "card": "#132029", "line": "#264150", "fg": "#eef6f8",
                  "muted": "#8fb0b8", "faint": "#5d7d86", "go": "#3ecf7c",
                  "wait": "#5aa8d8", "bad": "#d1495b", "sleep": "#7aa2ff",
-                 "accent": "#5aa8d8", "good": "#3ecf7c", "warn": "#5aa8d8"},
+                 "accent": "#5aa8d8", "good": "#3ecf7c", "warn": "#5aa8d8", "enc": "#48c4b0"},
     },
     "ember": {
         "label": "Ember", "emoji": "\U0001F525", "season": None,
         "vars": {"bg": "#180904", "card": "#26120a", "line": "#4a2414", "fg": "#fdf1e8",
                  "muted": "#c29c86", "faint": "#8a6b58", "go": "#3ecf7c",
                  "wait": "#d1732b", "bad": "#d1495b", "sleep": "#c08420",
-                 "accent": "#d1732b", "good": "#3ecf7c", "warn": "#d1732b"},
+                 "accent": "#d1732b", "good": "#3ecf7c", "warn": "#d1732b", "enc": "#5aa8d8"},
     },
     "slate": {
         "label": "Slate", "emoji": "\U0001F5FF", "season": None,
         "vars": {"bg": "#0b0f14", "card": "#161d26", "line": "#2b3644", "fg": "#f0f4f8",
                  "muted": "#94a2b4", "faint": "#647287", "go": "#3ecf7c",
                  "wait": "#8fa3b8", "bad": "#d1495b", "sleep": "#7aa2ff",
-                 "accent": "#8fa3b8", "good": "#3ecf7c", "warn": "#c98500"},
+                 "accent": "#8fa3b8", "good": "#3ecf7c", "warn": "#c98500", "enc": "#7fc4e8"},
     },
     "frost": {
         "label": "Frost", "emoji": "\U00002744", "season": None,
         "vars": {"bg": "#04101c", "card": "#0d1f2e", "line": "#1d3a52", "fg": "#eef6fb",
                  "muted": "#8fb4cc", "faint": "#5b7f99", "go": "#3ecf7c",
                  "wait": "#5aa8d8", "bad": "#d1495b", "sleep": "#7aa2ff",
-                 "accent": "#5aa8d8", "good": "#3ecf7c", "warn": "#5aa8d8"},
+                 "accent": "#5aa8d8", "good": "#3ecf7c", "warn": "#5aa8d8", "enc": "#5ec8f0"},
     },
 }
 
@@ -543,11 +543,24 @@ def theme_css(theme):
         # Two soft pools, top and bottom, at low alpha. fixed attachment so scrolling a
         # long page does not drag the gradient with it.
         css += (
-            "body{background:"
+            "html,body{background:"
             f"radial-gradient(1100px 620px at 50% -14%, rgba({r},{g},{b},.13) 0%, rgba({r},{g},{b},0) 68%),"
             f"radial-gradient(900px 520px at 12% 108%, rgba({r},{g},{b},.09) 0%, rgba({r},{g},{b},0) 62%),"
             "var(--bg);background-attachment:fixed;}"
         )
+    # The frosted panels, themed. BG_STYLE hardcoded rgba(18,21,27,.4) with !important for
+    # every .card/.tile/.board on every dashboard page, so the theme's --card never reached
+    # any of them -- including the Pi board on /health. That single rule is why the themes
+    # read as "an accent and an emoji": they were being painted and then overpainted.
+    cd = v.get("card") or ""
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", cd):
+        cr, cg, cb = (int(cd[i:i + 2], 16) for i in (1, 3, 5))
+        css += f".card,.tile,.board,.metric,.dcard{{background:rgba({cr},{cg},{cb},.46);}}"
+    # Component form for the canvas, which needs an alpha it varies at runtime.
+    enc = v.get("enc") or ""
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", enc):
+        er, eg, eb = (int(enc[i:i + 2], 16) for i in (1, 3, 5))
+        css += f":root{{--enc-rgb:{er},{eg},{eb};}}"
     return css
 
 BUDGET_PAGE = """
@@ -875,10 +888,22 @@ BG_BLOCK = """    {% raw %}
         topFade=ctx.createLinearGradient(0,0,0,64); topFade.addColorStop(0,"#070b0e"); topFade.addColorStop(1,"rgba(7,11,14,0)");
         botFade=ctx.createLinearGradient(0,H-64,0,H); botFade.addColorStop(0,"rgba(7,11,14,0)"); botFade.addColorStop(1,"#070b0e");
       }
+      // Read the theme instead of hardcoding it. The stream's colours are SEMANTIC --
+      // red is in-the-clear, the other is encrypted -- so the pair has to stay legible,
+      // but nothing required the encrypted half to be green. Green-on-red is the worst
+      // possible pair for the ~8% of men with red-green colour blindness; the themed
+      // blues and teals separate BETTER under deuteranopia and protanopia simulation
+      // than the green they replace, which is checked by a test. Unencrypted stays red:
+      // it is the alert, and red is right for it.
+      function CSSV(n, dflt){
+        try { var v = getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+              return v || dflt; } catch(e){ return dflt; }
+      }
+      var ENCRGB = CSSV("--enc-rgb","78,222,140");
       function draw(){
         if(!reduce){ redP+=(tred-redP)*0.05; intens+=(tintens-intens)*0.04; sub+=speed;
           while(sub>=lineH){ sub-=lineH; buf.shift(); buf.push(newRow()); } }
-        ctx.fillStyle="#070b0e"; ctx.fillRect(0,0,W,H);
+        ctx.fillStyle=CSSV("--bg","#070b0e"); ctx.fillRect(0,0,W,H);
         ctx.font="600 12px ui-monospace,Menlo,monospace"; ctx.textBaseline="alphabetic";
         var br = 0.55 + intens*0.85;                                  // busier = brighter
         var tagA=(0.30*br).toFixed(3), redA=(0.52*br).toFixed(3), grnA=(0.42*br).toFixed(3);
@@ -886,7 +911,7 @@ BG_BLOCK = """    {% raw %}
           for(var k=0;k<row.length;k++){ var cl=row[k]; if(!cl) continue;
             var x=k*colW;
             ctx.fillStyle="rgba(120,132,142,"+tagA+")"; ctx.fillText(cl.tag, x+12, y);
-            ctx.fillStyle=cl.r? "rgba(240,96,96,"+redA+")":"rgba(78,222,140,"+grnA+")";
+            ctx.fillStyle=cl.r? "rgba(240,96,96,"+redA+")":"rgba("+ENCRGB+","+grnA+")";
             ctx.fillText(cl.text, x+52, y);
           }
         }
@@ -4581,10 +4606,17 @@ BG_CANVAS = '<canvas id="bp-bg" aria-hidden="true"></canvas>'
 # the first time a second one mentioned it, and silently selected NOTHING (raising at
 # import) if the markup were reformatted.
 BG_SCRIPT = BG_BLOCK
-BG_STYLE = ("html,body{background:#070b0e!important}"
+# NO !important on the colours, and that is the fix. This block is injected into each
+# page's own <style>, which sits BEFORE <style id="cd-theme"> -- and an !important in an
+# earlier sheet beats a normal rule in a later one. So these two hardcoded values won
+# against every theme on all six dashboard pages: the backdrop stayed #070b0e and every
+# card, tile and board stayed the same grey no matter what the palette said. Without
+# !important they are simply defaults, and the theme block that comes later overrides them
+# by document order. The structural rules keep theirs -- nothing themes those.
+BG_STYLE = ("html,body{background:#070b0e}"
             "#bp-bg{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:block}"
             ".wrap{position:relative;z-index:1}"
-            ".card,.tile,.board,.metric,.dcard{background:rgba(18,21,27,0.4)!important;"
+            ".card,.tile,.board,.metric,.dcard{background:rgba(18,21,27,0.4);"
             "-webkit-backdrop-filter:blur(5px);backdrop-filter:blur(5px)}")
 
 def _add_theme(page):
