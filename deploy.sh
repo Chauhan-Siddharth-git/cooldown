@@ -66,7 +66,17 @@ case "${1:-code}" in
 
   code)
     restart=()
-    for f in app.py addon.py PLAN.md PI-SETUP.md; do
+    # rotate-ca.sh and the two files it calls. These had NO deployment path at all: a box
+    # provisioned earlier could be carrying a rotate-ca.sh from before gen_ca.sh existed,
+    # which deleted the CA and restarted mitmproxy -- letting it self-generate an
+    # UNCONSTRAINED replacement. Running it would break every trusted device and hand back
+    # exactly the CA F26 exists to prevent, while looking like it had fixed it. `units`
+    # installs system files to /usr/local/sbin and `code` shipped four repo files; the
+    # rotation tooling fell between them and nothing noticed, because a stale copy on the
+    # box is present and executable and therefore looks deployed.
+    "${SSH[@]}" "mkdir -p $DIR/deploy"
+    for f in app.py addon.py PLAN.md PI-SETUP.md \
+             rotate-ca.sh deploy/gen_ca.sh deploy/gen_allow_hosts.py news_domains.py; do
         [ -f "$f" ] || continue
         if [ "$(local_md5 "$f")" = "$(remote_md5 "$f")" ]; then
             echo "unchanged  $f"
@@ -77,6 +87,11 @@ case "${1:-code}" in
         "${SSH[@]}" "cp $DIR/$f $DIR/$f.bak-\$(date +%Y%m%d-%H%M%S) 2>/dev/null || true;
                      ls -1t $DIR/$f.bak-* 2>/dev/null | tail -n +6 | xargs -r rm -f"
         scp -o BatchMode=yes "$f" "$PI:$DIR/$f"
+        # Executables must land executable. scp does not carry the mode across, and a
+        # rotate-ca.sh that arrives 644 fails at the moment you need it most.
+        case "$f" in
+            *.sh) "${SSH[@]}" "chmod +x $DIR/$f" ;;
+        esac
         echo "deployed   $f"
         case "$f" in
             app.py)   restart+=(cooldown-app.service) ;;
