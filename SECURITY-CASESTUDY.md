@@ -1442,9 +1442,24 @@ not eliminated. Naming them is itself good practice.
   guarding the box, not removing the trust. **Bounded once the CA is rotated with
   `deploy/gen_ca.sh`** — not merely once that script exists in the repo. A deployment
   predating it keeps its original unconstrained CA until something regenerates it, and this
-  paragraph asserted the bound regardless; check your own box (see F26). Where it holds, the
-  CA carries name constraints, so a stolen key is a trust anchor for Reddit and the news
-  list rather than for your bank — on the platforms that enforce them, which is not all.
+  paragraph asserted the bound regardless; check your own box (see F26).
+
+  Where it holds, precisely:
+
+  | Traffic addressed by | A stolen key can forge it? |
+  |---|---|
+  | hostname, in the gated domains | yes — that is the design |
+  | hostname, anything else (your bank, your email) | **no** — DNS name constraints |
+  | a bare IP literal (`https://140.82.121.4`) | **yes** — IP is unconstrained since F38 |
+
+  The IP row is the honest cost of F38: excluding IP made the CA reject every certificate
+  issued to a transparently-proxied client, so the exclusion had to go. Browsers reach a
+  bare IP only if you type one, so it barely touches the phishing case the DNS bound exists
+  to stop; clients that connect by IP are the real exposure. Do not read reassurance into an
+  IP-only certificate failing a quick test: it fails when the subject CN is the IP, because
+  OpenSSL applies DNS constraints to the CN. Omit the CN and it validates.
+
+  All of this is on the platforms that enforce name constraints, which is not all of them.
 - **The VPN-off bypass.** Turning the tunnel off routes around the gate —
   deliberate *soft* friction (a commitment device for a cooperative user), not an
   adversarial lock.
