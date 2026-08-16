@@ -392,8 +392,8 @@ THEMES = {
                   "You can leave. That's the twist."],
         "vars": {"bg": "#140a1c", "card": "#20122c", "line": "#3a2450", "fg": "#f5f1f8",
                  "muted": "#a294ad", "faint": "#6b5c78", "go": "#a06ef0",
-                 "wait": "#e8892b", "bad": "#e05663", "sleep": "#8f57d4",
-                 "accent": "#e8892b", "good": "#a06ef0", "warn": "#e8892b", "enc": "#9d7bf0"},
+                 "wait": "#f2b53c", "bad": "#e05663", "sleep": "#8f57d4",
+                 "accent": "#e8892b", "good": "#a06ef0", "warn": "#f2b53c", "enc": "#9d7bf0"},
     },
     "newyear": {
         "label": "New Year", "emoji": "\U00002728",
@@ -412,15 +412,15 @@ THEMES = {
         "label": "Outrun", "emoji": "\U0001F31E", "season": None,
         "vars": {"bg": "#12061f", "card": "#1f0d33", "line": "#3a1a5c", "fg": "#fbeffb",
                  "muted": "#b494c4", "faint": "#7c5f8e", "go": "#2ec9dd",
-                 "wait": "#d9548f", "bad": "#f0559a", "sleep": "#8f57d4",
-                 "accent": "#d9548f", "good": "#2ec9dd", "warn": "#d9548f", "enc": "#5ad2f0"},
+                 "wait": "#f5a623", "bad": "#f0559a", "sleep": "#8f57d4",
+                 "accent": "#d9548f", "good": "#2ec9dd", "warn": "#f5a623", "enc": "#5ad2f0"},
     },
     "terminal": {
         "label": "Phosphor", "emoji": "\U0001F4DF", "season": None,
         "vars": {"bg": "#050a05", "card": "#0d160d", "line": "#1c3320", "fg": "#e8f5e4",
-                 "muted": "#8fae87", "faint": "#5e7a58", "go": "#8fbf3a",
-                 "wait": "#c9a227", "bad": "#ffb020", "sleep": "#7a9e2f",
-                 "accent": "#7a9e2f", "good": "#8fbf3a", "warn": "#c9a227", "enc": "#59d98a"},
+                 "muted": "#8fae87", "faint": "#5e7a58", "go": "#4fd6c9",
+                 "wait": "#ffb020", "bad": "#ff5470", "sleep": "#7a9e2f",
+                 "accent": "#7a9e2f", "good": "#4fd6c9", "warn": "#ffb020", "enc": "#59d98a"},
     },
     # No emoji on purpose — see the note above _personal_theme.
     "birthday": {
@@ -434,29 +434,29 @@ THEMES = {
         "label": "", "emoji": "", "season": None,
         "vars": {"bg": "#0a1218", "card": "#132029", "line": "#264150", "fg": "#eef6f8",
                  "muted": "#8fb0b8", "faint": "#5d7d86", "go": "#48c4b0",
-                 "wait": "#5aa8d8", "bad": "#e05663", "sleep": "#7aa2ff",
-                 "accent": "#5aa8d8", "good": "#48c4b0", "warn": "#5aa8d8", "enc": "#48c4b0"},
+                 "wait": "#f0a63a", "bad": "#e05663", "sleep": "#7aa2ff",
+                 "accent": "#5aa8d8", "good": "#48c4b0", "warn": "#f0a63a", "enc": "#48c4b0"},
     },
     "ember": {
         "label": "Ember", "emoji": "\U0001F525", "season": None,
         "vars": {"bg": "#180904", "card": "#26120a", "line": "#4a2414", "fg": "#fdf1e8",
                  "muted": "#c29c86", "faint": "#8a6b58", "go": "#6bb8e0",
-                 "wait": "#d1732b", "bad": "#e0564f", "sleep": "#c08420",
-                 "accent": "#d1732b", "good": "#6bb8e0", "warn": "#d1732b", "enc": "#5aa8d8"},
+                 "wait": "#f2c14e", "bad": "#e0564f", "sleep": "#c08420",
+                 "accent": "#d1732b", "good": "#6bb8e0", "warn": "#f2c14e", "enc": "#5aa8d8"},
     },
     "slate": {
         "label": "Slate", "emoji": "\U0001F5FF", "season": None,
         "vars": {"bg": "#0b0f14", "card": "#161d26", "line": "#2b3644", "fg": "#f0f4f8",
                  "muted": "#94a2b4", "faint": "#647287", "go": "#93aecb",
-                 "wait": "#8fa3b8", "bad": "#e05663", "sleep": "#7aa2ff",
-                 "accent": "#8fa3b8", "good": "#93aecb", "warn": "#c98500", "enc": "#7fc4e8"},
+                 "wait": "#f0a63a", "bad": "#e05663", "sleep": "#7aa2ff",
+                 "accent": "#8fa3b8", "good": "#93aecb", "warn": "#f0a63a", "enc": "#7fc4e8"},
     },
     "frost": {
         "label": "Frost", "emoji": "\U00002744", "season": None,
         "vars": {"bg": "#04101c", "card": "#0d1f2e", "line": "#1d3a52", "fg": "#eef6fb",
                  "muted": "#8fb4cc", "faint": "#5b7f99", "go": "#5ec8f0",
-                 "wait": "#5aa8d8", "bad": "#e05663", "sleep": "#7aa2ff",
-                 "accent": "#5aa8d8", "good": "#5ec8f0", "warn": "#5aa8d8", "enc": "#5ec8f0"},
+                 "wait": "#f0a63a", "bad": "#e05663", "sleep": "#7aa2ff",
+                 "accent": "#5aa8d8", "good": "#5ec8f0", "warn": "#f0a63a", "enc": "#5ec8f0"},
     },
 }
 
@@ -572,9 +572,15 @@ def theme_css(theme):
     if re.fullmatch(r"#[0-9a-fA-F]{6}", acc or "") and re.fullmatch(r"#[0-9a-fA-F]{6}", bgc):
         css += (f":root{{--pcb:{_blend(acc, bgc, .10)};"
                 f"--pcb-line:{_blend(acc, bgc, .42)};}}")
-    go = v.get("go") or ""
-    if re.fullmatch(r"#[0-9a-fA-F]{6}", go) and re.fullmatch(r"#[0-9a-fA-F]{6}", bgc):
-        css += f":root{{--go-dim:{_blend(go, bgc, .22)};}}"
+    # Dim fills for the status chips: the SoC and RAM squares on the board, the device
+    # bodies on /devices. Each was a hardcoded tint of its status colour (#123522 green,
+    # #2a2412 amber, #2e1414 red) with only the STROKE themed, so the boxes stayed green
+    # while their outlines went blue -- which is exactly what "RAM and BCM are still a bit
+    # green" was pointing at.
+    for _name, _src in (("go-dim", v.get("go")), ("wait-dim", v.get("wait")),
+                        ("bad-dim", v.get("bad"))):
+        if re.fullmatch(r"#[0-9a-fA-F]{6}", _src or "") and re.fullmatch(r"#[0-9a-fA-F]{6}", bgc):
+            css += f":root{{--{_name}:{_blend(_src, bgc, .22)};}}"
 
     # Component form for the canvas, which needs an alpha it varies at runtime.
     enc = v.get("enc") or ""
@@ -3810,19 +3816,19 @@ HEALTH_PAGE = """
         #eth.on .led.act{fill:var(--go);animation:blink 1.5s steps(1) infinite}
         @keyframes blink{50%{opacity:.2}}
         /* ethernet unplugged: red + an occasional shake */
-        #eth.down .jack{fill:#2e1414;stroke:var(--bad)}
+        #eth.down .jack{fill:var(--bad-dim,#2e1414);stroke:var(--bad)}
         #eth.down .lbl{fill:var(--bad)} #eth.down .led{fill:var(--bad)}
         #eth.down{animation:shake 1.8s ease-in-out infinite;transform-box:fill-box;transform-origin:center}
         @keyframes shake{0%,86%,100%{transform:translateX(0)}89%{transform:translateX(-2.5px)}92%{transform:translateX(2.5px)}95%{transform:translateX(-1.5px)}}
         @media (prefers-reduced-motion:reduce){ #eth.on .led.act,#eth.down{animation:none} }
         /* SoC tinted by temperature, RAM by memory use */
         #soc,#ram{transition:.5s}
-        #soc.cool,#ram.cool{fill:#123522;stroke:var(--go)}
-        #soc.warm,#ram.warm{fill:#2a2412;stroke:var(--wait)}
-        #soc.hot,#ram.hot{fill:#2e1414;stroke:var(--bad)}
-        .divln{stroke:#2a2f3a;stroke-width:1}
+        #soc.cool,#ram.cool{fill:var(--go-dim,#123522);stroke:var(--go)}
+        #soc.warm,#ram.warm{fill:var(--wait-dim,#2a2412);stroke:var(--wait)}
+        #soc.hot,#ram.hot{fill:var(--bad-dim,#2e1414);stroke:var(--bad)}
+        .divln{stroke:var(--line);stroke-width:1}
         /* power connector */
-        #pwr{fill:#3a4150;transition:.4s} #pwr.on{fill:var(--go)} #pwr.bad{fill:var(--wait)}
+        #pwr{fill:var(--line);transition:.4s} #pwr.on{fill:var(--go)} #pwr.bad{fill:var(--wait)}
         /* metric cards */
         .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
         @media (max-width:460px){.grid{grid-template-columns:repeat(2,1fr)}}
@@ -4457,7 +4463,7 @@ DEVICES_PAGE = """
             --faint:#5f6773; --go:#3ecf7c; --wait:#f0a63a; --bad:#e5484d; --sleep:#7aa2ff;
         }
         *{box-sizing:border-box}
-        body{margin:0;background:radial-gradient(1100px 560px at 50% -10%,#161a22,var(--bg));
+        body{margin:0;background:radial-gradient(1100px 560px at 50% -10%,var(--card),var(--bg));
             color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
             -webkit-font-smoothing:antialiased;padding:26px 16px max(26px,env(safe-area-inset-bottom));display:flex;justify-content:center}
         .wrap{width:100%;max-width:560px}
@@ -4468,18 +4474,18 @@ DEVICES_PAGE = """
         .board svg{display:block;width:100%;height:auto}
         .caption{text-align:center;font-size:11.5px;color:var(--faint);margin:4px 0 4px}
         /* line-art nodes */
-        .dev .body{fill:#0f1319;stroke:#3a4150;stroke-width:1.5;transition:.4s}
-        .dev.on .body{fill:#101c15;stroke:var(--go)}
-        .dev .scr{fill:#0a0c10;stroke:#2a2f3a;stroke-width:1}
-        .dev.on .scr{stroke:#1f5137}
+        .dev .body{fill:var(--bg);stroke:var(--line);stroke-width:1.5;transition:.4s}
+        .dev.on .body{fill:var(--go-dim,#101c15);stroke:var(--go)}
+        .dev .scr{fill:var(--bg);stroke:var(--line);stroke-width:1}
+        .dev.on .scr{stroke:var(--pcb-line,#1f5137)}
         .dev .lbl{fill:var(--muted);font:600 10px -apple-system,Roboto,Arial,sans-serif;text-anchor:middle}
         .dev.on .lbl{fill:var(--go)}
         .dev .sub{fill:var(--faint);font:600 8.5px -apple-system,Roboto,Arial,sans-serif;text-anchor:middle}
-        .hub{fill:#0c1a12;stroke:#2f5d43;stroke-width:1.5}
-        .hubp{fill:#123522;stroke:var(--go);stroke-width:1.4}
+        .hub{fill:var(--pcb,#0c1a12);stroke:var(--pcb-line,#2f5d43);stroke-width:1.5}
+        .hubp{fill:var(--go-dim,#123522);stroke:var(--go);stroke-width:1.4}
         .hubl{fill:var(--go);font:700 9px ui-monospace,Menlo,monospace;text-anchor:middle}
         .gwl{fill:var(--faint);font:600 9px -apple-system,Roboto,Arial,sans-serif;text-anchor:middle}
-        .lane{stroke:#3a3f4a;stroke-width:1.6;fill:none;transition:stroke .4s,stroke-width .35s}
+        .lane{stroke:var(--line);stroke-width:1.6;fill:none;transition:stroke .4s,stroke-width .35s}
         .lane.dn.on{stroke:var(--go)}
         .lane.up.on{stroke:var(--sleep)}
         .lane.dn.flow{stroke-dasharray:5 7;animation:flowdn .9s linear infinite}

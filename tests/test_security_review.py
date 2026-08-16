@@ -1151,6 +1151,19 @@ def test_the_healthy_and_unhealthy_status_colours_stay_apart():
         assert dd > 0.30, f"{name}: go/bad collapse under deuteranopia ({dd:.2f})"
         assert pp > 0.24, f"{name}: go/bad collapse under protanopia ({pp:.2f})"
 
+        # And the MIDDLE step. Checking only the ends let six themes ship a ramp whose
+        # adjacent pair was indistinguishable -- frost had go #5ec8f0 against wait
+        # #5aa8d8, slate 0.09 apart, retro's wait and bad both pink at 0.10. A gauge whose
+        # "fine" and "getting full" look identical is worse than one that is merely the
+        # wrong colour, because it reads as working.
+        wait = th["vars"].get("wait")
+        assert wait, f"{name} is missing --wait"
+        w = rgbt(wait)
+        gw = dist(tuple(v / 255 for v in g), tuple(v / 255 for v in w))
+        wb = dist(tuple(v / 255 for v in w), tuple(v / 255 for v in b))
+        assert gw > 0.30, f"{name}: go {go} and wait {wait} are only {gw:.2f} apart"
+        assert wb > 0.30, f"{name}: wait {wait} and bad {bad} are only {wb:.2f} apart"
+
 
 def test_seasonal_themes_own_their_dates(rdb):
     import time as _t
