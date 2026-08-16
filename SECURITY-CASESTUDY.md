@@ -898,6 +898,20 @@ This is not a bug anyone introduced. It is the default, and the default was neve
 questioned because the finding it belongs to ("physical access to the box") had already
 been filed under *accepted*, which is a good way to stop looking at something.
 
+**A NOTE ON WHEN THIS BECAME TRUE.** Everything below was true of `deploy/gen_ca.sh` from
+the day it was written, and false of the deployment for three more days: the live CA had
+been generated two months before the generator existed, and writing the generator does not
+regenerate a CA that already exists. This entry said FIXED throughout, and `SECURITY.md`
+said a stolen key was "a trust anchor for Reddit and the news list rather than for your
+bank" — which was not true of the running machine.
+
+Nothing here was wrong. Nobody ran it. If you adopted this project before the CA generator
+landed, check your own box rather than this page:
+
+    sudo openssl x509 -in <confdir>/mitmproxy-ca-cert.pem -noout -text | grep -A3 "Name Constraints"
+
+**A finding is fixed when the machine changes, not when the repo does.**
+
 **The fix.** The CA now carries X.509 name constraints listing exactly the domains in
 `gen_allow_hosts.py` — the same derivation `--allow-hosts` is built from, so the two
 cannot drift. A stolen key is now a trust anchor for Reddit and the news list. Measured,
@@ -1308,9 +1322,12 @@ not eliminated. Naming them is itself good practice.
   everything else enforced (F8) — but our script does run on those origins by design.
 - **The CA key is a single trust anchor.** Whoever holds it can decrypt your
   traffic *for the gated sites*. It stays on the box, out of git; the mitigation is
-  guarding the box, not removing the trust. **Bounded since F26**: the CA carries name
-  constraints, so a stolen key is a trust anchor for Reddit and the news list rather than
-  for your bank — on the platforms that enforce them, which is not all of them.
+  guarding the box, not removing the trust. **Bounded once the CA is rotated with
+  `deploy/gen_ca.sh`** — not merely once that script exists in the repo. A deployment
+  predating it keeps its original unconstrained CA until something regenerates it, and this
+  paragraph asserted the bound regardless; check your own box (see F26). Where it holds, the
+  CA carries name constraints, so a stolen key is a trust anchor for Reddit and the news
+  list rather than for your bank — on the platforms that enforce them, which is not all.
 - **The VPN-off bypass.** Turning the tunnel off routes around the gate —
   deliberate *soft* friction (a commitment device for a cooperative user), not an
   adversarial lock.
