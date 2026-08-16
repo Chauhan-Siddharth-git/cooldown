@@ -1237,6 +1237,62 @@ plausible.
 
 ---
 
+## F36 — The failure handler was slower than the failure  ·  MEDIUM  ·  FIXED
+
+**What it is.** With Redis unreachable, a single request to a gated site took **15.7
+seconds**. Not under load — one request, measured in isolation with the proxy taken out of
+the picture entirely.
+
+`redis-py` defaults to **three retries with exponential-with-jitter backoff**. Every failing
+call therefore costs about three seconds of mostly sleeping, even when the underlying
+failure is an instantaneous `ECONNREFUSED`. The breakdown:
+
+| | |
+|---|---|
+| one `r.get()` | 3.04s |
+| `session_mode()` (two gets) | 4.52s |
+| `_note_error()` (incr + setex) | **8.44s** |
+| the loopback call to Flask | 0.007s |
+
+**The largest contributor was the fix for the previous finding.** Failing closed meant
+catching the Redis error and reporting it through `_note_error`, which writes two keys —
+to the very Redis whose death it was reporting, each write retrying three times with
+backoff. Reporting the outage cost more than suffering it, and the repair roughly tripled
+the latency of the thing it repaired.
+
+**How the wrong answer nearly stuck.** The working hypothesis was event-loop saturation:
+`redis-py` is synchronous, the addon runs on mitmproxy's loop, so concurrent flows must be
+queueing behind each other. It was plausible, it fit the observation that everything died
+at once, and it was wrong. One request with no concurrency took 15.7s, which killed the
+hypothesis in a single measurement — and only because the measurement was of one request
+rather than of the busy box, where the confounder lived.
+
+A second wrong turn is worth recording for the same reason. The fault was injected with an
+iptables `REJECT` on the Redis port, which makes `connect()` **time out** rather than be
+refused — a harsher failure than a real outage, and it inflated every number by the 2s
+connect timeout. A genuinely stopped Redis closes the port and fails instantly. The
+injected fault has to resemble the real one or you tune against a fiction.
+
+**The fix.** One retry with a token backoff, on both the addon's client and the app's.
+Measured over four failing calls: **20.7s at the default, 0.039s now**, and a healthy Redis
+is unaffected (200 successful gets: 0.114s before, 0.112s after). End to end on the box,
+with Redis genuinely stopped: a gated site fails closed in **0.25s**, and `/health` still
+answers — the dashboard stays up during exactly the outage you would consult it about.
+
+Also fixed alongside: the addon copied the loopback response body through with a hardcoded
+`200`, so Flask's raw 500 page was served as the gate and labelled success. The status is
+checked now, and a regression test covers it.
+
+**The concept — a library's default retry policy is a latency policy, and it was chosen
+for someone else's context.** Three retries with backoff is right for a network service
+that is briefly congested. It is wrong in front of a user request, wrong on an event loop,
+and worst of all in an error handler, where the thing you are retrying against is the thing
+that just failed. Retries in a failure path need a budget, and the question to ask of any
+`except:` block is not only whether it is correct but what it costs when it runs — because
+it runs precisely when everything else is already going wrong.
+
+---
+
 ## Accepted by design
 
 Some risks are the cost of what the tool *is* — understood, bounded, documented,

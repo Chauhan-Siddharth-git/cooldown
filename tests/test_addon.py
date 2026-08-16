@@ -266,6 +266,9 @@ def test_unrelated_host_is_untouched():
 
 def test_no_session_navigation_serves_the_gate(rdb, monkeypatch):
     class FakeResp:
+        # status_code included deliberately: the addon checks it now, and a stub that
+        # omits it silently exercised the error path instead of the success path.
+        status_code = 200
         content = b"<html>GATE</html>"
     seen = {}
     def fake_get(url, timeout=None):
@@ -280,6 +283,29 @@ def test_no_session_navigation_serves_the_gate(rdb, monkeypatch):
     assert b"GATE" in f.response.content
     assert "site=reddit" in seen["url"]
     assert "next=" in seen["url"]            # so Enter returns to the clicked link
+
+
+def test_a_failing_budget_page_is_not_served_as_the_gate(rdb, monkeypatch):
+    """Flask answering 500 must produce the fallback, not Flask's error page relabelled 200.
+
+    When Redis is unreachable the loopback /budget call returns 500, and the addon used to
+    copy `resp.content` through with a hardcoded 200 -- so a gated origin served a raw
+    Werkzeug error page and called it success. The real site is still never reached, so
+    this is presentation rather than a bypass, but "500 body, 200 status" is a lie the
+    browser has no way to see through.
+    """
+    class Failing:
+        status_code = 500
+        content = b"<html><h1>500 Internal Server Error</h1></html>"
+    monkeypatch.setattr(addon.req, "get", lambda url, timeout=None: Failing())
+
+    f = mkflow("www.reddit.com", "/r/python", resp=False,
+               headers={"Sec-Fetch-Mode": "navigate"})
+    addon.BudgetAddon().request(f)
+
+    assert f.response.status_code == 200
+    assert b"unreachable" in f.response.content
+    assert b"500 Internal Server Error" not in f.response.content
 
 
 def test_no_session_subrequest_is_dropped_quietly(rdb):

@@ -160,4 +160,4 @@ reviewer's premise · `||` fallbacks written without checking what the left side
 status actually means (three times now: `grep -c` exits 1 having already printed `0`, and
 `grep | head` takes its status from `head`, so the fallback either double-answers or can
 never fire) · requirements that were satisfied on one deployment shape and quietly lost
-when another replaced it.
+when another replaced it · library defaults adopted without pricing them on the path they sit in (redis-py retries three times with backoff, which turned a failed call into three seconds and an error handler into fifteen).

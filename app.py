@@ -8,6 +8,9 @@ import json
 import re
 import random
 import redis
+# Explicit, because the defaults are the finding: see the client construction below.
+from redis.retry import Retry
+from redis.backoff import ExponentialWithJitterBackoff
 import secrets
 import threading
 import time
@@ -28,8 +31,19 @@ from news_domains import NEWS_DOMAINS
 app = Flask(__name__)
 # Redis lives on localhost for the native/Pi deploy; in Docker it's a separate
 # service, so honor REDIS_HOST/REDIS_PORT (defaults preserve native behaviour).
+# Timeouts and a bounded retry policy. redis-py defaults to THREE retries with
+# exponential-with-jitter backoff, so one failing call costs ~3s of mostly sleeping even
+# when the failure is an instant ECONNREFUSED. Flask serves this app on a small thread
+# pool, so a Redis outage does not degrade it -- it parks every worker in a backoff sleep
+# and the dashboard stops answering too, including /health, the page you would go to in
+# order to find out what is wrong.
+#
+# Same setting as addon.py, for the same measured reason (four failing calls: 20.7s at the
+# default, 0.039s here; a healthy Redis is unaffected).
 r = redis.Redis(host=os.environ.get("REDIS_HOST", "localhost"),
-                port=int(os.environ.get("REDIS_PORT", "6379")), decode_responses=True)
+                port=int(os.environ.get("REDIS_PORT", "6379")), decode_responses=True,
+                socket_timeout=2, socket_connect_timeout=2,
+                retry=Retry(ExponentialWithJitterBackoff(base=0.01, cap=0.05), 1))
 
 # ---------------------------------------------------------------------------
 # Cross-origin writes, refused at the box's own door.

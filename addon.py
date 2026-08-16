@@ -6,6 +6,9 @@ import time
 import os
 import sys
 import redis
+# Explicit, because the defaults are the finding: see the client construction below.
+from redis.retry import Retry
+from redis.backoff import ExponentialWithJitterBackoff
 import requests as req
 
 # mitmdump loads this file by path; make sure its own directory is importable so the
@@ -54,9 +57,22 @@ STUDY_PLAYLISTS = []   # OFF by default; must match app.py. See the note there.
 # itself rather than failing a request -- and a hung proxy is every gated site hanging.
 # Two seconds is far above a healthy round trip and far below a user's patience.
 # Failing fast is what lets the fail-closed path above actually run.
+#
+# And the retry policy, which is the part that actually mattered. redis-py defaults to
+# THREE retries with exponential-with-jitter backoff, so a single failing call costs ~3s
+# of mostly sleeping even when the failure is an instant ECONNREFUSED. Measured with Redis
+# refused: one gated request took 15.7s end to end, and 8.4s of that was _note_error's two
+# writes -- the error reporter on the fail-closed path, retrying against the very Redis
+# whose death it was reporting. The reporting cost more than the failure it reported.
+#
+# One retry with a token backoff keeps the thing retries are actually for -- a momentary
+# blip, where an immediate second attempt succeeds -- and bounds the cost. Measured over
+# four failing calls: 20.7s at the default, 0.039s here. A healthy Redis is unaffected
+# (200 successful gets: 0.114s default, 0.112s with this).
 r = redis.Redis(host=os.environ.get("REDIS_HOST", "localhost"),
                 port=int(os.environ.get("REDIS_PORT", "6379")), decode_responses=True,
-                socket_timeout=2, socket_connect_timeout=2)
+                socket_timeout=2, socket_connect_timeout=2,
+                retry=Retry(ExponentialWithJitterBackoff(base=0.01, cap=0.05), 1))
 
 # Injected into real pages of a gated site. Pings the budget server only while the
 # tab is actually visible, so only foreground viewing time is charged. The site is
@@ -1011,6 +1027,14 @@ class BudgetAddon:
                 # to the link they clicked, not just the site home.
                 nxt = quote(flow.request.pretty_url, safe="")
                 resp = req.get(f"http://127.0.0.1:5000/budget?site={site}&next={nxt}", timeout=2)
+                # Check the STATUS, not just that a response came back. Flask returning
+                # 500 -- which is what it does when Redis is unreachable -- was being
+                # relabelled 200 and its raw Werkzeug error page served as the gate, on a
+                # gated origin. Safe, in that the real site is still not reached, but it
+                # shows a stack-trace-shaped page where a sentence belongs, and calls it
+                # success. The fallback below already says the right thing.
+                if resp.status_code != 200:
+                    raise RuntimeError(f"budget page returned {resp.status_code}")
                 flow.response = http.Response.make(
                     200, resp.content,
                     {"Content-Type": "text/html; charset=utf-8"}
