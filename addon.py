@@ -958,9 +958,13 @@ class BudgetAddon:
         # moved and /health stayed green. enforcement_looks_dead() cannot catch it
         # either; it reads Redis to decide.
         #
-        # Not hypothetical: unattended-upgrades restarting redis-server overnight is
-        # enough. F12/F20's failure -- the clock stops while browsing continues --
-        # reached by a third route.
+        # Which failures actually reach here, measured on a live deployment 2026-08-15
+        # rather than assumed. NOT a Redis restart: if the app unit has
+        # Requires=redis-server.service and the proxy Requires= the app, a restart cycles
+        # all three together and there is never a live proxy with a dead Redis. What
+        # reaches here is Redis alive but ERRORING: maxclients, an OOM it survives, or the
+        # socket timeout below firing under load. F12/F20's failure -- the clock stops
+        # while browsing continues -- by a narrower route than first thought, but a real one.
         #
         # Treating the failure as "no session" serves the gate. That is the safe
         # direction: a tool that blocks Reddit while its state store is broken still
