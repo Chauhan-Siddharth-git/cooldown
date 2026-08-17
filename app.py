@@ -456,7 +456,13 @@ THEMES = {
                  "accent": "#8fa3b8", "good": "#93aecb", "warn": "#f0a63a", "enc": "#7fc4e8"},
     },
     "frost": {
-        "deco": ("body::after{content:\"\";position:fixed;inset:0;pointer-events:none;z-index:0;background:radial-gradient(58% 42% at 0% 0%,rgba(190,232,255,.13),transparent 72%),radial-gradient(54% 40% at 100% 0%,rgba(190,232,255,.11),transparent 72%),radial-gradient(52% 36% at 0% 100%,rgba(170,220,250,.09),transparent 70%),radial-gradient(52% 36% at 100% 100%,rgba(170,220,250,.09),transparent 70%),repeating-linear-gradient(58deg,rgba(205,238,255,.055) 0 1px,transparent 1px 7px),repeating-linear-gradient(-58deg,rgba(205,238,255,.045) 0 1px,transparent 1px 9px),repeating-linear-gradient(14deg,rgba(185,228,252,.03) 0 1px,transparent 1px 13px);-webkit-mask-image:radial-gradient(118% 92% at 50% 50%,transparent 34%,#000 100%);mask-image:radial-gradient(118% 92% at 50% 50%,transparent 34%,#000 100%);}"),
+        # z-index 2, ABOVE .wrap (1). Shipped at 0 first, which put the ice BEHIND every
+        # card -- on a card-dead page it only showed through the margins, and the feedback
+        # was "how long do I wait for it to form", i.e. it was invisible. Backwards
+        # conceptually too: frost forms on the glass you look THROUGH, not behind it.
+        # Below .bgpanel (3) and the tooltip (5) so nothing interactive is ever veiled,
+        # and pointer-events:none so it cannot swallow a click.
+        "deco": ("body::after{content:\"\";position:fixed;inset:0;pointer-events:none;z-index:2;background:radial-gradient(58% 42% at 0% 0%,rgba(190,232,255,.13),transparent 72%),radial-gradient(54% 40% at 100% 0%,rgba(190,232,255,.11),transparent 72%),radial-gradient(52% 36% at 0% 100%,rgba(170,220,250,.09),transparent 70%),radial-gradient(52% 36% at 100% 100%,rgba(170,220,250,.09),transparent 70%),repeating-linear-gradient(58deg,rgba(205,238,255,.055) 0 1px,transparent 1px 7px),repeating-linear-gradient(-58deg,rgba(205,238,255,.045) 0 1px,transparent 1px 9px),repeating-linear-gradient(14deg,rgba(185,228,252,.03) 0 1px,transparent 1px 13px);-webkit-mask-image:radial-gradient(118% 92% at 50% 50%,transparent 34%,#000 100%);mask-image:radial-gradient(118% 92% at 50% 50%,transparent 34%,#000 100%);}"),
         # No emoji. The palette carries it now -- a blue backdrop, blue board, blue traffic
         # stream -- and a snowflake in the corner announcing "this is the winter one"
         # reads as a label stuck on a thing that already speaks for itself. The field is
