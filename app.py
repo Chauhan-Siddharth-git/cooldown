@@ -1,4 +1,5 @@
 from flask import Flask, jsonify, redirect, request
+from markupsafe import Markup
 from urllib.parse import urlparse
 from collections import Counter, deque
 from datetime import datetime, timezone
@@ -462,7 +463,7 @@ THEMES = {
         # conceptually too: frost forms on the glass you look THROUGH, not behind it.
         # Below .bgpanel (3) and the tooltip (5) so nothing interactive is ever veiled,
         # and pointer-events:none so it cannot swallow a click.
-        "deco": ("body::after{content:\"\";position:fixed;inset:0;pointer-events:none;z-index:2;background:radial-gradient(58% 42% at 0% 0%,rgba(190,232,255,.13),transparent 72%),radial-gradient(54% 40% at 100% 0%,rgba(190,232,255,.11),transparent 72%),radial-gradient(52% 36% at 0% 100%,rgba(170,220,250,.09),transparent 70%),radial-gradient(52% 36% at 100% 100%,rgba(170,220,250,.09),transparent 70%),repeating-linear-gradient(58deg,rgba(205,238,255,.055) 0 1px,transparent 1px 7px),repeating-linear-gradient(-58deg,rgba(205,238,255,.045) 0 1px,transparent 1px 9px),repeating-linear-gradient(14deg,rgba(185,228,252,.03) 0 1px,transparent 1px 13px);-webkit-mask-image:radial-gradient(118% 92% at 50% 50%,transparent 34%,#000 100%);mask-image:radial-gradient(118% 92% at 50% 50%,transparent 34%,#000 100%);}"),
+        "deco": ("body::after{content:\"\";position:fixed;inset:0;pointer-events:none;z-index:2;background:radial-gradient(58% 42% at 0% 0%,rgba(190,232,255,.13),transparent 72%),radial-gradient(54% 40% at 100% 0%,rgba(190,232,255,.11),transparent 72%),radial-gradient(52% 36% at 0% 100%,rgba(170,220,250,.09),transparent 70%),radial-gradient(52% 36% at 100% 100%,rgba(170,220,250,.09),transparent 70%),repeating-linear-gradient(58deg,rgba(205,238,255,.085) 0 1px,transparent 1px 7px),repeating-linear-gradient(-58deg,rgba(205,238,255,.07) 0 1px,transparent 1px 9px),repeating-linear-gradient(14deg,rgba(185,228,252,.05) 0 1px,transparent 1px 13px);-webkit-mask-image:radial-gradient(118% 92% at 50% 50%,transparent 34%,#000 100%);mask-image:radial-gradient(118% 92% at 50% 50%,transparent 34%,#000 100%);}"),
         # No emoji. The palette carries it now -- a blue backdrop, blue board, blue traffic
         # stream -- and a snowflake in the corner announcing "this is the winter one"
         # reads as a label stuck on a thing that already speaks for itself. The field is
@@ -616,7 +617,20 @@ def theme_css(theme):
     if re.fullmatch(r"#[0-9a-fA-F]{6}", enc):
         er, eg, eb = (int(enc[i:i + 2], 16) for i in (1, 3, 5))
         css += f":root{{--enc-rgb:{er},{eg},{eb};}}"
-    return css
+
+    # Markup, i.e. NOT autoescaped. This is a stylesheet going into <style>, and Jinja was
+    # HTML-escaping it: the frost layer's `content:""` came out as `content:&#34;&#34;`,
+    # which is invalid CSS, so the declaration was dropped -- and a ::after with no valid
+    # content generates no box at all. The layer never existed. Nothing else here had
+    # noticed because no other rule in this function contains a quote.
+    #
+    # Safe to mark, and the reason is structural rather than a promise: every byte comes
+    # from the THEMES dict in this file. The only caller-influenced input is ?theme=, and
+    # active_theme() resolves it with `if override in THEMES`, so an unknown name yields
+    # (None, None) and this returns "" before reaching any of the above. No request data
+    # reaches this string. If a theme ever takes a value from outside this file, this must
+    # go back to being escaped -- test_theme_override_and_off pins the injection case.
+    return Markup(css)
 
 BUDGET_PAGE = """
 <!DOCTYPE html>

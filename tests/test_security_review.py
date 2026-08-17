@@ -1377,6 +1377,38 @@ def test_no_personal_date_is_committed_to_the_repository():
     assert not re.search(r'BIRTHDAY\s*=\s*["\']\d{2}-\d{2}["\']', src), "a date is hardcoded"
 
 
+def test_the_theme_stylesheet_reaches_the_page_unescaped(rdb, client):
+    """theme_css goes into <style>, so it must NOT be HTML-escaped.
+
+    Jinja autoescaping turned the frost layer's `content:""` into
+    `content:&#34;&#34;`, which is invalid CSS. The declaration was dropped, and a ::after
+    with no valid content generates no box -- so the whole decoration silently did not
+    exist. Nothing caught it because no other rule this function emits contains a quote,
+    and the page looked fine: a stylesheet with one broken declaration renders as a
+    stylesheet with one fewer declaration.
+
+    Checks both directions, because "not escaped" is satisfied by emitting nothing.
+    """
+    html = client.get("/budget?site=reddit&theme=frost").get_data(as_text=True)
+    assert "&#34;" not in html.split('id="cd-theme"')[1].split("</style>")[0], (
+        "the theme stylesheet is being HTML-escaped; quoted CSS values will not parse")
+    assert 'content:""' in html, "the frost decoration is not reaching the page at all"
+
+
+def test_an_unknown_theme_name_cannot_inject_into_the_stylesheet(rdb, client):
+    """The other half of marking theme_css safe.
+
+    It is only safe because every byte comes from the THEMES dict and active_theme()
+    resolves ?theme= with `if override in THEMES`. If that ever loosened, an attacker
+    would be writing raw text into a <style> block on the gated origin.
+    """
+    for probe in ["../../etc/passwd", "</style><script>alert(1)</script>",
+                  'x";}body{display:none}/*', "frost'"]:
+        html = client.get(f"/budget?site=reddit&theme={probe}").get_data(as_text=True)
+        block = html.split('id="cd-theme"')[1].split("</style>")[0]
+        assert block == ">", f"{probe!r} put {block[:60]!r} into the stylesheet"
+
+
 def test_spontaneous_themes_carry_no_emoji():
     """A theme that turns up on a random Tuesday has no occasion to announce.
 
