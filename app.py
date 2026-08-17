@@ -456,6 +456,7 @@ THEMES = {
                  "accent": "#8fa3b8", "good": "#93aecb", "warn": "#f0a63a", "enc": "#7fc4e8"},
     },
     "frost": {
+        "deco": ("body::after{content:\"\";position:fixed;inset:0;pointer-events:none;z-index:0;background:radial-gradient(58% 42% at 0% 0%,rgba(190,232,255,.13),transparent 72%),radial-gradient(54% 40% at 100% 0%,rgba(190,232,255,.11),transparent 72%),radial-gradient(52% 36% at 0% 100%,rgba(170,220,250,.09),transparent 70%),radial-gradient(52% 36% at 100% 100%,rgba(170,220,250,.09),transparent 70%),repeating-linear-gradient(58deg,rgba(205,238,255,.055) 0 1px,transparent 1px 7px),repeating-linear-gradient(-58deg,rgba(205,238,255,.045) 0 1px,transparent 1px 9px),repeating-linear-gradient(14deg,rgba(185,228,252,.03) 0 1px,transparent 1px 13px);-webkit-mask-image:radial-gradient(118% 92% at 50% 50%,transparent 34%,#000 100%);mask-image:radial-gradient(118% 92% at 50% 50%,transparent 34%,#000 100%);}"),
         # No emoji. The palette carries it now -- a blue backdrop, blue board, blue traffic
         # stream -- and a snowflake in the corner announcing "this is the winter one"
         # reads as a label stuck on a thing that already speaks for itself. The field is
@@ -590,6 +591,19 @@ def theme_css(theme):
                         ("bad-dim", v.get("bad"))):
         if re.fullmatch(r"#[0-9a-fA-F]{6}", _src or "") and re.fullmatch(r"#[0-9a-fA-F]{6}", bgc):
             css += f":root{{--{_name}:{_blend(_src, bgc, .22)};}}"
+
+    # Optional per-theme decoration. Pure CSS on purpose: the gate is served on the gated
+    # site's own origin under THEIR Content-Security-Policy, so a data: URI or an external
+    # asset is one `img-src` directive away from silently not rendering. Gradients are
+    # never blocked, need no request, and cost nothing to ship.
+    #
+    # Painted on body::after rather than ::before: ::before is the first child in paint
+    # order and #bp-bg (the traffic canvas, z-index 0) fills the viewport, so a ::before
+    # layer would be completely covered. ::after paints after the canvas and below .wrap
+    # (z-index 1), which is the one slot between the two.
+    deco = theme.get("deco")
+    if deco:
+        css += deco
 
     # Component form for the canvas, which needs an alpha it varies at runtime.
     enc = v.get("enc") or ""
