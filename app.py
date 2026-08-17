@@ -3220,7 +3220,13 @@ def error_summary():
     if raw:
         try:
             ts, _, rest = raw.partition(" ")
-            proxy_last = rest.split(": (", 1)[0][:90]
+            # "where: ExceptionType", not the message body. The full text is a wrapped
+            # urllib error whose useful half is the first 30 characters; truncating it at
+            # 90 produced "...port=5000): Max retr" -- a cut-off URL that answers nothing.
+            # Where it happened and what kind of failure it was is the part you act on;
+            # the message is one journalctl away and the row says so.
+            bits = rest.split(": ")
+            proxy_last = (f"{bits[0]}: {bits[1]}" if len(bits) > 1 else rest)[:70]
             proxy_last_ago = max(0, int(time.time() - float(ts)))
         except Exception:
             proxy_last = raw[:90]
