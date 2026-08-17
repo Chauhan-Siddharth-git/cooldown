@@ -1390,9 +1390,24 @@ def test_the_theme_stylesheet_reaches_the_page_unescaped(rdb, client):
     Checks both directions, because "not escaped" is satisfied by emitting nothing.
     """
     html = client.get("/budget?site=reddit&theme=frost").get_data(as_text=True)
-    assert "&#34;" not in html.split('id="cd-theme"')[1].split("</style>")[0], (
+    block = html.split('id="cd-theme"')[1].split("</style>")[0]
+
+    # Scoped to the theme block, not the whole page. The first version asserted
+    # `'content:""' in html`, and when the frost moved from CSS into markup that assertion
+    # kept passing -- satisfied by an unrelated `content:""` in the page's own stylesheet.
+    # It reported green while testing nothing, which is the shape this suite exists to
+    # catch, committed here by hand.
+    assert "&#34;" not in block, (
         "the theme stylesheet is being HTML-escaped; quoted CSS values will not parse")
-    assert 'content:""' in html, "the frost decoration is not reaching the page at all"
+    assert budget.THEMES["frost"]["vars"]["bg"] in block, (
+        "the theme block reached the page empty, so the check above proves nothing")
+
+    # The decoration is markup now, and it is the part carrying quotes.
+    body = html.split("<body>", 1)[1]
+    assert 'preserveAspectRatio="none"' in body, "the frost SVG is not reaching the page"
+    assert "&#34;" not in body[:2000], "the frost SVG is being HTML-escaped"
+    assert "feTurbulence" in body, (
+        "the frost SVG lost its turbulence filter -- without it this is a plain rectangle")
 
 
 def test_an_unknown_theme_name_cannot_inject_into_the_stylesheet(rdb, client):

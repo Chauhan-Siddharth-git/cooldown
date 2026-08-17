@@ -463,7 +463,8 @@ THEMES = {
         # conceptually too: frost forms on the glass you look THROUGH, not behind it.
         # Below .bgpanel (3) and the tooltip (5) so nothing interactive is ever veiled,
         # and pointer-events:none so it cannot swallow a click.
-        "deco": ("body::after{content:\"\";position:fixed;inset:0;pointer-events:none;z-index:2;background:radial-gradient(58% 42% at 0% 0%,rgba(190,232,255,.13),transparent 72%),radial-gradient(54% 40% at 100% 0%,rgba(190,232,255,.11),transparent 72%),radial-gradient(52% 36% at 0% 100%,rgba(170,220,250,.09),transparent 70%),radial-gradient(52% 36% at 100% 100%,rgba(170,220,250,.09),transparent 70%),repeating-linear-gradient(58deg,rgba(205,238,255,.085) 0 1px,transparent 1px 7px),repeating-linear-gradient(-58deg,rgba(205,238,255,.07) 0 1px,transparent 1px 9px),repeating-linear-gradient(14deg,rgba(185,228,252,.05) 0 1px,transparent 1px 13px);-webkit-mask-image:radial-gradient(118% 92% at 50% 50%,transparent 34%,#000 100%);mask-image:radial-gradient(118% 92% at 50% 50%,transparent 34%,#000 100%);}"),
+        "deco": ('.cd-frost{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:2;opacity:.85}.cd-frost-a{animation:cd-frost-form 48s ease-in-out infinite}@keyframes cd-frost-form{0%{opacity:.12}42%{opacity:1}58%{opacity:1}100%{opacity:.12}}@media (prefers-reduced-motion:reduce){.cd-frost-a{animation:none;opacity:.9}}'),
+        "deco_html": ('<svg class="cd-frost" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none"><defs><filter id="cdfrostf" x="-10%" y="-10%" width="120%" height="120%" color-interpolation-filters="sRGB"><feTurbulence type="fractalNoise" baseFrequency="0.012 0.34" numOctaves="5" seed="11" result="n"/><feColorMatrix in="n" type="matrix" result="c" values="0 0 0 0 0.80  0 0 0 0 0.92  0 0 0 0 1.00  0 0 0 -1.65 1.02"/><feGaussianBlur in="c" stdDeviation="0.35"/></filter><radialGradient id="cdfrostm" cx="50%" cy="50%" r="78%"><stop offset="30%" stop-color="#000"/><stop offset="72%" stop-color="#777"/><stop offset="100%" stop-color="#fff"/></radialGradient><mask id="cdfrostmask"><rect width="100%" height="100%" fill="url(#cdfrostm)"/></mask></defs><g mask="url(#cdfrostmask)"><rect class="cd-frost-a" width="100%" height="100%" filter="url(#cdfrostf)"/></g></svg>'),
         # No emoji. The palette carries it now -- a blue backdrop, blue board, blue traffic
         # stream -- and a snowflake in the corner announcing "this is the winter one"
         # reads as a label stuck on a thing that already speaks for itself. The field is
@@ -3094,6 +3095,7 @@ def _inject_theme():
     q = _try(lambda: request.args.get("theme"), None)
     name, th = (None, None) if q == "off" else active_theme(override=q)
     return {"theme_css": theme_css(th),
+            "theme_deco": Markup(th.get("deco_html", "")) if th else Markup(""),
             "theme_label": th["label"] if th else "",
             "theme_emoji": th["emoji"] if th else "",
             "theme_bg": th["vars"]["bg"] if th else "#070b0e",
@@ -4747,9 +4749,21 @@ BG_STYLE = ("html,body{background:#070b0e}"
             "-webkit-backdrop-filter:blur(5px);backdrop-filter:blur(5px)}")
 
 def _add_theme(page):
-    """One extra :root block per page, appended after the page's own styles."""
+    """One extra :root block per page, plus an optional element the theme can draw with.
+
+    The markup slot exists because CSS gradients cannot draw frost. Frost is dendritic and
+    irregular; repeating-linear-gradient is a regular lattice, so three of them at
+    different angles produce a crosshatch -- accurately described on sight as "a white
+    net". The organic version needs an SVG turbulence filter, and that needs an element.
+
+    Inline SVG rather than a data: URI background, deliberately: the gate is served on the
+    gated site's origin under THEIR Content-Security-Policy, where a data: URI is one
+    img-src directive from silently not rendering. An inline element is markup, not a
+    fetch, so no directive applies to it.
+    """
     return page.replace("</head>",
-        '<style id="cd-theme">{{ theme_css }}</style></head>', 1)
+        '<style id="cd-theme">{{ theme_css }}</style></head>', 1).replace(
+        "<body>", "<body>\n{{ theme_deco }}", 1)
 
 def _add_bg(page, full=True, token="{{ ui_tok }}", feed="/feed"):
     # `feed` differs by origin: the gate lives on the gated site and reaches the app
