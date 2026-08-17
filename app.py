@@ -3197,12 +3197,40 @@ def _meter_totals(now, hours=ENFORCEMENT_WINDOW_HOURS):
 def error_summary():
     """Counts for /health. `proxy` comes from addon.py, which has its own swallowed
     exceptions on the other side of the loopback call and is otherwise unobservable."""
-    proxy = 0
+    # ONE round-trip for all three keys. Reading them separately cost /health three extra
+    # Redis calls per load and tripped test_history_pages_do_not_read_one_key_per_day at
+    # 18 against a limit of 15 -- a dashboard that polls itself turns per-load round-trips
+    # into steady background load, which is what that limit is for.
+    proxy, base, raw, base_known = 0, 0, "", False
     try:
-        proxy = int(r.get("proxy_errors") or 0)
+        vals = r.mget("proxy_errors", "proxy_errors_base", "proxy_last_error")
+        proxy = int(vals[0] or 0)
+        base_known = vals[1] is not None
+        base = int(vals[1] or 0)
+        raw = vals[2] or ""
     except Exception:
         pass                                  # never let the error reporter raise
+
+    # The proxy's LAST error, not just how many. addon.py has been writing
+    # proxy_last_error -- where it happened, the exception type, the message -- since
+    # _note_error was added, and nothing ever read it. So /health showed "5 in the proxy"
+    # with no way to learn what they were without SSHing in, which is the specific thing
+    # this page exists to avoid.
+    proxy_last, proxy_last_ago = "", None
+    if raw:
+        try:
+            ts, _, rest = raw.partition(" ")
+            proxy_last = rest.split(": (", 1)[0][:90]
+            proxy_last_ago = max(0, int(time.time() - float(ts)))
+        except Exception:
+            proxy_last = raw[:90]
+
     return {"total": sum(_ERRORS.values()), "proxy": proxy,
+            # Since THIS proxy started, which is the number that can be acted on; the
+            # lifetime total stays alongside as the context for "is this new".
+            "proxy_since_start": max(0, proxy - base),
+            "proxy_base_known": base_known,
+            "proxy_last": proxy_last, "proxy_last_ago": proxy_last_ago,
             "top": [{"what": k, "n": n} for k, n in _ERRORS.most_common(3)],
             "last": _LAST_ERROR.get("what", ""),
             "last_ago": int(time.time() - _LAST_ERROR["when"]) if _LAST_ERROR else None}
@@ -4091,15 +4119,39 @@ HEALTH_PAGE = """
          all there and none of it was being read. Same facts, scannable. -->
     <div class="status">
 
-      <!-- Swallowed errors. Silence here used to mean "fine" and "broken" equally. -->
-      <div class="srow {{ 'bad' if (d.errors.total or d.errors.proxy) else 'ok' }}">
+      <!-- Swallowed errors. Silence here used to mean "fine" and "broken" equally.
+           A COUNT ALONE was the next version of that problem: "5 in the proxy" told you
+           something happened, not what, not whether it is still happening, and not what
+           you were supposed to do about it. All three are answerable from data the box
+           already had -- proxy_last_error has been written since _note_error existed and
+           was read by nothing. -->
+      <div class="srow {{ 'bad' if (d.errors.total or d.errors.proxy_since_start) else 'ok' }}">
         <span class="sdot"></span><span class="slabel">Errors</span>
         <span class="sval">
           {%- if d.errors.total or d.errors.proxy -%}
-          <b>{{ d.errors.total }}</b> in the app{% if d.errors.proxy %}, <b>{{ d.errors.proxy }}</b> in the proxy{% endif %} since boot
-          {%- else -%}No handled errors since boot{%- endif -%}
+          <b>{{ d.errors.total }}</b> in the app since it started
+          {%- if d.errors.proxy %},
+            {%- if d.errors.proxy_base_known %}
+              <b>{{ d.errors.proxy_since_start }}</b> in the proxy since it started
+              {%- if d.errors.proxy > d.errors.proxy_since_start %}
+                ({{ d.errors.proxy }} lifetime){% endif %}
+            {%- else %} <b>{{ d.errors.proxy }}</b> in the proxy (lifetime){% endif %}
+          {%- endif %}
+          {%- else -%}No handled errors{%- endif -%}
         </span>
-        {%- if d.errors.last %}<span class="sdet">Last: {{ d.errors.last }}</span>{% endif -%}
+        {%- if d.errors.last %}<span class="sdet">Last app error: {{ d.errors.last }}</span>{% endif -%}
+        {%- if d.errors.proxy_last %}<span class="sdet">Last proxy error:
+          {{ d.errors.proxy_last }}{% if d.errors.proxy_last_ago is not none %},
+          {{ (d.errors.proxy_last_ago // 60) if d.errors.proxy_last_ago >= 60 else d.errors.proxy_last_ago }}{{
+          'm' if d.errors.proxy_last_ago >= 60 else 's' }} ago{% endif %}</span>{% endif -%}
+        {%- if d.errors.total or d.errors.proxy_since_start %}
+        <span class="sdet">These were <b>caught</b> &mdash; the code degraded instead of crashing, and
+          nothing retries them or clears them. Nothing is scheduled to act on this.
+          A count that is not rising is history; one that climbs while you watch is live.
+          To see them: <code>journalctl -u cooldown-proxy -u cooldown-app --since -1h</code>.
+          <b>Restarts are the usual cause</b>: the proxy calls the app over loopback, so a
+          deploy or an app restart produces a burst of connection errors that mean nothing.</span>
+        {%- endif -%}
       </div>
 
       <!-- Patch state, and crucially HOW it gets applied. Previously answerable only by

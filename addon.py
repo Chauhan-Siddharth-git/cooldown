@@ -747,6 +747,22 @@ def study_url_allowed(path):
     return any(l in STUDY_PLAYLISTS for l in lists)
 
 class BudgetAddon:
+    def running(self):
+        """Mark where this proxy's error count started.
+
+        proxy_errors is a Redis counter with no TTL that nothing has ever reset, so it is
+        a LIFETIME total -- and /health printed it as "since boot", which was simply
+        false. Worse, a lifetime total cannot answer the only question worth asking of an
+        error count: is it still going up? Five errors accumulated over two months and
+        five in the last hour render identically.
+
+        Recording the value at startup lets /health show both: how many since this proxy
+        came up (the actionable number) and the lifetime total (the context). Wrapped,
+        because a failure here must not stop the proxy starting -- if the base is missing
+        the page says so rather than guessing.
+        """
+        _try_redis(lambda: r.set("proxy_errors_base", r.get("proxy_errors") or 0))
+
     @staticmethod
     def _feed_token_ok(token: str) -> bool:
         """/feed is the one endpoint still served on the gated origin that returns

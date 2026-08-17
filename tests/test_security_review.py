@@ -418,7 +418,11 @@ def _health_html_with(client, monkeypatch, updates):
 def test_health_page_says_so_when_nothing_has_broken(rdb, client, monkeypatch):
     html = _health_html(client, monkeypatch,
                         {"total": 0, "proxy": 0, "top": [], "last": "", "last_ago": None})
-    assert "No handled errors since boot" in html
+    # "since boot" is gone from the copy because it was false: proxy_errors is a Redis
+    # counter with no TTL that nothing resets, so it was a lifetime total being labelled
+    # as a boot-relative one. The page now says "since it started" for each side and
+    # shows the lifetime figure separately.
+    assert "No handled errors" in html
 
 
 def test_health_page_surfaces_app_and_proxy_errors(rdb, client, monkeypatch):
