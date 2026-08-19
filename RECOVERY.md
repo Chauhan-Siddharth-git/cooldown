@@ -145,6 +145,54 @@ browsing on your phone through the exit node still works.
 
 ---
 
+## 🔑 You can't SSH in any more
+
+If you follow the advice below and passphrase-protect the SSH key that reaches this box,
+you close the cheapest attack on it — an unprotected private key on a laptop that leaves
+the house is the box's root password in a plain file, and no amount of encrypting the SD
+card helps while it exists. It also creates a way to lock yourself out. Work down this list.
+
+**1. The agent is just empty.** By far the most likely, and it looks alarming because
+`deploy.sh` uses `BatchMode=yes`, so it fails instantly rather than prompting:
+
+```bash
+ssh-add ~/.ssh/<your key>     # once per boot
+ssh-add -l                    # should list it
+```
+
+**2. You have the passphrase but not the machine.** Any machine holding that private file
+and the passphrase gets in; there is nothing host-specific about a key.
+
+**3. You have lost the passphrase.** Remote access is gone, and nothing recovers it from
+another machine: adding a new authorised key requires the access you just lost. You need
+**a keyboard and a monitor on the box**, then:
+
+```bash
+# on the box itself, logged in locally
+ssh-keygen -t ed25519 -f ~/.ssh/id_new -C "recovery-$(date +%Y%m%d)"
+cat ~/.ssh/id_new.pub >> ~/.ssh/authorized_keys
+# move id_new to your laptop by USB stick, then give it a passphrase there
+```
+
+Afterwards remove the stranded key from `~/.ssh/authorized_keys`, so the one you can no
+longer use stops being authorised.
+
+> Keep the passphrase in a password manager, **not** only in your head and not only in a
+> desktop wallet. A wallet that unlocks automatically at login hands the key to anyone who
+> boots the laptop, which is most of the protection gone. If you protect several keys, one
+> shared passphrase is a reasonable choice: they live in the same directory on the same
+> disk, so a thief takes them together and separate passphrases defend against nothing real.
+
+**Why not just encrypt the disk on the box.** Same reasoning as the CA name constraints:
+reduce what a theft is *worth* and close the *cheap* path first. A passphrase at boot means
+an unattended reboot — for a kernel update, or after a power cut — leaves the box sitting at
+a prompt with the gate down until someone notices. F21 in the case study is eleven days of
+silent outage from exactly that shape of failure, a boot that never completed. If you do
+want encryption at rest, the coherent version is LUKS plus `dropbear-initramfs` for remote
+unlock plus disabling automatic reboots — not LUKS on its own.
+
+---
+
 ## 🔎 Would you even know?
 
 You **cannot** detect the SD card being pulled. The card is the root filesystem — the
