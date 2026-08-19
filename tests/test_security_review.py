@@ -1424,6 +1424,29 @@ def test_an_unknown_theme_name_cannot_inject_into_the_stylesheet(rdb, client):
         assert block == ">", f"{probe!r} put {block[:60]!r} into the stylesheet"
 
 
+@pytest.mark.parametrize("page", ["/budget?site=reddit", "/stats", "/health", "/devices"])
+def test_no_page_ships_an_unrendered_template_expression(rdb, client, monkeypatch, page):
+    """A `{{ name }}` reaching the browser means the template silently stopped rendering.
+
+    Two ways that happens here, both hit for real. A Jinja raw block around the inline
+    scripts means an expression written inside one is emitted verbatim -- which in a
+    <script> is a syntax error that kills the whole block, so the reflection UI would have
+    shipped dead. And Jinja parses tags inside HTML COMMENTS, so a comment that merely
+    names a raw tag opens one, freezing every expression after it to the end of the
+    template. That is how this was found: a comment warning about raw blocks opened a raw
+    block.
+
+    Neither shows up as an exception, a 500, or a failing assertion anywhere else. The
+    page returns 200 and looks almost right.
+    """
+    monkeypatch.setattr(budget, "reflect_decision", lambda now=None: (True, "Why now?"))
+    html = client.get(page).get_data(as_text=True)
+    leftovers = re.findall(r"\{\{\s*[a-zA-Z_][\w.]*\s*\}\}", html)
+    assert not leftovers, (
+        f"{page} shipped unrendered template expressions {sorted(set(leftovers))[:5]} -- "
+        "something upstream stopped interpolating, most likely a raw block")
+
+
 def test_spontaneous_themes_carry_no_emoji():
     """A theme that turns up on a random Tuesday has no occasion to announce.
 

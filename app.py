@@ -303,6 +303,16 @@ COOLDOWN_SECONDS = COOLDOWN_LADDER[0]   # base / back-compat default
 CLUSTER_WINDOW = 2 * 60 * 60        # rolling look-back window
 CLUSTER_THRESHOLD = 3               # the Nth cap-hit inside the window trips it
 CLUSTER_COOLDOWN_SECONDS = 25 * 60  # a short breather, not the 1h hard wall
+# The gap between choosing a reason and being allowed through. Not a question -- there is
+# nothing to answer and so nothing to answer glibly. Reaching for a feed out of boredom is
+# an impulse, and an impulse is defeated by a pause specifically; a one-tap list cannot do
+# it by construction, which is what 67 taps of "bored" demonstrated.
+#
+# Applied to EVERY trigger, not just the regretted ones. Making "bored" the slow path
+# would just teach you to press "I actually need it", which is the tool negotiating with
+# you instead of showing you something true.
+ENTER_PAUSE_SECONDS = 15
+
 HEARTBEAT_MAX_GAP = 30         # gaps between pings larger than this aren't charged (idle/away)
 # TIED to the cap above, deliberately, and the two must not drift apart.
 #
@@ -726,6 +736,14 @@ BUDGET_PAGE = """
         .bgpanel .dismiss{margin-top:auto;flex:none;background:transparent;border:1px solid var(--line);
             color:var(--muted);border-radius:9px;padding:9px;font-size:13px;width:100%;cursor:pointer}
         .foots .foot{margin-top:0}
+        /* Your own number, shown at the moment it is relevant. Deliberately not styled as
+           an alarm: it is a fact you produced, and dressing it as a warning would invite
+           you to discount it as the tool nagging. */
+        .r-mirror{margin:10px 0 2px;font-size:13.5px;line-height:1.5;color:var(--fg);
+            background:rgba(0,0,0,.18);border-left:2px solid var(--wait);
+            padding:8px 11px;border-radius:0 8px 8px 0}
+        .r-mirror b{color:var(--wait)}
+        .cont:disabled{opacity:.45;cursor:default}
         /* Pre-entry reflection: a why-am-I-here pause with concrete alternatives. */
         .r-q{font-size:15px;color:var(--fg);font-weight:600;margin:2px 0 14px;line-height:1.45}
         .chips{display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
@@ -770,18 +788,27 @@ BUDGET_PAGE = """
               <h1>{{ pass_line.1 }}</h1>
               <p>{{ pass_line.2 }}</p>
             </div>
-            <div id="reflect" hidden>
+            <!-- The script at the bottom of this page is inside a Jinja raw block, so
+                 interpolation does not happen there and a template expression would be
+                 emitted verbatim -- a JavaScript syntax error that kills the whole
+                 reflection UI. Values ride on this element instead, which is rendered
+                 out here where interpolation still works.
+                 (Do not name the raw tag literally in a comment. Jinja parses tags
+                 inside HTML comments too, so writing it here opens a real block and
+                 silently freezes the rest of the template. That is not hypothetical.) -->
+            <div id="reflect" hidden data-regret="{{ regret_json }}" data-hold="{{ enter_pause }}">
                 <p class="r-q">{{ reflect_q }}</p>
                 <div class="chips" id="chips"></div>
                 <div class="r-list" id="rlist" hidden>
                     <p class="r-lead" id="rlead"></p>
                     <ul id="ritems"></ul>
                 </div>
+                <p class="r-mirror" id="rmirror" hidden></p>
                 <div class="actions" id="ractions" hidden>
                     <button class="pass" type="button" id="passBtn">I'll pass — I'm good</button>
                     <form action="/budget/enter?site={{ site }}{% if next_url %}&next={{ next_url|urlencode }}{% endif %}" method="post">
                         <input type="hidden" name="trigger" id="trigField" value="">
-                        <button class="cont" type="submit">Continue to {{ label }} anyway</button>
+                        <button class="cont" type="submit" id="contBtn">Continue to {{ label }} anyway</button>
                     </form>
                 </div>
             </div>
@@ -866,6 +893,42 @@ BUDGET_PAGE = """
           var t=TRIGGERS[i]; TRIGGERS[i]=TRIGGERS[j]; TRIGGERS[j]=t; }   // no fixed positions to memorise
         var reflect=document.getElementById("reflect"); if(!reflect) return;
         var picked="";
+        var REGRET={}, HOLD=15;
+        (reflect.getAttribute("data-regret")||"").split(";").forEach(function(part){
+            var kv=part.split(":"); if(kv.length!==2) return;
+            var nt=kv[1].split("/"); if(nt.length!==2) return;
+            REGRET[kv[0]]={no:parseInt(nt[0],10)||0,total:parseInt(nt[1],10)||0};
+        });
+        HOLD=parseInt(reflect.getAttribute("data-hold")||"15",10)||15;
+        var mirror=document.getElementById("rmirror"), cont=document.getElementById("contBtn");
+        var holdTimer=null, contLabel=cont?cont.textContent:"";
+
+        // Your own answer, read back at the moment you are deciding. Only when there is
+        // enough of it: a 1-of-1 regret rate is 100% and teaches you to distrust the
+        // number. The server withholds anything under REGRET_MIN_SAMPLES.
+        function showMirror(key){
+            var d=REGRET[key];
+            if(!d||!d.no){ mirror.hidden=true; return; }
+            mirror.innerHTML = "Last <b>"+d.total+"</b> times you said this, you afterwards said it "+
+                "wasn't worth it <b>"+d.no+"</b> of them.";
+            mirror.hidden=false;
+        }
+
+        // The pause. Applies to Continue only -- passing is always instant, because the
+        // friction belongs on the path you regret, not on the one you do not.
+        function startHold(){
+            if(!cont) return;
+            if(holdTimer){ clearInterval(holdTimer); }
+            var left=HOLD;
+            cont.disabled=true;
+            cont.textContent=contLabel+" ("+left+")";
+            holdTimer=setInterval(function(){
+                left--;
+                if(left<=0){ clearInterval(holdTimer); holdTimer=null;
+                             cont.disabled=false; cont.textContent=contLabel; }
+                else { cont.textContent=contLabel+" ("+left+")"; }
+            },1000);
+        }
         var begin=document.getElementById("beginBtn"), chips=document.getElementById("chips"),
             list=document.getElementById("rlist"), lead=document.getElementById("rlead"),
             items=document.getElementById("ritems"), actions=document.getElementById("ractions"),
@@ -880,6 +943,7 @@ BUDGET_PAGE = """
                 lead.textContent=t.lead; items.innerHTML="";
                 t.items.forEach(function(it){ var li=document.createElement("li"); li.textContent=it; items.appendChild(li); });
                 list.hidden=false; actions.hidden=false;
+                showMirror(t.key); startHold();
             });
             chips.appendChild(b);
         });
@@ -1711,6 +1775,51 @@ def log_reflection(trigger, action, now=None):
     r.rpush(f"reflect:{day}", f"{now:.0f} {trigger} {action}")
     r.expire(f"reflect:{day}", HISTORY_TTL)
 
+
+# How often a given trigger led to a session you afterwards called not worth it.
+#
+# The gate has been collecting this for weeks and never showed it to you. Measured on the
+# box after sixteen days: "bored" was 90% of all answers, stopped 4% of the time, and
+# regretted 75% of the time -- the tool knew bored-sessions were a bad deal three times in
+# four and mentioned it exactly never, at the one moment it would have mattered.
+#
+# That is why the prompt became a rubber stamp, and it is not a willpower story: every
+# answer opened the same door at the same speed, so the cheapest answer won. A number you
+# produced yourself is harder to tap past than a question, because it is not an opinion.
+REGRET_MIN_SAMPLES = 4          # below this, one bad night would read as a pattern
+
+def regret_by_trigger(days=90, now=None):
+    """{trigger: {"no": n, "total": n}} from the worth:* log. Never raises."""
+    now = now if now is not None else time.time()
+    out = {}
+    try:
+        for entries in _mlrange(_day_keys("worth", days, now)):
+            for raw in entries:
+                parts = raw.split()
+                if len(parts) < 3 or parts[1] not in REFLECT_TRIGGERS:
+                    continue          # "-" means the session had no recorded trigger
+                d = out.setdefault(parts[1], {"no": 0, "total": 0})
+                d["total"] += 1
+                if parts[2] == "no":
+                    d["no"] += 1
+    except Exception:
+        return {}
+    # Only report what there is enough of to be worth reporting. A 1-of-1 regret rate is
+    # 100% and means nothing, and showing it would teach you to distrust the number.
+    return {k: v for k, v in out.items() if v["total"] >= REGRET_MIN_SAMPLES}
+
+
+def regret_pairs(days=90, now=None):
+    """The same numbers as a flat "trigger:no/total;..." string.
+
+    Not JSON, deliberately. This lands in an attribute on the gated site's own origin, and
+    the suite bans JSON blobs reaching scripts there -- the pass-screen copy was smuggled
+    that way once and the rule exists to stop it recurring. A blanket ban is worth more
+    than an exception for my case, and three integers do not need a parser.
+    """
+    return ";".join(f"{k}:{v['no']}/{v['total']}"
+                    for k, v in sorted(regret_by_trigger(days, now).items()))
+
 def reflection_summary(days=30, now=None):
     """Per-trigger counts and how often naming it was enough to stop you."""
     now = now if now is not None else time.time()
@@ -1882,7 +1991,9 @@ def render_gate(site, label, *, overline, message, title="", mood="wait",
         can_enter=can_enter, button_text=button_text, headline=headline,
         countdown=int(countdown), show_study=show_study, study_primary=study_primary,
         refresh=refresh, next_url=next_url,
-        show_reflect=show_reflect, reflect_q=reflect_q, ask_worth=ask_worth)
+        show_reflect=show_reflect, reflect_q=reflect_q, ask_worth=ask_worth,
+        regret_json=_try(regret_pairs, ""),
+        enter_pause=ENTER_PAUSE_SECONDS)
 
 @app.route('/budget')
 def budget_page():
