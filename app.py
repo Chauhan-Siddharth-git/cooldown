@@ -560,11 +560,16 @@ def theme_css(theme):
         r, g, b = (int(acc[i:i + 2], 16) for i in (1, 3, 5))
         # Two soft pools, top and bottom, at low alpha. fixed attachment so scrolling a
         # long page does not drag the gradient with it.
+    # No background-attachment:fixed. It keeps the wash from drifting as you scroll, which
+    # looks marginally better and costs a full-viewport repaint on every scroll frame --
+    # a well-known jank source, and the largest remaining one on these pages once the
+    # frost stopped re-running its filter. The gradients are large and soft enough that
+    # scrolling them is not noticeable; the scroll being smooth is.
         css += (
             "html,body{background:"
             f"radial-gradient(1100px 620px at 50% -14%, rgba({r},{g},{b},.13) 0%, rgba({r},{g},{b},0) 68%),"
             f"radial-gradient(900px 520px at 12% 108%, rgba({r},{g},{b},.09) 0%, rgba({r},{g},{b},0) 62%),"
-            "var(--bg);background-attachment:fixed;}"
+            "var(--bg);}"   # NOT background-attachment:fixed -- see below
         )
     # The frosted panels, themed. BG_STYLE hardcoded rgba(18,21,27,.4) with !important for
     # every .card/.tile/.board on every dashboard page, so the theme's --card never reached
