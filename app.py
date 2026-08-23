@@ -428,6 +428,8 @@ THEMES = {
                  "accent": "#d9548f", "good": "#2ec9dd", "warn": "#f5a623", "enc": "#5ad2f0"},
     },
     "terminal": {
+        "deco": ('body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:2;background:repeating-linear-gradient(180deg,rgba(0,0,0,.24) 0 1px,rgba(0,0,0,0) 1px 3px)}.cd-scan{position:fixed;left:0;right:0;height:34vh;pointer-events:none;z-index:2;background:linear-gradient(180deg,rgba(122,158,47,0) 0%,rgba(122,158,47,.05) 42%,rgba(168,214,74,.11) 50%,rgba(122,158,47,.05) 58%,rgba(122,158,47,0) 100%);will-change:transform;transform:translate3d(0,-36vh,0);animation:cd-scan-roll 8s linear infinite}@keyframes cd-scan-roll{from{transform:translate3d(0,-36vh,0)}to{transform:translate3d(0,100vh,0)}}@media (prefers-reduced-motion:reduce){.cd-scan{animation:none;transform:translate3d(0,32vh,0)}}'),
+        "deco_html": ('<div class="cd-scan" aria-hidden="true"></div>'),
         # No emoji: spontaneous themes have no occasion to announce. See "frost".
         "label": "Phosphor", "emoji": "", "season": None,
         "vars": {"bg": "#050a05", "card": "#0d160d", "line": "#1c3320", "fg": "#e8f5e4",
