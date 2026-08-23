@@ -420,6 +420,8 @@ THEMES = {
     },
     # Spontaneous — no season, so they only ever turn up unannounced.
     "retro": {
+        "deco": ('.cd-grid{position:fixed;left:-50%;right:-50%;bottom:0;height:38vh;pointer-events:none;z-index:2;overflow:hidden;perspective:22vh;perspective-origin:50% 0%;-webkit-mask-image:linear-gradient(180deg,transparent 0%,#000 42%,#000 100%);mask-image:linear-gradient(180deg,transparent 0%,#000 42%,#000 100%)}.cd-grid i{position:absolute;inset:-60% -10% -10% -10%;display:block;transform:rotateX(74deg);transform-origin:50% 100%;background:repeating-linear-gradient(90deg,rgba(240,95,160,.30) 0 1px,rgba(240,95,160,0) 1px 7%),repeating-linear-gradient(0deg,rgba(90,210,240,.26) 0 1px,rgba(90,210,240,0) 1px 9%);will-change:transform}@media (prefers-reduced-motion:no-preference){.cd-grid i{animation:cd-grid-run 6s linear infinite}@keyframes cd-grid-run{from{transform:rotateX(74deg) translate3d(0,0,0)}to{transform:rotateX(74deg) translate3d(0,9%,0)}}}.cd-grid b{position:absolute;left:50%;bottom:34%;width:26vh;height:26vh;margin-left:-13vh;border-radius:50%;background:linear-gradient(180deg,rgba(255,170,90,.30),rgba(240,85,155,.18) 60%,rgba(240,85,155,0) 72%);-webkit-mask-image:repeating-linear-gradient(180deg,#000 0 6px,transparent 6px 9px);mask-image:repeating-linear-gradient(180deg,#000 0 6px,transparent 6px 9px)}'),
+        "deco_html": ('<div class="cd-grid" aria-hidden="true"><b></b><i></i></div>'),
         # No emoji: spontaneous themes have no occasion to announce. See "frost".
         "label": "Outrun", "emoji": "", "season": None,
         "vars": {"bg": "#12061f", "card": "#1f0d33", "line": "#3a1a5c", "fg": "#fbeffb",
@@ -428,6 +430,9 @@ THEMES = {
                  "accent": "#d9548f", "good": "#2ec9dd", "warn": "#f5a623", "enc": "#5ad2f0"},
     },
     "terminal": {
+        # A phosphor theme set in a UI sans is fighting itself. System stack only.
+        "font": ('ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,'
+                 '"Liberation Mono","DejaVu Sans Mono",monospace'),
         "deco": ('body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:2;background:repeating-linear-gradient(180deg,rgba(0,0,0,.24) 0 1px,rgba(0,0,0,0) 1px 3px)}.cd-scan{position:fixed;left:0;right:0;height:34vh;pointer-events:none;z-index:2;background:linear-gradient(180deg,rgba(122,158,47,0) 0%,rgba(122,158,47,.05) 42%,rgba(168,214,74,.11) 50%,rgba(122,158,47,.05) 58%,rgba(122,158,47,0) 100%);will-change:transform;transform:translate3d(0,-36vh,0);animation:cd-scan-roll 8s linear infinite}@keyframes cd-scan-roll{from{transform:translate3d(0,-36vh,0)}to{transform:translate3d(0,100vh,0)}}@media (prefers-reduced-motion:reduce){.cd-scan{animation:none;transform:translate3d(0,32vh,0)}}'),
         "deco_html": ('<div class="cd-scan" aria-hidden="true"></div>'),
         # No emoji: spontaneous themes have no occasion to announce. See "frost".
@@ -626,6 +631,17 @@ def theme_css(theme):
     # order and #bp-bg (the traffic canvas, z-index 0) fills the viewport, so a ::before
     # layer would be completely covered. ::after paints after the canvas and below .wrap
     # (z-index 1), which is the one slot between the two.
+    # Typeface, when a theme has an opinion. SYSTEM STACKS ONLY -- the gate is served on
+    # the gated site's origin under their Content-Security-Policy, so a webfont fetch is
+    # one font-src directive away from silently falling back, on the page that matters
+    # most. Same constraint that kept the frost decoration as inline SVG.
+    #
+    # Emitted only when set, so the nine themes without an opinion keep the page's own
+    # stack rather than being handed a copy of it that can drift.
+    font = theme.get("font")
+    if font:
+        css += f":root{{--font:{font};}}"
+
     deco = theme.get("deco")
     if deco:
         css += deco
@@ -668,7 +684,7 @@ BUDGET_PAGE = """
         body{
             background:radial-gradient(1200px 620px at 50% -15%, #181c24, var(--bg));
             color:var(--fg);
-            font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+            font-family:var(--font,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif);
             -webkit-font-smoothing:antialiased;
             display:flex;align-items:center;justify-content:center;
             min-height:100dvh;padding:24px;
@@ -1096,7 +1112,7 @@ STATS_PAGE = """
         *{box-sizing:border-box}
         body{
             margin:0;background:var(--bg);color:var(--fg);
-            font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+            font-family:var(--font,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif);
             -webkit-font-smoothing:antialiased;
             padding:28px 16px max(28px,env(safe-area-inset-bottom));
             display:flex;justify-content:center;
@@ -2306,7 +2322,7 @@ DIGEST_PAGE = """
               --faint:#5f6773;--good:#0ca30c;--warn:#ec835a;--accent:#3987e5}
         *{box-sizing:border-box}
         body{margin:0;background:var(--bg);color:var(--fg);
-            font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+            font-family:var(--font,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif);
             -webkit-font-smoothing:antialiased;padding:28px 16px max(28px,env(safe-area-inset-bottom));
             display:flex;justify-content:center}
         .wrap{width:100%;max-width:560px}
@@ -2502,7 +2518,7 @@ WRAPPED_PAGE = """
               --faint:#5f6773;--good:#0ca30c;--warn:#ec835a;--accent:#3987e5}
         *{box-sizing:border-box}
         body{margin:0;background:var(--bg);color:var(--fg);
-            font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+            font-family:var(--font,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif);
             -webkit-font-smoothing:antialiased;padding:28px 16px max(28px,env(safe-area-inset-bottom));
             display:flex;justify-content:center}
         .wrap{width:100%;max-width:560px}
@@ -2710,7 +2726,7 @@ CPU_PAGE = """
               --faint:#5f6773;--go:#3ecf7c;--wait:#f0a63a;--bad:#e5484d}
         *{box-sizing:border-box}
         body{margin:0;background:var(--bg);color:var(--fg);
-            font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+            font-family:var(--font,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif);
             -webkit-font-smoothing:antialiased;padding:26px 16px max(26px,env(safe-area-inset-bottom));
             display:flex;justify-content:center}
         .wrap{width:100%;max-width:560px}
@@ -3983,7 +3999,7 @@ HEALTH_PAGE = """
         *{box-sizing:border-box}
         body{
             margin:0;background:radial-gradient(1100px 560px at 50% -10%,#161a22,var(--bg));
-            color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+            color:var(--fg);font-family:var(--font,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif);
             -webkit-font-smoothing:antialiased;padding:26px 16px max(26px,env(safe-area-inset-bottom));
             display:flex;justify-content:center;
         }
@@ -4685,7 +4701,7 @@ DEVICES_PAGE = """
         }
         *{box-sizing:border-box}
         body{margin:0;background:radial-gradient(1100px 560px at 50% -10%,var(--card),var(--bg));
-            color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+            color:var(--fg);font-family:var(--font,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif);
             -webkit-font-smoothing:antialiased;padding:26px 16px max(26px,env(safe-area-inset-bottom));display:flex;justify-content:center}
         .wrap{width:100%;max-width:560px}
         .kicker{display:flex;align-items:center;gap:8px;justify-content:center;font-size:11.5px;
