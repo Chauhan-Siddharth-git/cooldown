@@ -396,6 +396,8 @@ THEMES = {
                  "accent": "#d1495b", "good": "#3ecf7c", "warn": "#e0b458", "enc": "#49d6b0"},
     },
     "halloween": {
+        "deco": ('.cd-fog{position:fixed;inset:0 -9% 0 -9%;width:118%;height:100%;pointer-events:none;z-index:2;opacity:.9;will-change:transform;transform:translate3d(-3%,0,0);backface-visibility:hidden}@media (prefers-reduced-motion:no-preference){.cd-fog{animation:cd-fog-drift 54s ease-in-out infinite alternate}@keyframes cd-fog-drift{from{transform:translate3d(-3%,0,0)}to{transform:translate3d(3%,0,0)}}}'),
+        "deco_html": ('<svg class="cd-fog" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none"><defs><filter id="cdfogf" x="-15%" y="-15%" width="130%" height="130%" color-interpolation-filters="sRGB"><feTurbulence type="fractalNoise" baseFrequency="0.006 0.013" numOctaves="3" seed="23" result="n"/><feColorMatrix in="n" type="matrix" result="c" values="0 0 0 0 0.62  0 0 0 0 0.48  0 0 0 0 0.78  0 0 0 -0.85 0.62"/><feGaussianBlur in="c" stdDeviation="6"/></filter><linearGradient id="cdfogm" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#000"/><stop offset="45%" stop-color="#555"/><stop offset="100%" stop-color="#fff"/></linearGradient><mask id="cdfogmask"><rect width="100%" height="100%" fill="url(#cdfogm)"/></mask></defs><g mask="url(#cdfogmask)"><rect width="100%" height="100%" filter="url(#cdfogf)"/></g></svg>'),
         "label": "Halloween", "emoji": "\U0001F383",
         "season": lambda t: (t.tm_mon == 10 and t.tm_mday >= 25),
         "lines": ["Nothing in here is scarier than the screen-time report.",
@@ -458,6 +460,8 @@ THEMES = {
                  "accent": "#5aa8d8", "good": "#48c4b0", "warn": "#f0a63a", "enc": "#48c4b0"},
     },
     "ember": {
+        "deco": ('.cd-coals{position:fixed;left:0;right:0;bottom:0;height:46vh;pointer-events:none;z-index:2;will-change:opacity;transform:translateZ(0);background:radial-gradient(120% 100% at 50% 118%,rgba(255,140,50,.20) 0%,rgba(209,115,43,.09) 38%,rgba(209,115,43,0) 70%),radial-gradient(70% 80% at 18% 122%,rgba(255,105,40,.13) 0%,rgba(255,105,40,0) 62%),radial-gradient(70% 80% at 82% 124%,rgba(255,90,35,.11) 0%,rgba(255,90,35,0) 62%);opacity:.85}@media (prefers-reduced-motion:no-preference){.cd-coals{animation:cd-coals-breathe 11s ease-in-out infinite}@keyframes cd-coals-breathe{0%{opacity:.5}45%{opacity:1}100%{opacity:.5}}}'),
+        "deco_html": ('<div class="cd-coals" aria-hidden="true"></div>'),
         # No emoji: spontaneous themes have no occasion to announce. See "frost".
         "label": "Ember", "emoji": "", "season": None,
         "vars": {"bg": "#180904", "card": "#26120a", "line": "#4a2414", "fg": "#fdf1e8",
