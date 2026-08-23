@@ -385,6 +385,8 @@ STUDY_PLAYLISTS = []
 # ---------------------------------------------------------------------------
 THEMES = {
     "christmas": {
+        "deco": ('.cd-bokeh{position:fixed;inset:0;pointer-events:none;z-index:2;will-change:opacity;transform:translateZ(0);background:radial-gradient(9vh 9vh at 14% 22%,rgba(224,86,99,.16),transparent 62%),radial-gradient(6vh 6vh at 33% 71%,rgba(62,207,124,.13),transparent 62%),radial-gradient(11vh 11vh at 78% 31%,rgba(240,190,120,.13),transparent 62%),radial-gradient(5vh 5vh at 62% 84%,rgba(224,86,99,.11),transparent 62%),radial-gradient(7vh 7vh at 90% 68%,rgba(62,207,124,.10),transparent 62%),radial-gradient(4vh 4vh at 47% 12%,rgba(240,190,120,.12),transparent 62%);opacity:.9}@media (prefers-reduced-motion:no-preference){.cd-bokeh{animation:cd-bokeh-glow 14s ease-in-out infinite}@keyframes cd-bokeh-glow{0%{opacity:.62}50%{opacity:1}100%{opacity:.62}}}'),
+        "deco_html": ('<div class="cd-bokeh" aria-hidden="true"></div>'),
         "label": "Christmas", "emoji": "\U0001F384",
         "season": lambda t: (t.tm_mon == 12 and 18 <= t.tm_mday <= 26),
         "lines": ["It's Christmas. This will be the exact same feed on the 27th.",
@@ -409,6 +411,8 @@ THEMES = {
                  "accent": "#e8892b", "good": "#a06ef0", "warn": "#f2b53c", "enc": "#9d7bf0"},
     },
     "newyear": {
+        "deco": ('.cd-sheen{position:fixed;top:-30%;left:-60%;width:70%;height:170%;pointer-events:none;z-index:2;transform:rotate(18deg) translate3d(0,0,0);will-change:transform;background:linear-gradient(90deg,rgba(232,195,104,0) 0%,rgba(232,195,104,.05) 38%,rgba(255,226,150,.12) 50%,rgba(232,195,104,.05) 62%,rgba(232,195,104,0) 100%)}@media (prefers-reduced-motion:no-preference){.cd-sheen{animation:cd-sheen-pass 19s ease-in-out infinite}@keyframes cd-sheen-pass{0%{transform:rotate(18deg) translate3d(0,0,0)}70%,100%{transform:rotate(18deg) translate3d(260%,0,0)}}}'),
+        "deco_html": ('<div class="cd-sheen" aria-hidden="true"></div>'),
         "label": "New Year", "emoji": "\U00002728",
         "season": lambda t: ((t.tm_mon == 12 and t.tm_mday >= 30)
                              or (t.tm_mon == 1 and t.tm_mday <= 2)),
@@ -446,6 +450,8 @@ THEMES = {
     },
     # No emoji on purpose — see the note above _personal_theme.
     "birthday": {
+        "deco": ('.cd-lift{position:fixed;inset:0;pointer-events:none;z-index:2;will-change:opacity;transform:translateZ(0);background:radial-gradient(7vh 7vh at 22% 78%,rgba(240,184,74,.15),transparent 62%),radial-gradient(5vh 5vh at 55% 88%,rgba(155,140,255,.13),transparent 62%),radial-gradient(9vh 9vh at 81% 72%,rgba(240,184,74,.11),transparent 62%),radial-gradient(4vh 4vh at 38% 60%,rgba(155,140,255,.10),transparent 62%);opacity:.9}@media (prefers-reduced-motion:no-preference){.cd-lift{animation:cd-lift-glow 13s ease-in-out infinite}@keyframes cd-lift-glow{0%{opacity:.6}50%{opacity:1}100%{opacity:.6}}}'),
+        "deco_html": ('<div class="cd-lift" aria-hidden="true"></div>'),
         "label": "", "emoji": "", "season": None,
         "vars": {"bg": "#140a1e", "card": "#20122e", "line": "#3d2352", "fg": "#f8f2fb",
                  "muted": "#b096be", "faint": "#77608a", "go": "#9b8cff",
@@ -453,6 +459,8 @@ THEMES = {
                  "accent": "#e0b458", "good": "#9b8cff", "warn": "#e0b458", "enc": "#8f9dff"},
     },
     "anniversary": {
+        "deco": ('.cd-tide{position:fixed;left:0;right:0;bottom:0;height:42vh;pointer-events:none;z-index:2;will-change:opacity;transform:translateZ(0);background:radial-gradient(130% 100% at 50% 122%,rgba(72,196,176,.17) 0%,rgba(72,196,176,.06) 44%,rgba(72,196,176,0) 72%),radial-gradient(60% 70% at 22% 128%,rgba(90,168,216,.10) 0%,rgba(90,168,216,0) 60%);opacity:.9}@media (prefers-reduced-motion:no-preference){.cd-tide{animation:cd-tide-swell 17s ease-in-out infinite}@keyframes cd-tide-swell{0%{opacity:.55}50%{opacity:1}100%{opacity:.55}}}'),
+        "deco_html": ('<div class="cd-tide" aria-hidden="true"></div>'),
         "label": "", "emoji": "", "season": None,
         "vars": {"bg": "#0a1218", "card": "#132029", "line": "#264150", "fg": "#eef6f8",
                  "muted": "#8fb0b8", "faint": "#5d7d86", "go": "#48c4b0",
@@ -554,7 +562,7 @@ def active_theme(now=None, override=None):
         return (lambda n: (n, THEMES[n]))(seed.choice(sorted(spontaneous)))
     return None, None
 
-def theme_css(theme):
+def theme_css(theme, with_deco=True):
     """The theme's variables, plus a backdrop wash derived from its own accent.
 
     Variables alone were not enough to read as a theme. Every palette kept `bg` and `card`
@@ -646,7 +654,7 @@ def theme_css(theme):
     if font:
         css += f":root{{--font:{font};}}"
 
-    deco = theme.get("deco")
+    deco = theme.get("deco") if with_deco else None
     if deco:
         css += deco
 
@@ -3232,8 +3240,20 @@ def _inject_theme():
     """?theme=<name> previews one, ?theme=off forces the standard look."""
     q = _try(lambda: request.args.get("theme"), None)
     name, th = (None, None) if q == "off" else active_theme(override=q)
-    return {"theme_css": theme_css(th),
-            "theme_deco": Markup(th.get("deco_html", "")) if th else Markup(""),
+
+    # The personal themes carry no decoration ON THE GATED ORIGIN, for the same reason
+    # they carry no label and no emoji: /budget is served on the gated site's own origin,
+    # so any script running there can fetch it. A cake emoji would hand that script the
+    # date once a year -- and a decoration nothing else has is the same disclosure in a
+    # louder form, since unique markup identifies the theme more reliably than one glyph.
+    #
+    # The dashboard is a different matter. It lives on the box's own origin, cross-origin
+    # from every gated site, which is the control F9 established for reads. Nothing on
+    # Reddit can see it, so birthday and anniversary get their artwork there.
+    show_deco = not (name in PERSONAL_THEMES
+                     and _try(lambda: request.path, "") == "/budget")
+    return {"theme_css": theme_css(th, with_deco=show_deco),
+            "theme_deco": Markup(th.get("deco_html", "")) if (th and show_deco) else Markup(""),
             "theme_label": th["label"] if th else "",
             "theme_emoji": th["emoji"] if th else "",
             "theme_bg": th["vars"]["bg"] if th else "#070b0e",

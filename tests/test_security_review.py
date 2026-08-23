@@ -1474,6 +1474,41 @@ def test_spontaneous_themes_carry_no_emoji():
         "a calendar theme lost its emoji -- those mark an occasion and should keep it")
 
 
+@pytest.mark.parametrize("name", sorted(budget.PERSONAL_THEMES))
+def test_a_personal_theme_is_invisible_on_the_gated_origin(rdb, client, name):
+    """Not just unlabelled -- undecorated too, on /budget specifically.
+
+    The gate is served on the gated site's own origin, so any script running there can
+    fetch it. The label and emoji are empty for that reason: a cake would hand that script
+    the date once a year. A decoration no other theme has is the same disclosure in a
+    louder form -- unique markup and a unique class name identify a theme far more
+    reliably than one glyph does.
+
+    The dashboard is the opposite case. It lives on the box's origin, cross-origin from
+    every gated site, which is the control F9 established. Nothing on Reddit can read it,
+    so the artwork lives there and this test checks BOTH halves -- suppressed on the gate,
+    present off it. Checking only the first would be satisfied by shipping no decoration
+    at all, which is not the property.
+    """
+    th = budget.THEMES[name]
+    assert th["emoji"] == "" and th["label"] == "", f"{name} regained a label or emoji"
+    if not th.get("deco"):
+        pytest.skip(f"{name} has no decoration to suppress")
+
+    gate = client.get(f"/budget?site=reddit&theme={name}").get_data(as_text=True)
+    marker = th["deco_html"].split('class="', 1)[1].split('"', 1)[0]
+    assert marker not in gate, (
+        f"{name}'s decoration ({marker}) reaches the gated origin -- a script on the "
+        f"gated site can read it and learn the date")
+    assert "@keyframes cd-" not in gate.split('id="cd-theme"')[1].split("</style>")[0], (
+        f"{name} ships decoration CSS on the gated origin even without the markup")
+
+    box = client.get(f"/health?theme={name}").get_data(as_text=True)
+    assert marker in box, (
+        f"{name}'s decoration is missing from the box origin too -- suppression is "
+        f"supposed to be scoped to the gate, not global")
+
+
 def test_the_birthday_theme_is_unlabelled_on_the_gated_origin(rdb):
     """The gate is served on reddit.com, so any script there can fetch it. A cake emoji
     would hand that script the date once a year; nice colours reveal nothing."""
