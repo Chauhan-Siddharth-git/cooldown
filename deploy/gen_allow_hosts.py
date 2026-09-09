@@ -29,10 +29,33 @@ DECLUTTER = ["www.facebook.com", "web.facebook.com", "m.facebook.com", "mbasic.f
 EXTRA = ["mitm.it"]
 
 
+# Hosts the box intercepts in order to BREAK, not to gate. A native app cannot be
+# gated -- there is nothing to inject a heartbeat into -- so the only lever is on or off,
+# which PLAN.md predicted when it said native usage leaves "blunt time-windowing".
+#
+# The enforcement is the CA's name constraints, and that is the whole trick: these appear
+# in --allow-hosts so the proxy attempts interception, and are deliberately EXCLUDED from
+# the constraints, so the certificate it mints is one the CA may not sign and the client
+# refuses it. The block is applied by the phone's own certificate validation rather than
+# by us, which means it cannot be bypassed short of untrusting the CA entirely.
+#
+# The time window lives in addon.py: outside blocked hours the addon sets
+# ignore_connection on the ClientHello and the traffic passes through untouched.
+BLOCKED = ["zombsroyale.io"]
+
+
 def domains():
-    """Every host this box is willing to decrypt. The one derivation two different
-    consumers read: the --allow-hosts regex, and the CA's name constraints."""
+    """Every host this box is willing to decrypt AND vouch for.
+
+    The one derivation two different consumers read: the --allow-hosts regex, and the CA's
+    name constraints. BLOCKED is the single deliberate exception -- see decrypt_hosts().
+    """
     return CORE + NEWS_DOMAINS + DECLUTTER + EXTRA
+
+
+def decrypt_hosts():
+    """What --allow-hosts covers: everything we vouch for, plus what we intercept to break."""
+    return domains() + BLOCKED
 
 
 def pattern(domain):
@@ -94,7 +117,7 @@ def main():
     if "--name-constraints" in sys.argv:
         print(name_constraints())
         return
-    regex = "|".join(pattern(d) for d in domains())
+    regex = "|".join(pattern(d) for d in decrypt_hosts())
     # systemd needs a literal $ written as $$ in ExecStart; --plain skips that.
     print(regex if "--plain" in sys.argv else regex.replace("$", "$$"))
 

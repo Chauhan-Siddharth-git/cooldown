@@ -127,7 +127,14 @@ def test_the_constraints_and_the_decrypt_allowlist_come_from_one_list(ca):
     """CLAUDE.md tracks three places that must agree about which hosts are gated. The CA
     is a fourth, and the failure mode is asymmetric: a domain in --allow-hosts but not in
     the constraints means the proxy intercepts a site it cannot produce a valid cert for,
-    so that site breaks with a certificate error and no other signal.
+    so that site breaks with a certificate error.
+
+    That asymmetry is now ALSO a feature, used once and on purpose. gen_allow_hosts.BLOCKED
+    lists hosts intercepted precisely so they break -- a native app cannot be gated, so the
+    only lever is on or off, and letting the client's own certificate validation refuse the
+    connection is a stronger block than anything the proxy could apply itself. The next test
+    pins that the divergence is exactly BLOCKED and nothing else, and the addon logs
+    "[BLOCK] <sni>" so it is no longer "no other signal".
 
     Asserted against the derivation rather than the file, so this cannot pass by both
     being wrong in the same way."""
@@ -150,6 +157,36 @@ def test_the_constraints_and_the_decrypt_allowlist_come_from_one_list(ca):
     assert permitted == set(gen_allow_hosts.domains()), (
         f"only in CA: {sorted(permitted - set(gen_allow_hosts.domains()))}; "
         f"only in allowlist: {sorted(set(gen_allow_hosts.domains()) - permitted)}")
+
+
+def test_only_deliberately_blocked_hosts_are_intercepted_without_being_vouched_for():
+    """--allow-hosts may exceed the CA's reach only for hosts listed as blocked.
+
+    Intercepting a host the CA cannot vouch for breaks it -- which is the point for
+    gen_allow_hosts.BLOCKED and a silent outage for anything else. Before that list
+    existed the two sets were identical and any gap was a bug; now the gap is meaningful,
+    so it has to be exactly the blocklist rather than merely non-empty.
+
+    This is the test that would catch someone adding a gated site to --allow-hosts and
+    forgetting the CA rotation: the site would break with a certificate error, look like a
+    trust problem, and take an evening to trace.
+    """
+    import gen_allow_hosts as g
+
+    vouched, intercepted = set(g.domains()), set(g.decrypt_hosts())
+    assert vouched, "no vouched-for domains parsed; the comparison below would be vacuous"
+    assert vouched <= intercepted, (
+        f"the CA vouches for hosts the proxy never intercepts: "
+        f"{sorted(vouched - intercepted)}")
+    assert intercepted - vouched == set(g.BLOCKED), (
+        f"intercepted-but-unvouched should be exactly BLOCKED. "
+        f"unexplained: {sorted((intercepted - vouched) - set(g.BLOCKED))}; "
+        f"declared but absent: {sorted(set(g.BLOCKED) - (intercepted - vouched))}")
+    # A blocked host must never creep into the vouched set -- that would silently turn the
+    # block off, because the CA could then issue a certificate the client accepts.
+    assert not (set(g.BLOCKED) & vouched), (
+        f"{sorted(set(g.BLOCKED) & vouched)} is both blocked and vouched for, "
+        f"which means it is not blocked at all")
 
 
 def test_mitmproxy_uses_the_ca_we_generated(ca):

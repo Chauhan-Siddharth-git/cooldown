@@ -704,6 +704,36 @@ def _is_cross_origin(flow):
     return False
 
 
+
+# --- blunt block for things that cannot be gated -------------------------------------
+# A native app has nowhere to inject a heartbeat, so there is no budget, no countdown and
+# no gate page for it -- only on or off. PLAN.md called this years ago: "if usage ever
+# shifts to the native apps, the only option there is blunt DNS-level time-windowing".
+#
+# HOW THE BLOCK IS ENFORCED, because it is not by this file. These hosts are in
+# --allow-hosts, so the proxy attempts to intercept them, and they are deliberately absent
+# from the CA's name constraints, so the certificate it mints is one the CA may not sign.
+# The CLIENT refuses it. That is a far stronger control than anything the proxy could do
+# by itself: short of untrusting the CA, the phone will not complete the handshake.
+#
+# What this hook adds is the CLOCK and the LOG. Outside the blocked window it sets
+# ignore_connection, and the traffic passes through unread -- no decryption attempted, so
+# no failure. Inside the window it stands back and lets the certificate fail.
+BLOCKED_HOSTS = ["zombsroyale.io"]
+BLOCK_FROM_HOUR = 9          # inclusive, local time
+BLOCK_TO_HOUR = 21           # exclusive
+
+
+def blocked_now(host, now=None):
+    """Is this host inside its blocked window right now?"""
+    if not host_matches(host, BLOCKED_HOSTS):
+        return False
+    h = time.localtime(now if now is not None else time.time()).tm_hour
+    if BLOCK_FROM_HOUR <= BLOCK_TO_HOUR:
+        return BLOCK_FROM_HOUR <= h < BLOCK_TO_HOUR
+    return h >= BLOCK_FROM_HOUR or h < BLOCK_TO_HOUR      # windows that wrap midnight
+
+
 def session_mode(site):
     """Return the active session's mode ('active' or 'study'), or None if there's
     no live session for this site."""
@@ -747,6 +777,33 @@ def study_url_allowed(path):
     return any(l in STUDY_PLAYLISTS for l in lists)
 
 class BudgetAddon:
+    def tls_clienthello(self, data):
+        """Decide, from the SNI alone, whether to let this connection past unread.
+
+        Runs before any decryption, so nothing here depends on the CA being able to vouch
+        for the host -- which matters, because for a blocked host it deliberately cannot.
+
+        Only ever WIDENS what passes through. Setting ignore_connection lets traffic by
+        untouched; leaving it alone falls back to mitmproxy's own --allow-hosts decision.
+        There is no code path here that intercepts something it otherwise would not, which
+        is the property to preserve if this list ever grows.
+        """
+        try:
+            sni = data.client_hello.sni or ""
+            if not sni or not host_matches(sni, BLOCKED_HOSTS):
+                return
+            if blocked_now(sni):
+                # Say so explicitly. Otherwise the journal shows a handshake failure that
+                # is indistinguishable from a real trust problem -- and this project has
+                # already lost an evening to exactly that confusion.
+                print(f"[BLOCK] {sni} refused by policy "
+                      f"({BLOCK_FROM_HOUR:02d}:00-{BLOCK_TO_HOUR:02d}:00 local)")
+            else:
+                data.ignore_connection = True     # outside the window: pass through unread
+        except Exception as e:
+            # Never let a decoration on the policy break the proxy for everything else.
+            _note_error("tls_clienthello", e)
+
     def running(self):
         """Mark where this proxy's error count started.
 
