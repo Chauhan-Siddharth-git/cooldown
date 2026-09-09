@@ -651,7 +651,7 @@ def _note_error(where, exc):
                 f"{int(__import__('time').time())} {where}: {type(exc).__name__}: {exc}"[:200])
     except Exception:
         pass
-    print(f"[ERROR] {where}: {exc}")
+    print(f"[ERROR] {where}: {exc}", flush=True)
 
 
 # Hardening headers for any HTML this proxy synthesises on a gated origin. One dict so the
@@ -796,8 +796,14 @@ class BudgetAddon:
                 # Say so explicitly. Otherwise the journal shows a handshake failure that
                 # is indistinguishable from a real trust problem -- and this project has
                 # already lost an evening to exactly that confusion.
+                # flush=True, and that is not incidental. mitmdump's stdout is a pipe
+                # into the journal, so print() is block-buffered and a line every few
+                # minutes can sit unwritten for a long time. The first version of this
+                # hook logged nothing visible while the block itself worked perfectly --
+                # a diagnostic that was itself undiagnosable, which is the joke this
+                # project keeps writing. _note_error's print has the same flaw.
                 print(f"[BLOCK] {sni} refused by policy "
-                      f"({BLOCK_FROM_HOUR:02d}:00-{BLOCK_TO_HOUR:02d}:00 local)")
+                      f"({BLOCK_FROM_HOUR:02d}:00-{BLOCK_TO_HOUR:02d}:00 local)", flush=True)
             else:
                 data.ignore_connection = True     # outside the window: pass through unread
         except Exception as e:
