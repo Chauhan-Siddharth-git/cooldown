@@ -720,8 +720,38 @@ def _is_cross_origin(flow):
 # ignore_connection, and the traffic passes through unread -- no decryption attempted, so
 # no failure. Inside the window it stands back and lets the certificate fail.
 BLOCKED_HOSTS = ["zombsroyale.io"]
-BLOCK_FROM_HOUR = 9          # inclusive, local time
-BLOCK_TO_HOUR = 21           # exclusive
+
+# A diagnostic, not a control. Passthrough connections log only an IP -- the proxy never
+# learns their hostname because it never intercepts them -- so "does the app actually talk
+# to the host I blocked?" is unanswerable from the journal. Anything whose SNI contains one
+# of these substrings gets logged, blocked or not.
+#
+# Narrow on purpose. Logging every SNI would answer the question too and would also write
+# a complete browsing history of every device to the journal, which is a much larger thing
+# to do to yourself than the question deserves. Empty this list once the answer is known.
+#
+# It is empty because the answer IS known: the app talks to `mason.zombsroyale.io`. A
+# subdomain, which host_matches() and the --allow-hosts regex both already cover, so the
+# blocklist needed no second entry. Repopulate this only to ask the same question about
+# some other host.
+WATCH_SNI = []
+
+# All day, on purpose. The first window here was 09:00-21:00 -- picked from an assumption
+# about when a phone game gets played, never from evidence. The probe above recorded the
+# real session at 23:57, in the gap the window deliberately left open, so the block was
+# simultaneously correct and useless: the hostname matched, the clock said no, and the
+# connection passed through with nothing in the journal to say why. Keep both hours here
+# rather than special-casing "always" -- the window machinery is still what runs, and a
+# 0-24 window exercises the same path a narrower one would.
+BLOCK_FROM_HOUR = 0          # inclusive, local time
+BLOCK_TO_HOUR = 24           # exclusive
+
+
+def window_label():
+    """How the blocked window should read in a log line."""
+    if BLOCK_FROM_HOUR == 0 and BLOCK_TO_HOUR == 24:
+        return "all day"
+    return f"{BLOCK_FROM_HOUR:02d}:00-{BLOCK_TO_HOUR:02d}:00 local"
 
 
 def blocked_now(host, now=None):
@@ -790,7 +820,12 @@ class BudgetAddon:
         """
         try:
             sni = data.client_hello.sni or ""
-            if not sni or not host_matches(sni, BLOCKED_HOSTS):
+            if not sni:
+                return
+            low = sni.lower()
+            if any(w in low for w in WATCH_SNI):
+                print(f"[WATCH] sni={sni}", flush=True)
+            if not host_matches(sni, BLOCKED_HOSTS):
                 return
             if blocked_now(sni):
                 # Say so explicitly. Otherwise the journal shows a handshake failure that
@@ -802,8 +837,7 @@ class BudgetAddon:
                 # hook logged nothing visible while the block itself worked perfectly --
                 # a diagnostic that was itself undiagnosable, which is the joke this
                 # project keeps writing. _note_error's print has the same flaw.
-                print(f"[BLOCK] {sni} refused by policy "
-                      f"({BLOCK_FROM_HOUR:02d}:00-{BLOCK_TO_HOUR:02d}:00 local)", flush=True)
+                print(f"[BLOCK] {sni} refused by policy ({window_label()})", flush=True)
             else:
                 data.ignore_connection = True     # outside the window: pass through unread
         except Exception as e:

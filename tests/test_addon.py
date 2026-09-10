@@ -5,6 +5,7 @@ host matching or the study lock wrong silently un-gates a site.
 """
 import os
 import sys
+import time
 
 import pytest
 import redis
@@ -499,3 +500,107 @@ def test_strict_dynamic_does_not_read_as_unsafe_inline_already_allowing_us():
     assert f("script-src 'unsafe-inline'", "N") == "script-src 'unsafe-inline'"
     # And still untouched when a nonce is already present.
     assert f("script-src 'nonce-abc'", "N").count("nonce-") == 2
+
+
+# --- the time-windowed SNI block ------------------------------------------------------
+# This block shipped with no tests at all, and the first thing it did in production was
+# fail silently in the one way tests would have caught: the hostname matched, the window
+# said no, and nothing was logged because passing through is the quiet path. The window
+# had been picked from an assumption about when a phone game gets played (09:00-21:00);
+# the observed session was 23:57.
+
+def _at(hour):
+    """Epoch seconds at a given local hour, on a fixed date."""
+    return time.mktime((2026, 9, 9, hour, 0, 0, 0, 0, -1))
+
+
+def test_block_covers_subdomains_but_not_lookalikes():
+    """The app does not talk to the apex -- it talks to mason.zombsroyale.io. If this
+    only matched the bare domain the block would never fire on the traffic that exists.
+    The negative case is the F4 class: suffix matching, not substring.
+    """
+    for h in ("zombsroyale.io", "mason.zombsroyale.io", "a.b.zombsroyale.io"):
+        assert addon.host_matches(h, addon.BLOCKED_HOSTS), h
+    for h in ("notzombsroyale.io", "zombsroyale.io.evil.com", "zombsroyale.com"):
+        assert not addon.host_matches(h, addon.BLOCKED_HOSTS), h
+
+
+def test_shipped_window_covers_the_hour_it_was_actually_played():
+    """The regression. 23:57 is the only timestamp here with evidence behind it."""
+    assert addon.blocked_now("mason.zombsroyale.io", _at(23)), (
+        "the observed play time is outside the shipped window -- the block cannot fire")
+    for h in range(24):
+        assert addon.blocked_now("mason.zombsroyale.io", _at(h)), h
+
+
+def test_window_arithmetic_still_works_for_narrower_windows(monkeypatch):
+    """0-24 exercises only one branch. The wrap-around case is the one that is easy to
+    get backwards, and it stays reachable config, so it stays tested.
+    """
+    monkeypatch.setattr(addon, "BLOCK_FROM_HOUR", 9)
+    monkeypatch.setattr(addon, "BLOCK_TO_HOUR", 21)
+    assert addon.blocked_now("zombsroyale.io", _at(9))        # inclusive
+    assert addon.blocked_now("zombsroyale.io", _at(20))
+    assert not addon.blocked_now("zombsroyale.io", _at(21))   # exclusive
+    assert not addon.blocked_now("zombsroyale.io", _at(23))
+
+    monkeypatch.setattr(addon, "BLOCK_FROM_HOUR", 21)         # wraps midnight
+    monkeypatch.setattr(addon, "BLOCK_TO_HOUR", 9)
+    assert addon.blocked_now("zombsroyale.io", _at(23))
+    assert addon.blocked_now("zombsroyale.io", _at(2))
+    assert addon.blocked_now("zombsroyale.io", _at(8))
+    assert not addon.blocked_now("zombsroyale.io", _at(14))
+
+
+def test_unblocked_hosts_are_never_blocked_at_any_hour():
+    for h in range(24):
+        assert not addon.blocked_now("www.reddit.com", _at(h))
+        assert not addon.blocked_now("", _at(h))
+
+
+class _Hello:
+    """Stands in for mitmproxy's ClientHelloData."""
+    def __init__(self, sni):
+        self.client_hello = type("CH", (), {"sni": sni})()
+        self.ignore_connection = False
+
+
+def test_tls_clienthello_only_ever_widens():
+    """The property that makes this hook safe to have: no input causes it to intercept
+    something it otherwise would not. It either passes traffic through untouched or
+    leaves mitmproxy's own --allow-hosts decision alone.
+    """
+    a = addon.BudgetAddon()
+    for sni in ("www.reddit.com", "example.com", "", None, "mason.zombsroyale.io"):
+        d = _Hello(sni)
+        a.tls_clienthello(d)
+        assert d.ignore_connection in (True, False)
+        if d.ignore_connection:
+            assert addon.host_matches(sni, addon.BLOCKED_HOSTS), sni
+
+
+def test_blocked_host_inside_the_window_is_left_to_fail_certificate_validation():
+    """Inside the window the hook must NOT set ignore_connection -- the whole mechanism
+    is that the proxy intercepts and the client refuses the cert it cannot chain.
+    Passing through here would be a fail-open that looks identical in the journal.
+    """
+    d = _Hello("mason.zombsroyale.io")
+    addon.BudgetAddon().tls_clienthello(d)
+    assert not d.ignore_connection
+
+
+def test_a_broken_hook_cannot_take_the_proxy_down():
+    d = _Hello("mason.zombsroyale.io")
+    del d.client_hello                     # whatever mitmproxy hands us, this must not raise
+    addon.BudgetAddon().tls_clienthello(d)
+
+
+def test_watch_sni_ships_empty():
+    """It writes hostnames to the journal. It is a probe, not a control, and its question
+    is answered; leaving it populated logs traffic for every device on the tailnet.
+    """
+    assert addon.WATCH_SNI == [], "the SNI probe is still on"
+
+
+def test_window_label_reads_honestly():
+    assert addon.window_label() == "all day"
