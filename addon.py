@@ -710,15 +710,28 @@ def _is_cross_origin(flow):
 # no gate page for it -- only on or off. PLAN.md called this years ago: "if usage ever
 # shifts to the native apps, the only option there is blunt DNS-level time-windowing".
 #
-# HOW THE BLOCK IS ENFORCED, because it is not by this file. These hosts are in
-# --allow-hosts, so the proxy attempts to intercept them, and they are deliberately absent
-# from the CA's name constraints, so the certificate it mints is one the CA may not sign.
-# The CLIENT refuses it. That is a far stronger control than anything the proxy could do
-# by itself: short of untrusting the CA, the phone will not complete the handshake.
+# HOW THE BLOCK IS ENFORCED. Two mechanisms, because one of them turned out to depend on
+# the client's cooperation and the client is not ours.
 #
-# What this hook adds is the CLOCK and the LOG. Outside the blocked window it sets
-# ignore_connection, and the traffic passes through unread -- no decryption attempted, so
-# no failure. Inside the window it stands back and lets the certificate fail.
+#   1. The certificate. These hosts are in --allow-hosts, so the proxy intercepts them,
+#      and they are deliberately absent from the CA's name constraints, so the leaf it
+#      mints is one the CA may not sign. A client that validates properly hangs up.
+#   2. A 403 in request(). Reaching that code means the client trusted the forged
+#      certificate anyway -- precisely where mechanism 1 does nothing.
+#
+# This was originally written with only mechanism 1, and with the confident note that it
+# was "a far stronger control than anything the proxy could do by itself: short of
+# untrusting the CA, the phone will not complete the handshake". That was wrong about the
+# case it was written for. The zombsroyale iOS app completed the handshake, because a
+# user-installed CA is one an app may honour and this one does. The proxy logged a block
+# and decrypted the game. The lesson generalises past this host: a control that runs on
+# the other side of the boundary is a control you do not have, and the log line that says
+# otherwise is the dangerous part -- not the gap, but the false report of no gap.
+#
+# The CLOCK still lives in this hook. Outside the blocked window it sets
+# ignore_connection and the traffic passes through unread -- no decryption attempted,
+# which matters: this host is only decrypted in order to be broken, and outside the
+# window there is no reason to look at it. Inside the window it lets both mechanisms run.
 BLOCKED_HOSTS = ["zombsroyale.io"]
 
 # A diagnostic, not a control. Passthrough connections log only an IP -- the proxy never
@@ -837,7 +850,13 @@ class BudgetAddon:
                 # hook logged nothing visible while the block itself worked perfectly --
                 # a diagnostic that was itself undiagnosable, which is the joke this
                 # project keeps writing. _note_error's print has the same flaw.
-                print(f"[BLOCK] {sni} refused by policy ({window_label()})", flush=True)
+                # "intercepting", not "refused". The earlier wording claimed the
+                # handshake had been rejected, which this hook cannot know and which
+                # was false for the app that prompted the block -- it trusted our CA
+                # and played on. What actually happens here is that we decline to pass
+                # the connection through; whether it dies at the handshake or at the
+                # 403 in request() depends on the client, and only the latter is ours.
+                print(f"[BLOCK] intercepting {sni} ({window_label()})", flush=True)
             else:
                 data.ignore_connection = True     # outside the window: pass through unread
         except Exception as e:
@@ -1004,6 +1023,30 @@ class BudgetAddon:
     def request(self, flow: http.HTTPFlow):
         host = flow.request.pretty_host
         path = flow.request.path
+
+        # Refuse blocked hosts HERE, in plaintext, rather than trusting the client to
+        # reject the certificate we mint for them.
+        #
+        # The original design leaned entirely on the handshake failing: the CA carries
+        # name constraints that do not permit these domains, so the leaf is unusable and
+        # the client hangs up. That is a real control and it still runs -- but it is the
+        # CLIENT'S control, and the client is not ours. The zombsroyale iOS app accepts
+        # the forged certificate without complaint: it does not pin, and it honours a
+        # user-installed CA. So the proxy dutifully logged "[BLOCK] refused by policy"
+        # while decrypting and forwarding /api/config, the Socket.IO gateway, and every
+        # round of gameplay. The log line asserted an outcome it never checked.
+        #
+        # Reaching this code at all therefore means the client trusted us, which is
+        # exactly the case the certificate mechanism cannot cover. The two are
+        # complementary and both are needed: pinning clients die at the handshake,
+        # credulous ones die here.
+        if blocked_now(host):
+            print(f"[BLOCK] {host}{path[:60]} refused in-band ({window_label()})",
+                  flush=True)
+            flow.response = http.Response.make(
+                403, b'{"error":"blocked by policy"}',
+                {"Content-Type": "application/json", "Cache-Control": "no-store"})
+            return
 
         # Serve budget pages from any gated host under its /budget path. The query
         # string (which carries ?site=) is preserved so Flask charges the right site.

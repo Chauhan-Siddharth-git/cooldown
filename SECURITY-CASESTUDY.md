@@ -1496,6 +1496,55 @@ instance you found, and not the door you were standing at.
 
 ---
 
+
+## F40 — The block was enforced by the thing it was blocking  ·  MEDIUM  ·  FIXED
+
+The time-windowed block on `zombsroyale.io` had exactly one enforcement mechanism, and
+that mechanism ran on the phone. The host is in `--allow-hosts` and deliberately absent
+from the CA's name constraints, so mitmproxy mints a leaf the CA may not sign; a client
+that validates the chain hangs up. The comment written alongside it called this "a far
+stronger control than anything the proxy could do by itself: short of untrusting the CA,
+the phone will not complete the handshake."
+
+The phone completed the handshake. A user-installed CA is one an iOS app *may* honour,
+and this app honours it — no pinning, no system-store-only policy. So the proxy decrypted
+and forwarded `/api/config`, `/api/user/…`, the Socket.IO gateway (`?EIO=4&transport=…`)
+and every round of gameplay, at full speed, while printing on each connection:
+
+```
+[BLOCK] zombsroyale.io refused by policy (all day)
+```
+
+Nothing was refused. The game was played to completion through a proxy reporting that it
+had been blocked.
+
+**Why the tests did not catch it.** There were nine, added the same day, and they all
+passed. Every one of them asserted proxy *state* — `ignore_connection` stayed `False`,
+`blocked_now()` returned `True` at the observed hour, the log line was emitted. Not one
+asserted the *outcome*, because the outcome was defined to happen somewhere the test
+harness cannot see: on the client. A control whose success condition lives outside the
+system cannot be tested by that system, and writing nine tests around it produced nine
+confirmations of the half that was never in doubt.
+
+**Fix.** A second, independent mechanism that does not need the client's cooperation: a
+403 returned from `request()` before anything is forwarded. The two are complementary and
+the pairing is exact — arriving at `request()` at all *proves* the client accepted the
+forged certificate, which is precisely the case mechanism 1 cannot cover. Clients that
+validate die at the handshake; clients that don't die in-band.
+
+The `tls_clienthello` log now reads `intercepting`, not `refused by policy`, because
+"refused" was a claim about a remote party that the hook has no way to observe.
+
+**The generalisation, which is the reason this is written down.** Two of this project's
+boundaries are enforced by software on the other side of them — the browser's same-origin
+policy (F9) and a client's certificate validation (here). Those are legitimate controls,
+but they are *borrowed*, and the borrower does not get to decide when they apply. The
+failure here was not borrowing one; it was logging a confident outcome for a decision
+made by someone else's code. The gap was recoverable in an afternoon. The line asserting
+there was no gap is what would have kept it open indefinitely — and it is the sixth entry
+in this document where a report of health was itself the defect (F9, F11, F26, F34, F35,
+F40).
+
 ## Accepted by design
 
 Some risks are the cost of what the tool *is* — understood, bounded, documented,

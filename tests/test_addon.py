@@ -604,3 +604,36 @@ def test_watch_sni_ships_empty():
 
 def test_window_label_reads_honestly():
     assert addon.window_label() == "all day"
+
+
+def test_blocked_host_is_refused_in_band_not_left_to_the_client():
+    """The one the original block got wrong. Every test written for it asserted proxy
+    STATE -- that ignore_connection stayed False, that a log line appeared -- and every
+    one passed while the game ran perfectly, because the actual enforcement had been
+    delegated to a client that turned out to trust our CA and play on.
+
+    So this asserts the outcome instead: a request that reaches request() at all came
+    from a client that accepted the forged certificate, and it must not be answered.
+    """
+    for host, path in (("zombsroyale.io", "/api/config?platform=ios"),
+                       ("mason-ipv4.zombsroyale.io", "/gateway/?EIO=4&transport=polling"),
+                       ("mason.zombsroyale.io", "/")):
+        f = mkflow(host, path, resp=False)
+        addon.BudgetAddon().request(f)
+        assert f.response is not None, f"{host}{path} was forwarded upstream"
+        assert f.response.status_code == 403, host
+
+    # And the check is specific: it must not swallow anything else.
+    ok = mkflow("www.reddit.com", "/", resp=False)
+    addon.BudgetAddon().request(ok)
+    assert ok.response is None or ok.response.status_code != 403
+
+
+def test_block_does_not_fire_outside_the_window(monkeypatch):
+    """The 403 is inside the same clock as everything else."""
+    monkeypatch.setattr(addon, "BLOCK_FROM_HOUR", 9)
+    monkeypatch.setattr(addon, "BLOCK_TO_HOUR", 10)
+    monkeypatch.setattr(addon, "blocked_now", lambda h, now=None: False)
+    f = mkflow("zombsroyale.io", "/api/config", resp=False)
+    addon.BudgetAddon().request(f)
+    assert f.response is None or f.response.status_code != 403
