@@ -165,7 +165,8 @@ and the passphrase gets in; there is nothing host-specific about a key.
 
 **3. You have lost the passphrase.** Remote access is gone, and nothing recovers it from
 another machine: adding a new authorised key requires the access you just lost. You need
-**a keyboard and a monitor on the box**, then:
+**a keyboard and a monitor on the box**, and a login you can actually complete there —
+see the warning below before you rely on this. Then:
 
 ```bash
 # on the box itself, logged in locally
@@ -176,6 +177,27 @@ cat ~/.ssh/id_new.pub >> ~/.ssh/authorized_keys
 
 Afterwards remove the stranded key from `~/.ssh/authorized_keys`, so the one you can no
 longer use stops being authorised.
+
+> **Check that the console login works before you need it.** This step assumes the admin
+> account has a usable password. On the reference deployment it did not: the account was
+> locked (shadow field `!`, `passwd -S` reporting `L`) and so was root, with no console
+> autologin — so a keyboard and monitor produced a prompt that nothing could satisfy, and
+> the real last resort was powering down, pulling the SD card and editing `/etc/shadow` on
+> another machine. The instruction had been written once and never executed, which is the
+> only reason it survived.
+>
+> Setting a password there opens no remote surface as long as `sshd -T` reports
+> `passwordauthentication no` and `kbdinteractiveauthentication no` — check, don't assume.
+> It is also a prerequisite for narrowing any blanket `NOPASSWD: ALL` rule: with no
+> password set, removing the rule leaves the only sudo-capable account unable to
+> authenticate for sudo at all.
+>
+> `sudo` cannot verify it for you while a NOPASSWD rule stands, because it never prompts:
+>
+> ```bash
+> ssh -t <user>@<box> 'su <user> -c "echo PASSWORD OK"'
+> ```
+
 
 > Keep the passphrase in a password manager, **not** only in your head and not only in a
 > desktop wallet. A wallet that unlocks automatically at login hands the key to anyone who
