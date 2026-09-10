@@ -726,6 +726,19 @@ BUDGET_PAGE = """
         h1{font-size:19px;font-weight:600;margin:16px 0 0;letter-spacing:-.2px}
         p{color:var(--muted);font-size:14.5px;line-height:1.55;margin:10px auto 0;max-width:30ch}
         .actions{margin-top:28px;display:flex;flex-direction:column;gap:10px}
+        /* [hidden] is only a UA-stylesheet rule, and ANY author rule that sets display
+           beats it -- author styles win over UA styles regardless of specificity. The
+           reflection panel's button row is <div class="actions" id="ractions" hidden>,
+           so the line above un-hid it, and "Continue anyway" sat there enabled from the
+           moment the panel opened. You never had to pick a chip, startHold() therefore
+           never ran, the 15s pause never appeared, and the trigger field stayed empty --
+           so log_reflection() dropped every entry silently. 44 prompts over six days
+           produced zero recorded reflections. Harmless from 2026-07-30 until the pause
+           landed on 2026-08-19 and made engaging the expensive path; the data goes to
+           zero on 2026-08-27 and never recovers.
+           This must stay above any rule that sets display on a class also used with
+           [hidden]. tests/test_pages.py asserts it. */
+        [hidden]{display:none!important}
         button{
             width:100%;padding:15px;font-size:16px;font-weight:600;border:none;
             border-radius:12px;cursor:pointer;-webkit-tap-highlight-color:transparent;

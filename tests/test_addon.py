@@ -637,3 +637,34 @@ def test_block_does_not_fire_outside_the_window(monkeypatch):
     f = mkflow("zombsroyale.io", "/api/config", resp=False)
     addon.BudgetAddon().request(f)
     assert f.response is None or f.response.status_code != 403
+
+
+def test_the_time_warning_does_not_cover_the_top_of_the_page():
+    """It used to be position:fixed;top:0;left:0;right:0 -- a full-width band sitting
+    exactly where YouTube's and Reddit's search bars are. pointer-events:none meant it
+    never blocked a click, only the sight of what you were clicking, which in practice is
+    the same complaint. Both the last-minute warning and the persistent wind-down ribbon
+    did it; the wind-down one for the whole tapering period.
+    """
+    js = addon.HEARTBEAT_SCRIPT
+    for el in ("#bp-timewarn", "#bp-winddown"):
+        i = js.index(el + "{")
+        rule = js[i:js.index("}", i)]
+        assert "top:0" not in rule, f"{el} is anchored to the top of the viewport again"
+        assert "pointer-events:none" in rule, el
+
+    # The warning is a frame; the readable part is a corner pill.
+    assert "inset:0" in js[js.index("#bp-timewarn{"):js.index("}", js.index("#bp-timewarn{"))]
+    assert "#bp-timepill{" in js
+
+    # Escalation exists and animates opacity only -- animating the box-shadow repaints the
+    # whole viewport each frame, which is what made the frost overlay unusable.
+    assert "bp-urgent" in js and "@keyframes bp-pulse" in js
+    kf = js[js.index("@keyframes bp-pulse"):]
+    kf = kf[:kf.index("}}") + 2]
+    assert "opacity" in kf and "box-shadow" not in kf, kf
+
+    # Non-ASCII must be \u-escaped: this is injected into pages whose charset we do not
+    # control, and a literal glyph mojibakes on any of them that is not UTF-8.
+    body = js[js.index("var WARN_AT"):js.index("function hideWd()")]
+    assert all(ord(c) < 128 for c in body), "literal non-ASCII in the injected script"

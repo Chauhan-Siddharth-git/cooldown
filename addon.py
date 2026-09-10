@@ -84,54 +84,87 @@ HEARTBEAT_SCRIPT = """
 <script>
 (function () {
   var INTERVAL = 10000;   // ms between pings while the tab is visible
-  var WARN_AT  = 60;      // flash the warning when this many seconds (or fewer) remain
+  var WARN_AT  = 60;      // show the frame when this many seconds (or fewer) remain
+  var URGENT_AT = 10;     // ...and start pulsing it at this many
   var SITE = "__SITE__";
   var LABEL = SITE.charAt(0).toUpperCase() + SITE.slice(1);
   var deadline = null;    // ms timestamp when time runs out (re-anchored each ping)
   var curPhase = null;    // "day" | "winddown" | "night" from the last ping
 
-  var bar = null;
+  // A frame around the edge of the viewport, not a band across the top.
+  //
+  // The band was position:fixed;top:0;left:0;right:0 -- which is exactly where YouTube's
+  // and Reddit's search bars are. pointer-events:none meant clicks passed through, so it
+  // never blocked anything; it just made the thing you were clicking invisible, which is
+  // most of the way to blocking it. A frame takes no content area at all.
+  var bar = null, pill = null;
   function ensureBar() {
     if (bar) return bar;
     var css = document.createElement("style");
     css.textContent =
-      '#bp-timewarn{position:fixed;top:0;left:0;right:0;z-index:2147483647;pointer-events:none;' +
-      'font:600 15px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;' +
-      'color:#fff;text-align:center;padding:10px 16px;padding-top:max(10px,env(safe-area-inset-top));' +
-      'background:#c0392b;box-shadow:0 2px 12px rgba(0,0,0,.45);letter-spacing:.2px;' +
-      'animation:bp-flash 1s steps(1) infinite;}' +
-      '@keyframes bp-flash{50%{background:#e74c3c}}' +
-      '@media (prefers-reduced-motion:reduce){#bp-timewarn{animation:none;background:#c0392b}}';
+      '#bp-timewarn{position:fixed;inset:0;z-index:2147483647;pointer-events:none;' +
+      'box-shadow:inset 0 0 0 4px #c0392b,inset 0 0 22px rgba(192,57,43,.30);' +
+      'will-change:opacity;transform:translateZ(0);}' +
+      // Only opacity animates, and the layer is promoted first. Animating the box-shadow
+      // repaints the whole viewport every frame; the frost overlay already taught this
+      // project that lesson by dropping the page to a crawl while it ran.
+      '#bp-timewarn.bp-urgent{animation:bp-pulse 1s ease-in-out infinite;}' +
+      '@keyframes bp-pulse{50%{opacity:.28}}' +
+      '#bp-timepill{position:fixed;z-index:2147483647;pointer-events:none;' +
+      'right:max(12px,env(safe-area-inset-right));' +
+      'bottom:max(12px,env(safe-area-inset-bottom));' +
+      'font:600 12px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;' +
+      'color:#fff;background:#c0392b;padding:7px 11px;border-radius:999px;' +
+      'box-shadow:0 2px 10px rgba(0,0,0,.45);letter-spacing:.2px;}' +
+      // Reduced motion gets a thicker ring instead of a pulse -- still an escalation,
+      // just not a moving one.
+      '@media (prefers-reduced-motion:reduce){#bp-timewarn.bp-urgent{animation:none;' +
+      'box-shadow:inset 0 0 0 8px #c0392b,inset 0 0 26px rgba(192,57,43,.40);}}';
     (document.head || document.documentElement).appendChild(css);
     bar = document.createElement("div");
     bar.id = "bp-timewarn";
-    bar.setAttribute("role", "status");
+    bar.setAttribute("aria-hidden", "true");      // decorative; the pill carries the text
     document.documentElement.appendChild(bar);
+    pill = document.createElement("div");
+    pill.id = "bp-timepill";
+    pill.setAttribute("role", "status");
+    document.documentElement.appendChild(pill);
     return bar;
   }
   function showWarn(secs) {
-    var el = ensureBar();
-    el.style.display = "block";
-    el.textContent = "\\u23F1\\uFE0F " + secs + "s left on " + LABEL + " \\u2014 wrap it up";
+    ensureBar();
+    bar.style.display = "block";
+    pill.style.display = "block";
+    pill.textContent = secs + "s \\u00B7 " + LABEL;
+    if (secs <= URGENT_AT) bar.classList.add("bp-urgent");
+    else bar.classList.remove("bp-urgent");
   }
-  function hideWarn() { if (bar) bar.style.display = "none"; }
+  function hideWarn() {
+    if (!bar) return;
+    bar.style.display = "none";
+    bar.classList.remove("bp-urgent");
+    if (pill) pill.style.display = "none";
+  }
 
-  // A calmer, persistent ribbon while the pool is in wind-down, so the shrinking cap
-  // isn't a surprise. Yields the top slot to the red last-minute warning when that fires.
+  // Wind-down gets the same treatment: it was a top band too, and a persistent one, so it
+  // covered the header for the whole tapering period rather than for the last minute.
+  // Calm by design -- a pill, no frame, no motion.
   var wdBar = null;
   function ensureWdBar() {
     if (wdBar) return wdBar;
     var css = document.createElement("style");
     css.textContent =
-      '#bp-winddown{position:fixed;top:0;left:0;right:0;z-index:2147483646;pointer-events:none;' +
-      'font:600 14px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;' +
-      'color:#fff;text-align:center;padding:8px 16px;padding-top:max(8px,env(safe-area-inset-top));' +
-      'background:#b9770e;box-shadow:0 2px 10px rgba(0,0,0,.35);letter-spacing:.2px;}';
+      '#bp-winddown{position:fixed;z-index:2147483646;pointer-events:none;' +
+      'right:max(12px,env(safe-area-inset-right));' +
+      'bottom:max(12px,env(safe-area-inset-bottom));' +
+      'font:600 12px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;' +
+      'color:#fff;background:#b9770e;padding:7px 11px;border-radius:999px;' +
+      'box-shadow:0 2px 10px rgba(0,0,0,.35);letter-spacing:.2px;}';
     (document.head || document.documentElement).appendChild(css);
     wdBar = document.createElement("div");
     wdBar.id = "bp-winddown";
     wdBar.setAttribute("role", "status");
-    wdBar.textContent = "\\u23F3 Wind-down \\u2014 your time is tapering toward bedtime";
+    wdBar.textContent = "\\u23F3 Wind-down";
     document.documentElement.appendChild(wdBar);
     return wdBar;
   }

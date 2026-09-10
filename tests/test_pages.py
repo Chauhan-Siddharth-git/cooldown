@@ -418,3 +418,62 @@ def test_cpu_stat_rows_report_now_avg_and_peak_per_core(monkeypatch):
     rows = budget._cpu_stat_rows([[10.0, 0.0], [90.0, 0.0], [50.0, 0.0]])
     assert rows[0]["now"] == 50 and rows[0]["avg"] == 50 and rows[0]["peak"] == 90
     assert rows[0]["color"] != rows[1]["color"]
+
+
+# --- the hidden attribute must actually hide ------------------------------------------
+
+def _css_and_html(client, rdb, monkeypatch):
+    """The gate with the reflection panel forced on."""
+    monkeypatch.setattr(budget, "reflect_decision", lambda now=None: (True, "why?"))
+    return gate(client, "reddit")
+
+
+def test_hidden_attribute_is_not_defeated_by_a_class_rule(client, rdb, day, monkeypatch):
+    """[hidden] is a UA-stylesheet rule and ANY author rule setting display beats it --
+    author beats UA regardless of specificity. `.actions{display:flex}` therefore un-hid
+    <div class="actions" id="ractions" hidden>, the reflection panel's button row, so
+    "Continue anyway" was enabled before a chip was ever picked. The 15s hold only starts
+    on a chip click, so it never ran; the trigger field stayed empty, so log_reflection()
+    silently dropped every entry. 44 prompts over six days recorded zero reflections and
+    nothing anywhere reported a problem.
+
+    The bug is invisible to any test that greps the HTML: the markup was always correct.
+    """
+    import re
+    html = _css_and_html(client, rdb, monkeypatch)
+    css = "\n".join(re.findall(r"<style[^>]*>(.*?)</style>", html, re.S))
+
+    # Every class on an element that carries the hidden attribute.
+    hidden_classes = set()
+    for tag in re.findall(r"<[a-zA-Z][^>]*\bhidden\b[^>]*>", html):
+        m = re.search(r'class="([^"]*)"', tag)
+        if m:
+            hidden_classes.update(m.group(1).split())
+
+    # Any author rule that sets display on one of those classes.
+    collisions = []
+    for sel, body in re.findall(r"([^{}]+)\{([^}]*)\}", css):
+        if not re.search(r"(^|[^-\w])display\s*:", body):
+            continue
+        for cls in hidden_classes:
+            if re.search(r"\." + re.escape(cls) + r"(?![-\w])", sel):
+                collisions.append((cls, " ".join(sel.split())[:60]))
+
+    guard = re.search(r"\[hidden\]\s*\{[^}]*display\s*:\s*none\s*!important", css)
+    assert guard or not collisions, (
+        "these classes appear on [hidden] elements AND have a display rule, so the "
+        "elements render anyway; add [hidden]{display:none!important}: "
+        + "; ".join(f"{c} via {s}" for c, s in collisions))
+
+
+def test_the_reflection_panel_button_row_is_one_of_those_elements(client, rdb, day, monkeypatch):
+    """Guards the guard. The test above passes trivially if the markup stops using
+    class="actions" on a hidden element -- at which point it is checking nothing, and this
+    project has shipped three exemption lists that decayed exactly that way.
+    """
+    import re
+    html = _css_and_html(client, rdb, monkeypatch)
+    m = re.search(r'<div[^>]*id="ractions"[^>]*>', html)
+    assert m, "the reflection panel's button row is gone; retarget this test"
+    assert "hidden" in m.group(0), "#ractions no longer relies on [hidden]"
+    assert "actions" in re.search(r'class="([^"]*)"', m.group(0)).group(1)
