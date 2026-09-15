@@ -1041,6 +1041,22 @@ BUDGET_PAGE = """
 BG_BLOCK = """    {% raw %}
     <script>
     (function(){
+      // Report the browser's timezone from the GATE, not only from a live session.
+      //
+      // note_client_tz() runs before the heartbeat's token check, so this records the
+      // zone even though the POST itself comes back 403 -- and that is the whole point.
+      // The heartbeat only fires during an active session, so the original wiring could
+      // not learn where you are while you were locked out. Fly west, land at 8pm local,
+      // and the box thinks it is 11pm and curfews you: no session, so no heartbeat, so
+      // no zone report, so the curfew stays wrong. A deadlock that only bites on exactly
+      // the evening you need it not to. No new endpoint -- the gated-origin budget is
+      // spent, and this reuses one whose first act already is to read this parameter.
+      try {
+        var _tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+        if (_tz) fetch("/budget/heartbeat?tz=" + encodeURIComponent(_tz),
+                       {method:"POST", cache:"no-store", keepalive:true})
+                 .catch(function(){});
+      } catch (e) {}
       var TOK=(document.querySelector('meta[name="cd-tok"]')||{}).content||"";
       var FEED=(document.querySelector('meta[name="cd-feed"]')||{}).content||"/budget/feed";
       var b=document.getElementById("bgInfoBtn"), p=document.getElementById("bgPanel"),

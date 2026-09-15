@@ -477,3 +477,26 @@ def test_the_reflection_panel_button_row_is_one_of_those_elements(client, rdb, d
     assert m, "the reflection panel's button row is gone; retarget this test"
     assert "hidden" in m.group(0), "#ractions no longer relies on [hidden]"
     assert "actions" in re.search(r'class="([^"]*)"', m.group(0)).group(1)
+
+
+def test_the_gate_reports_the_timezone_even_when_you_cannot_enter(client, rdb, night):
+    """The bootstrap deadlock. note_client_tz() is reached from the heartbeat, and the
+    heartbeat only runs inside a live session -- so on the evening you land after flying
+    west, the box curfews you on the old zone, you cannot start a session, and nothing
+    can tell it otherwise. The gate itself has to report.
+
+    `night` fixture: the state where you are locked out, which is the state that matters.
+    """
+    html = gate(client, "reddit")
+    assert "resolvedOptions().timeZone" in html
+    assert "/budget/heartbeat?tz=" in html
+
+
+def test_the_heartbeat_records_the_zone_before_it_refuses_the_request(client, rdb):
+    """The 403 is fine; dropping the zone with it is not."""
+    import app as b
+    assert not rdb.get("tz_pending")
+    res = client.post("/heartbeat?tz=America/Los_Angeles&site=reddit")
+    assert res.status_code == 403, "no active session, so this must still be refused"
+    pending = rdb.get("tz_pending") or ""
+    assert pending.startswith("America/Los_Angeles"), f"zone dropped on the refused path: {pending!r}"
