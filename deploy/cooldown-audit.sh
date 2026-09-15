@@ -2,10 +2,10 @@
 # Security and liveness invariants, in two tiers.
 #
 #   cooldown-audit.sh quick   hourly  -- everything cheap (~30ms total)
-#   cooldown-audit.sh full    weekly  -- quick, plus dpkg -V (43 SECONDS on this box)
+#   cooldown-audit.sh full    weekly  -- quick, plus dpkg -V (67 SECONDS on this box)
 #
 # The split exists because one check was setting the cadence for all of them. Verifying
-# every packaged file's checksum takes 43 seconds; checking that the CA has not been
+# every packaged file's checksum takes 67 seconds; checking that the CA has not been
 # replaced takes 26 milliseconds. Running them together meant the CA was checked once a
 # week when it could be checked 168 times.
 #
@@ -429,7 +429,8 @@ if [ "$MODE" = "full" ]; then
         note "backup does NOT restore: $(printf '%s' "$vb" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("error") or "unknown")' 2>/dev/null || echo 'verifier failed to run')"
     fi
 
-    # dpkg -V costs 43 seconds on this box -- the figure in this file's own header -- and
+    # dpkg -V costs 67 seconds on this box -- measured 2026-09-15, quick tier 2s, whole
+    # full tier 68s, so this call IS the weekly audit -- and
     # it was being run twice, once for the raw count and once for the filtered one. The
     # weekly tier therefore spent a minute and a half establishing what a single pass
     # already knew. Run it once; derive both counts from the result.
