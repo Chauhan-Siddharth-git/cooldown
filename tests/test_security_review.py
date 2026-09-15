@@ -2116,3 +2116,38 @@ def test_the_restart_record_survives_dismissing_the_banner(rdb):
         "dismissing the banner also erased the restart history — the record has to "
         "outlive the acknowledgement or there is nothing left to audit")
     assert budget.boot_history(), "boot_events must still hold the entries"
+
+
+def test_a_refused_write_records_which_header_refused_it(client, rdb, capfd):
+    """The dashboard's own "that was me" button started returning "cross-origin request
+    blocked" and there was no way to tell which of three rules had fired -- Sec-Fetch-Site
+    saying same-site, Origin disagreeing with Host, or Origin: null from a sandboxed
+    frame. The message is identical for all three, and the control guards the box's own
+    pages as well as the gated origin, so being wrong about it is not cheap.
+
+    The reason goes to the journal, never the body: the caller already knows what it
+    sent, but there is no reason to help a script on a gated origin read back the rule.
+    """
+    for hdrs, needle in (
+        ({"Sec-Fetch-Site": "cross-site"}, "Sec-Fetch-Site=cross-site"),
+        ({"Origin": "http://evil.example"}, "Origin='http://evil.example'"),
+        ({"Origin": "null"}, "Origin='null'"),
+    ):
+        res = client.post("/boot-ack", headers=hdrs)
+        assert res.status_code == 403
+        body = res.data.decode()
+        out = capfd.readouterr().out
+        assert "[CSRF] refused POST /boot-ack" in out, f"no journal line for {hdrs}"
+        assert needle in out, f"{needle!r} not in: {out!r}"
+        # ...and none of it leaks into what the caller is told.
+        assert body == "cross-origin request blocked"
+        assert "Sec-Fetch" not in body and "Origin" not in body
+
+
+def test_an_allowed_write_logs_nothing(client, rdb, capfd):
+    """Guards the guard: a log line on every write would make the journal useless and
+    would put request headers in it for traffic that was never suspicious."""
+    capfd.readouterr()
+    res = client.post("/boot-ack", headers={"Sec-Fetch-Site": "same-origin"})
+    assert res.status_code in (200, 302)
+    assert "[CSRF]" not in capfd.readouterr().out

@@ -120,9 +120,30 @@ def _cross_origin_to_guarded_route():
 
 @app.before_request
 def _refuse_cross_origin_writes():
-    if _cross_origin_to_guarded_route():
-        return ("cross-origin request blocked", 403,
-                {"Content-Type": "text/plain; charset=utf-8"})
+    if not _cross_origin_to_guarded_route():
+        return None
+    # Say WHICH header refused it, in the journal.
+    #
+    # "cross-origin request blocked" is the whole story the browser gets, and for a box
+    # you own that is the wrong amount of information: the dashboard's own "that was me"
+    # button started returning this, and from the outside there was no way to tell
+    # whether Sec-Fetch-Site said same-site, or Origin disagreed with Host, or the
+    # browser had sent Origin: null. Three different bugs, one indistinguishable message.
+    # A control that refuses without saying why costs an evening every time it is wrong,
+    # and this one guards the box's own pages as well as the gated origin.
+    #
+    # Journal only, not the response body: the caller already knows what it sent, so this
+    # tells an attacker nothing it does not have -- but there is no reason to help a
+    # script on a gated origin enumerate the rule either.
+    fs = request.headers.get("Sec-Fetch-Site")
+    og = request.headers.get("Origin")
+    why = (f"Sec-Fetch-Site={fs}" if fs
+           else f"Origin={og!r} vs Host={request.host!r}" if og
+           else "no Origin and no Sec-Fetch-Site")
+    print(f"[CSRF] refused {request.method} {request.path}: {why} "
+          f"(ua={request.headers.get('User-Agent', '?')[:60]})", flush=True)
+    return ("cross-origin request blocked", 403,
+            {"Content-Type": "text/plain; charset=utf-8"})
 
 
 # The hardening headers addon.py already puts on every response it forwards. The box
