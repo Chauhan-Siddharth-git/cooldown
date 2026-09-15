@@ -1545,6 +1545,47 @@ there was no gap is what would have kept it open indefinitely — and it is the 
 in this document where a report of health was itself the defect (F9, F11, F26, F34, F35,
 F40).
 
+## F41 — A hardening header refused the box's own write  ·  LOW  ·  FIXED
+
+The Pi Health page shows a banner when the box has rebooted unexpectedly, with a button
+that clears it. On iPhone the button answered `cross-origin request blocked`, every time,
+for a form posting to its own origin.
+
+The cause was a header this document added. `Referrer-Policy: no-referrer` went on the box
+origin because a click from `/stats` back to a gated site put the box's box's address in
+the `Referer`. WebKit derives the `Origin` **header** from the referrer policy, so under
+`no-referrer` Safari sends `Origin: null` on a same-origin form POST. The box origin is
+plain HTTP and Safari withholds `Sec-Fetch-*` on insecure origins, so
+`_cross_origin_to_guarded_route()` fell past its `Sec-Fetch-Site` branch into the `Origin`
+branch, compared `null` against the host, and refused — behaving exactly as designed, on a
+request that was never cross-origin.
+
+**Fix.** `Referrer-Policy: same-origin` on the box. It withholds the `Referer` on every
+cross-origin request exactly as `no-referrer` did, so the property that earned the header
+is untouched; it stops suppressing the referrer on requests the box makes to *itself*,
+which bought nothing and cost a write the box owns. Pinned in `test_invariants.py` so it
+cannot drift back. The gated origin keeps `no-referrer`: it is HTTPS, Safari sends
+`Sec-Fetch-Site` there, and its forms were never affected — established by the fact that
+entering sites from that phone worked throughout, not by assuming the two origins differ.
+
+**How it was found, which is the transferable part.** The refusal message was identical
+for all three ways the guard can fire — `Sec-Fetch-Site` foreign, `Origin` mismatched,
+`Origin: null` — so from outside there was no way to tell which rule had fired, or whether
+a bug elsewhere was responsible. The leading theory at the time was Firefox, reasoning
+from the same header. It was wrong about the browser while right about the mechanism, and
+acting on it would have produced a fix that appeared to work for the wrong reason.
+
+What settled it in one round trip was making the guard log *which* header refused it, to
+the journal and never to the response body — the caller already knows what it sent, but a
+script on a gated origin has no business reading the rule back. The general form: **a
+control that refuses without recording why costs an evening every time it is wrong**, and
+this one guards the box's own pages as well as the gated origin, so it is wrong more often
+than a purely external check would be.
+
+It also belongs beside F37 and F38. All three are the same shape — a correctly-reasoned
+hardening measure whose blast radius reached further than the reasoning did, discovered
+only because something the owner used every day stopped working.
+
 ## Accepted by design
 
 Some risks are the cost of what the tool *is* — understood, bounded, documented,
