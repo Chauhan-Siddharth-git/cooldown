@@ -429,9 +429,35 @@ if [ "$MODE" = "full" ]; then
         note "backup does NOT restore: $(printf '%s' "$vb" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("error") or "unknown")' 2>/dev/null || echo 'verifier failed to run')"
     fi
 
-    tampered_all="$(dpkg -V 2>/dev/null | awk '$2 != "c"' | wc -l)"
-    tampered="$(dpkg -V 2>/dev/null | awk '$2 != "c" {print $NF}' | grep -vxF "$KNOWN_MODIFIED" | wc -l)"
+    # dpkg -V costs 43 seconds on this box -- the figure in this file's own header -- and
+    # it was being run twice, once for the raw count and once for the filtered one. The
+    # weekly tier therefore spent a minute and a half establishing what a single pass
+    # already knew. Run it once; derive both counts from the result.
+    #
+    # Counted with awk rather than `grep -c`: grep -c exits 1 on no match HAVING ALREADY
+    # PRINTED 0, which is the footgun this project has now written three separate times
+    # (see the historical-mistakes note in CLAUDE.md). `awk END{print n+0}` prints 0 and
+    # exits 0, so the count means the same thing whether or not anything matched.
+    mods="$(dpkg -V 2>/dev/null | awk 'NF && $2 != "c" {print $NF}')"
+    nlines() { printf '%s' "$1" | awk 'NF {n++} END {print n+0}'; }
+    tampered_all="$(nlines "$mods")"
+    tampered="$(nlines "$(printf '%s' "$mods" | grep -vxF "$KNOWN_MODIFIED")")"
     [ "$tampered" -eq 0 ] || note "$tampered packaged file(s) differ from their manifest (dpkg -V)"
+
+    # Rule 10: every list of exceptions needs something checking the exceptions still
+    # exist. KNOWN_MODIFIED is the fourth exemption list in this project and was the only
+    # one with nothing watching it -- the other three each accumulated entries that
+    # matched nothing, one within hours of being written. An exemption that no longer
+    # exempts anything is indistinguishable from one that quietly permits everything.
+    #
+    # A here-string, not a pipe: note() appends to the `findings` array, and a `while` on
+    # the right of a pipe runs in a subshell, so every finding raised in it would be
+    # discarded at the closing `done` -- a check that cannot report is not a check.
+    while IFS= read -r ex; do
+        [ -n "$ex" ] || continue
+        printf '%s' "$mods" | grep -qxF "$ex" || \
+            note "KNOWN_MODIFIED excuses $ex, which dpkg no longer reports as modified -- stale exemption"
+    done <<< "$KNOWN_MODIFIED"
 fi
 
 esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }

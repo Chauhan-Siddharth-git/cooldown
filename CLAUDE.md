@@ -171,6 +171,15 @@ Read this part first, then **read the code before reading `SECURITY-CASESTUDY.md
    once. If you are reviewing, `deployed_rev` is the first thing to read: a review of code
    the box is not running is a review of nothing.
 
+   **Commit, then deploy — in that order.** Deploying from a dirty tree stamps the
+   manifest `<rev>-dirty`, and that names a tree which exists in no git history: the one
+   question this whole mechanism answers becomes unanswerable for exactly the files you
+   most recently touched. It is not hypothetical; six files sat labelled that way while
+   the commits they came from were already pushed. Two separate checks now catch it —
+   `deploy.sh` says so at push time, the audit raises a finding on the box — and the point
+   of the ordering is to make both of them redundant. The pre-commit hook runs the suite,
+   so committing first costs nothing you were not already paying.
+
 **When to review at all:** on a new endpoint, origin, listener, privileged operation, or
 new reliance on browser behaviour — those five account for all twenty findings. Plus after
 any deploy that changes services, firewall rules or accounts. Plus twice a year for rot
