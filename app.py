@@ -2237,7 +2237,7 @@ def budget_page():
             if remaining <= 0:
                 return render_gate(site, label, overline=f"{label} · Bedtime", mood="sleep",
                     countdown=secs_until_hour(NIGHT_END_HOUR), show_study=study_ok,
-                    title="Get some sleep",
+                    title="Get some sleep", ask_worth=ask_worth,
                     message=gate_line("night_closed", label=label, end=NIGHT_END_HOUR))
             nshow, nq = reflect_decision()
             return render_gate(site, label, overline=f"{label} · Night mode", mood="sleep",
@@ -2248,7 +2248,7 @@ def budget_page():
         if remaining <= 0:
             return render_gate(site, label, overline=f"{label} · Winding down", mood="wait",
                 countdown=secs_until_hour(NIGHT_START_HOUR), show_study=study_ok,
-                title="Paused for now",
+                title="Paused for now", ask_worth=ask_worth,
                 message=gate_line("winddown_spent", label=label))
         wshow, wq = reflect_decision()
         return render_gate(site, label, overline=f"{label} · Winding down", mood="wait",
@@ -2272,7 +2272,7 @@ def budget_page():
     if soft_cd > 0:
         return render_gate(site, label, overline=f"{label} · Short break", mood="wait",
             countdown=soft_cd, show_study=study_ok, study_primary=study_ok,
-            title="Take a breather",
+            title="Take a breather", ask_worth=ask_worth,
             message=gate_line("soft", label=label))
 
     spent = get_spent(site)

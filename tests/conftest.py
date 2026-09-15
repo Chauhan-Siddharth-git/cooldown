@@ -17,6 +17,39 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import app as budget  # noqa: E402
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _exclusive_test_db():
+    """Refuse to run two suites against db 15 at once.
+
+    Both repos' suites use db 15 and every `rdb` flushes it, so a concurrent run deletes
+    the other's fixtures mid-test. It does not fail cleanly: it produces a big pile of
+    unrelated assertion errors that look exactly like a real regression, and it has cost
+    this project a debugging session twice -- once reading it as 35 public-repo failures,
+    once as a 21-test flake that was really a background job still finishing. One clear
+    message beats twenty misleading ones.
+
+    The lock lives in db 14 because db 15 is the one being flushed.
+    """
+    lock = redis.Redis(host="localhost", port=6379, db=14, decode_responses=True)
+    try:
+        lock.ping()
+    except redis.exceptions.ConnectionError:
+        yield                                  # no redis: the rdb fixture skips anyway
+        return
+    token = f"pid{os.getpid()}@{time.time():.0f}"
+    # ex= so a killed run cannot wedge the lock forever; longer than any real suite.
+    if not lock.set("suite_lock", token, nx=True, ex=1800):
+        pytest.exit(
+            f"redis db 15 is already in use by another test run ({lock.get('suite_lock')}). "
+            "Wait for it, or clear a stale lock with: redis-cli -n 14 DEL suite_lock",
+            returncode=1)
+    try:
+        yield
+    finally:
+        if lock.get("suite_lock") == token:
+            lock.delete("suite_lock")
+
+
 @pytest.fixture()
 def rdb(monkeypatch):
     r = redis.Redis(host="localhost", port=6379, db=15, decode_responses=True)

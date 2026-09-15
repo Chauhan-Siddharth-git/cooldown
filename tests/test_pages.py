@@ -500,3 +500,52 @@ def test_the_heartbeat_records_the_zone_before_it_refuses_the_request(client, rd
     assert res.status_code == 403, "no active session, so this must still be refused"
     pending = rdb.get("tz_pending") or ""
     assert pending.startswith("America/Los_Angeles"), f"zone dropped on the refused path: {pending!r}"
+
+
+def test_every_blocked_screen_asks_whether_it_was_worth_it(client, rdb, monkeypatch):
+    """The verdict is only ever collected on a screen you land on BECAUSE a session
+    ended. Three such screens never asked -- night-closed, wind-down-spent and the short
+    soft-cooldown break -- so a session that ended into any of them produced no verdict
+    and pending_worth expired unanswered.
+
+    Measured on the box: worth:* last recorded 2026-09-10, against ~60 entries in the
+    five days after. regret_by_trigger() reads worth:*, so the regret number shown at the
+    reflection prompt -- the whole point of that prompt -- was frozen on August data and
+    could never update.
+    """
+    import app as b
+
+    def blocked_screens():
+        # (fixture-ish state, site) -> html, for each screen that means "not right now"
+        out = {}
+        rdb.set("pending_worth", f"{time.time():.0f} reddit bored")
+
+        monkeypatch.setattr(b, "phase", lambda now=None: "night")
+        monkeypatch.setattr(b, "get_remaining_budget", lambda s: 0)
+        out["night closed"] = gate(client, "reddit")
+
+        monkeypatch.setattr(b, "phase", lambda now=None: "winddown")
+        out["winddown spent"] = gate(client, "reddit")
+
+        monkeypatch.setattr(b, "phase", lambda now=None: "day")
+        monkeypatch.setattr(b, "get_cooldown_remaining", lambda s: 0)
+        monkeypatch.setattr(b, "get_soft_cd_remaining", lambda s: 300)
+        out["short break"] = gate(client, "reddit")
+        return out
+
+    screens = blocked_screens()
+    # Guard the loop. Without this the test passes if blocked_screens() ever returns
+    # nothing -- which is how an assertion inside a loop stops being an assertion.
+    assert set(screens) == {"night closed", "winddown spent", "short break"}, sorted(screens)
+    for name, html in screens.items():
+        assert "Was it worth it?" in html, f"{name} never asks for the verdict"
+
+
+def test_entry_screens_still_do_not_ask(client, rdb, day, monkeypatch):
+    """The counterweight. It must never appear above an Enter button -- that turns a
+    check-in into a toll, which is the one thing the design note forbids.
+    """
+    rdb.set("pending_worth", f"{time.time():.0f} reddit bored")
+    html = gate(client, "reddit")
+    assert "Enter" in html
+    assert "Was it worth it?" not in html

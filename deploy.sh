@@ -26,7 +26,18 @@ SSH=(ssh -o BatchMode=yes -o ConnectTimeout=8 "$PI")
 # claimed otherwise would assert exactly the thing it exists to disprove.
 MANIFEST=/var/lib/cooldown-deployed.manifest
 REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-git diff --quiet HEAD 2>/dev/null || REV="$REV-dirty"
+if ! git diff --quiet HEAD 2>/dev/null; then
+    REV="$REV-dirty"
+    # Not a refusal -- deploying uncommitted work is the normal edit/test/deploy loop.
+    # But say it out loud, because the manifest is what /health reports as "what is
+    # running", and "-dirty" names a tree that exists nowhere in git. Commit and
+    # re-deploy (content-identical, so it only restamps) to make that answer checkable
+    # again. Six files sat labelled this way while the commits they came from were
+    # already pushed.
+    echo "NOTE: working tree is dirty -- stamping $REV."
+    echo "      /health will report a revision that cannot be looked up. Re-run this"
+    echo "      after committing to restamp."
+fi
 
 stamp(){   # each arg: "<installed path on box>=<local source file>"
     local new; new="$(mktemp)" || return 0

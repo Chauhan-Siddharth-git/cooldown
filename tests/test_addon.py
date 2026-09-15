@@ -590,9 +590,17 @@ def test_blocked_host_inside_the_window_is_left_to_fail_certificate_validation()
 
 
 def test_a_broken_hook_cannot_take_the_proxy_down():
+    """tools/audit-tests.py flagged this one: it asserted nothing at all, so it passed
+    whether or not the hook swallowed the error. "Does not raise" is a real property, but
+    it has to be stated -- and the interesting half is what the hook does with the
+    failure, which is report it rather than discard it."""
+    before = len(addon._ERRORS) if hasattr(addon, "_ERRORS") else None
     d = _Hello("mason.zombsroyale.io")
     del d.client_hello                     # whatever mitmproxy hands us, this must not raise
     addon.BudgetAddon().tls_clienthello(d)
+    assert d.ignore_connection is False, "a broken hook must not silently pass traffic"
+    if before is not None:
+        assert len(addon._ERRORS) > before, "the failure was swallowed without being counted"
 
 
 def test_watch_sni_ships_empty():
