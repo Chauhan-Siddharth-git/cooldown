@@ -3,6 +3,7 @@ from markupsafe import Markup
 from urllib.parse import urlparse
 from collections import Counter, deque
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, available_timezones
 import os
 import subprocess
 import json
@@ -356,6 +357,41 @@ NIGHT_BUDGET_SECONDS = 5 * 60
 # instead of a sudden 11pm wall. Study mode stays available at all hours regardless.
 WINDDOWN_SECONDS = 60 * 60
 
+# --- Where YOU are, which is not where the box is --------------------------------------
+#
+# The Pi's clock is America/New_York and never moves. Fly to California and the curfew
+# arrives at 8pm local, because 11pm Boston is 8pm here. Bedtime is a fact about a body,
+# not about a server, so the wall-clock policy has to follow the traveller.
+#
+# But the single local-clock helper was doing two unrelated jobs, and only one may move:
+#
+#   policy      in_night / _hours_now / secs_until_hour -- "is it bedtime where I am?"
+#   accounting  reset_day and every usage:/entries:/reflect:/worth:{day} key
+#
+# Moving the accounting clock CREATES BUDGET. reset_day() compares the local hour against
+# NIGHT_END_HOUR, and catch_up_reset() fires daily_reset() -- which deletes spent:{pool} --
+# whenever last_reset disagrees with it. Switch EDT->PDT at 08:00 and reset_day flips from
+# today back to yesterday, so a reset fires immediately and a second one fires at 07:00
+# PDT. Flying west would be worth two free days. So accounting lags: it moves only at the
+# end of a completed reset, once, and re-stamps last_reset in the new zone so the next
+# check agrees with it.
+#
+# THE ZONE IS CLIENT-SUPPLIED AND THEREFORE ADVISORY. It rides the heartbeat, which runs
+# on the gated origin, same-origin with the site's own ad scripts (F9's neighbourhood) --
+# and even without a hostile script, "make it permanently daytime" is three taps in the
+# phone's settings. That is the F40 lesson for the third time: a control whose input comes
+# from the other side of the boundary is not a control. The mitigation is not to trust it
+# harder but to make it worthless as a shortcut -- the zone must hold steady for
+# TZ_ADOPT_AFTER before it counts, so an impulsive change at 22:40 does nothing to
+# tonight's 23:00 curfew, and every adoption is logged where you will see it.
+# Empty means "whatever the box's own clock says", which is byte-for-byte what every
+# call site below did before this existed. That matters for more than tidiness: hardcoding
+# a zone here changed the day boundary on any machine not set to it -- the test suite
+# included, where it fired a spurious daily reset at import. Default to unchanged.
+HOME_TZ = os.environ.get("BUDGET_HOME_TZ", "")
+TZ_ADOPT_AFTER = 4 * 3600       # a zone must be reported this consistently to be adopted
+TZ_ADOPT_COOLDOWN = 20 * 3600   # ...and at most one adoption per this long
+
 # YouTube "study mode" allowlist. Entering study mode grants a FREE session (no
 # budget charge, ignores cooldown) that the proxy LOCKS to these playlists —
 # search / home feed / Shorts / other channels bounce back to the course. To add a
@@ -545,7 +581,7 @@ def active_theme(now=None, override=None):
     now = now if now is not None else time.time()
     if override is not None:
         return (override, THEMES[override]) if override in THEMES else (None, None)
-    t = time.localtime(now)
+    t = local_acct(now)
     personal = _try(lambda: _personal_theme(t))
     if personal:
         return personal, THEMES[personal]
@@ -1400,15 +1436,139 @@ def pool_has_active_session(p):
             return True
     return False
 
+# The set of names we will accept. A closed set, checked before the value is used for
+# anything -- same rule as the endpoint allowlist: browser-supplied strings are compared
+# against what we already know, never used to construct something.
+_TZ_NAMES = frozenset(available_timezones())
+
+
+# Cached, because these are read inside per-day loops. Without it /stats, /wrapped,
+# /digest and /health each picked up one extra round trip per day rendered -- 30 on the
+# wrapped page -- and tests/test_security_review.py caught exactly that. Short TTL plus an
+# explicit bust on write, so an adoption still takes effect within seconds.
+_TZ_CACHE = {"at": -1e9, "policy": "", "acct": "", "pending": ""}
+_TZ_CACHE_TTL = 5.0
+
+
+def _tz_bust():
+    _TZ_CACHE["at"] = -1e9
+
+
+def _tz_read():
+    """All three zone keys in ONE round trip, cached. Three separate GETs inside per-day
+    loops is how this first went wrong; a single MGET behind a short TTL is the whole
+    cost, and /health is the page that notices."""
+    now = time.monotonic()
+    if now - _TZ_CACHE["at"] > _TZ_CACHE_TTL:
+        vals = _try(lambda: r.mget("tz_policy", "tz_accounting", "tz_pending"),
+                    [None, None, None]) or [None, None, None]
+        _TZ_CACHE["policy"] = vals[0] or HOME_TZ
+        _TZ_CACHE["acct"] = vals[1] or HOME_TZ
+        _TZ_CACHE["pending"] = vals[2] or ""
+        _TZ_CACHE["at"] = now
+    return _TZ_CACHE
+
+
+def policy_tz():
+    """The zone the curfew runs in. Follows you when you travel."""
+    return _tz_read()["policy"]
+
+
+def accounting_tz():
+    """The zone day keys and the daily reset run in. Lags policy_tz deliberately."""
+    return _tz_read()["acct"]
+
+
+def _lt(tzname, now=None):
+    """struct_time for `now` in `tzname`, falling back to the box's own clock.
+
+    The fallback is the important half: every caller below used to be time.localtime(),
+    so a broken or unknown zone must degrade to exactly that rather than raise inside
+    the gate render path.
+    """
+    now = time.time() if now is None else now
+    if not tzname:
+        return time.localtime(now)            # no zone configured: the box's own clock
+    try:
+        return datetime.fromtimestamp(now, ZoneInfo(tzname)).timetuple()
+    except Exception:
+        return time.localtime(now)
+
+
+def local_policy(now=None):
+    """Wall clock where you are -- for anything that decides bedtime."""
+    return _lt(policy_tz(), now)
+
+
+def local_acct(now=None):
+    """Wall clock the books are kept in -- for anything that becomes a date key."""
+    return _lt(accounting_tz(), now)
+
+
+def note_client_tz(name, now=None):
+    """Record the browser's IANA zone, adopting it once it has held for TZ_ADOPT_AFTER.
+
+    Advisory input (see the note by HOME_TZ). Returns the state for the dashboard rather
+    than raising, and never touches the accounting zone -- daily_reset owns that.
+    """
+    if not name or name not in _TZ_NAMES:
+        return None                                   # unknown or forged: ignore silently
+    now = time.time() if now is None else now
+    if name == policy_tz():
+        if _tz_read()["pending"]:
+            r.delete("tz_pending")                    # back where we started; nothing pending
+            _tz_bust()
+        return None
+
+    parts = (r.get("tz_pending") or "").split()
+    if len(parts) == 2 and parts[0] == name:
+        first_seen = float(parts[1])
+    else:
+        # A different zone (or the first sighting of this one) restarts the clock, so
+        # flapping between two zones never accumulates toward an adoption.
+        r.setex("tz_pending", 7 * 86400, f"{name} {now:.0f}")
+        _tz_bust()
+        return None
+
+    if now - first_seen < TZ_ADOPT_AFTER:
+        return None
+    if now - float(r.get("tz_adopted_at") or 0) < TZ_ADOPT_COOLDOWN:
+        return None
+
+    prev = policy_tz()
+    r.set("tz_policy", name)
+    r.set("tz_adopted_at", f"{now:.0f}")
+    _tz_bust()
+    r.delete("tz_pending")
+    r.rpush("tz_log", f"{now:.0f} {prev} {name}")
+    r.ltrim("tz_log", -50, -1)
+    print(f"[TZ] policy zone {prev} -> {name}", flush=True)
+    return name
+
+
+def tz_state(now=None):
+    """What the dashboard shows: effective zones, and any pending change with its age."""
+    now = time.time() if now is None else now
+    parts = (_tz_read()["pending"] or "").split()
+    pending = None
+    if len(parts) == 2:
+        waited = max(0, now - float(parts[1]))
+        pending = {"zone": parts[0], "waited": int(waited),
+                   "needs": TZ_ADOPT_AFTER, "ready_in": max(0, int(TZ_ADOPT_AFTER - waited))}
+    return {"policy": policy_tz(), "accounting": accounting_tz(),
+            "home": HOME_TZ, "pending": pending,
+            "travelling": policy_tz() != HOME_TZ}
+
+
 def in_night(now=None):
     # True during the full bedtime window (local time), handling the midnight wrap.
-    h = time.localtime(now).tm_hour
+    h = local_policy(now).tm_hour
     if NIGHT_START_HOUR <= NIGHT_END_HOUR:
         return NIGHT_START_HOUR <= h < NIGHT_END_HOUR
     return h >= NIGHT_START_HOUR or h < NIGHT_END_HOUR
 
 def _hours_now(now=None):
-    lt = time.localtime(now)
+    lt = local_policy(now)
     return lt.tm_hour + lt.tm_min / 60 + lt.tm_sec / 3600
 
 def phase(now=None):
@@ -1433,7 +1593,7 @@ def effective_cap(site, now=None):
 
 def secs_until_hour(target_hour, now=None):
     # Seconds from now until the next occurrence of target_hour:00 local time.
-    lt = time.localtime(now)
+    lt = local_policy(now)
     cur = lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec
     d = target_hour * 3600 - cur
     return d + 86400 if d <= 0 else d
@@ -1528,7 +1688,7 @@ def recent_cooldown_count(now):
     cutoff = now - RAPID_REPEAT_WINDOW
     count = 0
     for i in (1, 0):
-        key_day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+        key_day = time.strftime("%Y-%m-%d", local_acct(now - i * 86400))
         for raw in r.lrange(f"cooldown_events:{key_day}", 0, -1):
             try:
                 ts = float(raw.split()[0])
@@ -1555,7 +1715,7 @@ def start_cooldown(p, site, now=None):
     duration = COOLDOWN_LADDER[idx]
     r.set(f"cooldown:{p}", now)
     r.set(f"cooldown_secs:{p}", duration)
-    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    day = time.strftime("%Y-%m-%d", local_acct(now))
     r.rpush(f"cooldown_events:{day}", f"{now:.0f} {site}")
     r.expire(f"cooldown_events:{day}", HISTORY_TTL)
 
@@ -1673,7 +1833,7 @@ PASS_LINES = [
 def pass_line(now=None):
     """Rotates like everything else, seeded so a refresh can't reroll it."""
     now = now if now is not None else time.time()
-    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    day = time.strftime("%Y-%m-%d", local_acct(now))
     entries = int(_try(lambda: r.get(f"entries:{day}"), 0) or 0)
     return random.Random(f"pass:{day}:{entries}").choice(PASS_LINES)
 
@@ -1712,10 +1872,10 @@ def _moment_visits(ctx):
 def _moment_late_cooldowns(ctx, now):
     hours = []
     for i in range(7):
-        day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+        day = time.strftime("%Y-%m-%d", local_acct(now - i * 86400))
         for raw in _try(lambda d=day: r.lrange(f"cooldown_events:{d}", 0, -1), []) or []:
             try:
-                hours.append(time.localtime(float(raw.split()[0])).tm_hour)
+                hours.append(local_policy(float(raw.split()[0])).tm_hour)
             except (ValueError, IndexError):
                 continue
     if len(hours) >= 3 and sum(1 for h in hours if h >= 20) >= len(hours) - 1:
@@ -1736,7 +1896,7 @@ def _moment_worth(ctx, now):
     return None
 
 def _moment_over_usual(ctx, now):
-    today = time.strftime("%Y-%m-%d", time.localtime(now))
+    today = time.strftime("%Y-%m-%d", local_acct(now))
     sites = list(SITES)
     vals = _mget_floats(_day_keys("usage", 8, now, sites))   # 7 prior days + today
     tot = sum(vals[7 * len(sites):])
@@ -1747,7 +1907,7 @@ def _moment_over_usual(ctx, now):
 
 def _moment_quiet(ctx, now):
     for i in range(0, 14):
-        day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+        day = time.strftime("%Y-%m-%d", local_acct(now - i * 86400))
         if _try(lambda d=day: r.llen(f"cooldown_events:{d}"), 0):
             return f"{i} days since you last hit the wall." if i >= 3 else None
     return None
@@ -1772,7 +1932,7 @@ def _time_line(state, hour, seed):
 def gate_line(state, now=None, **ctx):
     """The sentence under the headline. Rotates; occasionally says something true."""
     now = now if now is not None else time.time()
-    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    day = time.strftime("%Y-%m-%d", local_acct(now))
     # A caller-supplied session number must drive the seed too, not just the moments —
     # otherwise the override is half-honoured and the whole function is untestable.
     stored = int(_try(lambda: r.get(f"entries:{day}"), 0) or 0)
@@ -1780,7 +1940,7 @@ def gate_line(state, now=None, **ctx):
     ctx["entries"] = entries
     seed = random.Random(f"gate:{day}:{entries}:{state}")
     # The hour, when the hour is the point.
-    hour = time.localtime(now).tm_hour
+    hour = local_policy(now).tm_hour
     timed = _time_line(state, hour, seed)
     if timed and seed.random() < 0.5:
         return timed
@@ -1804,7 +1964,7 @@ def reflect_decision(now=None):
     """(show_it, which_question). Skips your first entry of the day, then appears
     unpredictably — the point is that it can't be anticipated and tapped through."""
     now = now if now is not None else time.time()
-    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    day = time.strftime("%Y-%m-%d", local_acct(now))
     entries = int(r.get(f"entries:{day}") or 0)
     seed = random.Random(f"{day}:{entries}")
     question = REFLECT_QUESTIONS[seed.randrange(len(REFLECT_QUESTIONS))]
@@ -1814,7 +1974,7 @@ def log_reflection(trigger, action, now=None):
     if trigger not in REFLECT_TRIGGERS or action not in ("pass", "enter"):
         return
     now = now if now is not None else time.time()
-    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    day = time.strftime("%Y-%m-%d", local_acct(now))
     r.rpush(f"reflect:{day}", f"{now:.0f} {trigger} {action}")
     r.expire(f"reflect:{day}", HISTORY_TTL)
 
@@ -1911,7 +2071,7 @@ def log_worth(verdict, now=None):
     parts = pending.split()
     trigger = parts[2] if len(parts) > 2 else "-"
     now = now if now is not None else time.time()
-    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    day = time.strftime("%Y-%m-%d", local_acct(now))
     r.rpush(f"worth:{day}", f"{now:.0f} {trigger} {verdict}")
     r.expire(f"worth:{day}", HISTORY_TTL)
     return True
@@ -1945,7 +2105,7 @@ def log_soft_pause(site, now=None):
     (recent_soft_pause_count reads this log). Each entry "<epoch> <site>"; per-day key,
     self-prunes after ~100 days."""
     now = now if now is not None else time.time()
-    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    day = time.strftime("%Y-%m-%d", local_acct(now))
     r.rpush(f"soft_pauses:{day}", f"{now:.0f} {site}")
     r.expire(f"soft_pauses:{day}", HISTORY_TTL)
 
@@ -1955,7 +2115,7 @@ def recent_soft_pause_count(site, now):
     cutoff = now - CLUSTER_WINDOW
     count = 0
     for i in (1, 0):
-        day = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+        day = time.strftime("%Y-%m-%d", local_acct(now - i * 86400))
         for raw in r.lrange(f"soft_pauses:{day}", 0, -1):
             parts = raw.split()
             try:
@@ -2229,6 +2389,10 @@ def charged_gap(now, last):
 @app.route('/heartbeat', methods=['POST'])
 def heartbeat():
     site = resolve_site(request.args.get("site"))
+    # Rides the heartbeat rather than taking a ninth gated-origin endpoint, which the
+    # budget in CLAUDE.md does not have. Advisory and rate-limited inside note_client_tz;
+    # an unknown or forged name is dropped without comment.
+    _try(lambda: note_client_tz(request.args.get("tz", "")), None)
     token = r.get(f"active_token:{site}")
     if not token:
         return jsonify({"status": "blocked"}), 403
@@ -2467,7 +2631,7 @@ def wrapped_data(now=None):
     vals = _mget_floats(_day_keys("usage", 365, now, sites))       # one MGET per 512 keys
     days, per_site, daily = [], {s: 0.0 for s in SITES}, []
     for i in range(365):
-        key_day = time.strftime("%Y-%m-%d", time.localtime(now - (364 - i) * 86400))
+        key_day = time.strftime("%Y-%m-%d", local_acct(now - (364 - i) * 86400))
         row = vals[i * len(sites):(i + 1) * len(sites)]
         for site, v in zip(sites, row):
             per_site[site] += v
@@ -2665,7 +2829,7 @@ def personal_note(now=None):
         return "Happy birthday. Spend today somewhere that isn't a feed."
     if name == "anniversary":
         first = _try(lambda: r.get("first_run")) or ""
-        yrs = max(1, time.localtime(now).tm_year - int(first[:4] or 0)) if first[:4].isdigit() else 1
+        yrs = max(1, local_acct(now).tm_year - int(first[:4] or 0)) if first[:4].isdigit() else 1
         return (f"{yrs} year{'' if yrs == 1 else 's'} since you set this box up. "
                 f"Whatever it has saved you, it saved quietly.")
     return ""
@@ -2689,7 +2853,7 @@ def digest():
     recent = _mget_floats(_day_keys("usage", 14, now, sites))      # both weeks, one go
     days_secs, per_site = [], {s: 0.0 for s in SITES}
     for i in range(7, 14):                                          # last 7 days
-        key_day = time.strftime("%Y-%m-%d", time.localtime(now - (13 - i) * 86400))
+        key_day = time.strftime("%Y-%m-%d", local_acct(now - (13 - i) * 86400))
         row = recent[i * len(sites):(i + 1) * len(sites)]
         for s, v in zip(sites, row):
             per_site[s] += v
@@ -2721,8 +2885,8 @@ def digest():
                 key=lambda x: x["pct"], default=None)
 
     d = {
-        "range": time.strftime("%b %-d", time.localtime(now - 6 * 86400)) + " – "
-                 + time.strftime("%b %-d", time.localtime(now)),
+        "range": time.strftime("%b %-d", local_acct(now - 6 * 86400)) + " – "
+                 + time.strftime("%b %-d", local_acct(now)),
         "total_min": int(total // 60), "per_day_min": int(total // 60 // 7),
         "delta_pct": None if prior <= 0 else round((total - prior) / prior * 100),
         "delta_abs": 0 if prior <= 0 else abs(round((total - prior) / prior * 100)),
@@ -2914,7 +3078,7 @@ def stats():
     days = []
     totals = []
     for i in range(13, -1, -1):
-        t = time.localtime(now - i * 86400)
+        t = local_acct(now - i * 86400)
         key_day = time.strftime("%Y-%m-%d", t)
         row = vals[(13 - i) * len(order):(14 - i) * len(order)]
         secs = dict(zip(order, row))
@@ -2965,11 +3129,11 @@ def stats():
 
     # Study mode (free, unbudgeted) is logged separately — this is the one metric the
     # whole thing is FOR, so surface it. Today + this-week's foreground study minutes.
-    today_key = time.strftime("%Y-%m-%d", time.localtime(now))
+    today_key = time.strftime("%Y-%m-%d", local_acct(now))
 
     today_ts = sorted(t for t in cd_events
-                      if time.strftime("%Y-%m-%d", time.localtime(t)) == today_key)
-    cd_today_times = [time.strftime("%-I:%M%p", time.localtime(t)).lower() for t in today_ts]
+                      if time.strftime("%Y-%m-%d", local_acct(t)) == today_key)
+    cd_today_times = [time.strftime("%-I:%M%p", local_policy(t)).lower() for t in today_ts]
     cd_today_rapid = sum(1 for a, b in zip(today_ts, today_ts[1:])
                          if b - a <= RAPID_REPEAT_WINDOW)
     cd = {
@@ -3007,9 +3171,9 @@ def reset_day(now=None):
     """Which day's reset the current moment belongs to. Before NIGHT_END_HOUR you are
     still inside yesterday's day, so the reset that matters is yesterday's."""
     now = now if now is not None else time.time()
-    lt = time.localtime(now)
+    lt = local_acct(now)
     if lt.tm_hour < NIGHT_END_HOUR:
-        return time.strftime("%Y-%m-%d", time.localtime(now - 86400))
+        return time.strftime("%Y-%m-%d", local_acct(now - 86400))
     return time.strftime("%Y-%m-%d", lt)
 
 def catch_up_reset(now=None):
@@ -3087,8 +3251,8 @@ def shadow_comparison(days=7, now=None):
         t += 3600
     hours_list = hours_list[-days * 24:]
 
-    stamps = [(time.strftime("%Y-%m-%d", time.localtime(t)),
-               time.strftime("%H", time.localtime(t))) for t in hours_list]
+    stamps = [(time.strftime("%Y-%m-%d", local_acct(t)),
+               time.strftime("%H", local_acct(t))) for t in hours_list]
     sites = list(SITES)
     hb_all = _mget_floats([f"usage_hour:{d}:{h}:{s}" for s in sites for d, h in stamps])
     sh_all = _mget_floats([f"shadow_hour:{d}:{h}:{s}" for s in sites for d, h in stamps])
@@ -3126,6 +3290,21 @@ def daily_reset(now=None):
         r.delete(f"cooldown_secs:{p}")
         r.delete(f"last_heartbeat:{p}")
         r.delete(f"refilled_through:{p}")
+    # The books follow you here, and only here.
+    #
+    # The curfew moved to your new zone as soon as it was adopted, but the accounting day
+    # could not: reset_day() keys off the local hour, so changing it mid-day makes
+    # last_reset disagree with the present, and catch_up_reset() answers a disagreement by
+    # deleting spent:{pool}. Flying west would have handed out a fresh budget on landing
+    # and a second one at 07:00 local. Moving it HERE, at the end of a reset that has just
+    # happened, is the one moment where a new day boundary costs nothing -- the counters
+    # are already zero. last_reset is then stamped in the NEW zone, so the very next
+    # catch_up_reset() agrees with it and nothing fires twice.
+    if accounting_tz() != policy_tz():
+        prev = accounting_tz()
+        r.set("tz_accounting", policy_tz())
+        _tz_bust()
+        print(f"[TZ] accounting zone {prev or 'box clock'} -> {policy_tz()}", flush=True)
     r.set("last_reset", reset_day(now))
     print("[RESET] Daily budget reset complete")
 
@@ -3341,7 +3520,7 @@ def _day_keys(prefix, days, now, suffixes=None):
     """['usage:2026-08-04:reddit', ...] for `days` days back, newest last."""
     out = []
     for i in range(days - 1, -1, -1):
-        d = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+        d = time.strftime("%Y-%m-%d", local_acct(now - i * 86400))
         if suffixes is None:
             out.append(f"{prefix}:{d}")
         else:
@@ -3393,7 +3572,7 @@ def _meter_totals(now, hours=ENFORCEMENT_WINDOW_HOURS):
     """
     keys_h, keys_s = [], []
     for i in range(hours):
-        t = time.localtime(now - i * 3600)
+        t = local_acct(now - i * 3600)
         day, hour = time.strftime("%Y-%m-%d", t), time.strftime("%H", t)
         for site in SITES:
             keys_h.append(f"usage_hour:{day}:{hour}:{site}")
@@ -3816,7 +3995,7 @@ def boot_watch():
             # holds the card; a sent notification cannot be un-sent.
             _try(lambda: send_alert(
                 f"cooldown: unexplained reboot at "
-                f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(now))}"))
+                f"{time.strftime('%Y-%m-%d %H:%M', local_policy(now))}"))
     return r.get("unacked_boot")
 
 def boot_history(now=None, limit=5):
@@ -3835,7 +4014,7 @@ def boot_history(now=None, limit=5):
         except (TypeError, ValueError):
             continue
         out.append({"ts": when,
-                    "when": time.strftime("%-d %b, %-I:%M %p", time.localtime(when)),
+                    "when": time.strftime("%-d %b, %-I:%M %p", local_policy(when)),
                     "ago": _short_ago(now - when)})
     return out
 
@@ -3858,12 +4037,12 @@ def _when(ts, now=None):
         return "overdue"
     if d < 5400:
         return f"in {max(1, int(d // 60))} min"
-    hhmm = time.strftime("%-I:%M %p", time.localtime(ts)).lower()
-    same_day = time.strftime("%Y-%m-%d", time.localtime(ts)) == time.strftime("%Y-%m-%d", time.localtime(now))
+    hhmm = time.strftime("%-I:%M %p", local_policy(ts)).lower()
+    same_day = time.strftime("%Y-%m-%d", local_policy(ts)) == time.strftime("%Y-%m-%d", local_policy(now))
     if same_day:
         return f"today at {hhmm}"
     if d < 36 * 3600:
-        return f"tonight at {hhmm}" if time.localtime(ts).tm_hour < 6 else f"tomorrow at {hhmm}"
+        return f"tonight at {hhmm}" if local_policy(ts).tm_hour < 6 else f"tomorrow at {hhmm}"
     return f"in {int(d // 86400)} days"
 
 
@@ -4435,6 +4614,21 @@ HEALTH_PAGE = """
           {%- else %} &middot; <b>no deploy manifest &mdash; cannot tell what is running</b>{% endif -%}
         </span>
       </div>
+      <!-- Where the curfew thinks you are. Rendered only when it is NOT the box's own
+           clock, so at home this row does not exist and cannot become wallpaper. -->
+      {% if tz.get('travelling') or tz.get('pending') %}
+      <div class="row">
+        <span class="k">Location</span>
+        <span class="v">
+          {%- if tz.travelling %}curfew on <code>{{ tz.policy }}</code>
+            {%- if tz.accounting != tz.policy %} &middot; books still on
+              <code>{{ tz.accounting or 'box clock' }}</code> until the next daily reset{% endif -%}
+          {%- else %}curfew on the box's own clock{% endif -%}
+          {%- if tz.pending %} &middot; <b>{{ tz.pending.zone }}</b> reported, adopting in
+            {{ (tz.pending.ready_in // 60) }} min{% endif -%}
+        </span>
+      </div>
+      {% endif %}
 
       <!-- Backup gets its own row: "it ran" and "it restores" are different claims. -->
       {% if a.get('backup_age', -1) >= 0 or a.get('backup_restores', -1) >= 0 %}
@@ -4558,9 +4752,10 @@ def health():
     # Cards stay neutral until high, then warn — but the RAM chip always glows (cool too).
     card = lambda p: "" if p < 70 else ("warm" if p < 85 else "hot")
     ts = _try(boot_watch)
-    boot_alert = time.strftime("%a %-d %b, %-I:%M %p", time.localtime(float(ts))) if ts else None
+    boot_alert = time.strftime("%a %-d %b, %-I:%M %p", local_policy(float(ts))) if ts else None
     return render_page(HEALTH_PAGE,
         d=d, boot_alert=boot_alert, boot_history=_try(boot_history, []),
+        tz=_try(tz_state, {}) or {},
         cpu_lines=_cpu_lines(d["cpu"].get("hist", [])[-CPU_CARD_SAMPLES:]),
         cpu_colors=CPU_LINE_COLORS,
         card_min=max(1, round(CPU_CARD_SAMPLES * 4 / 60)),

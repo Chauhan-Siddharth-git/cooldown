@@ -26,8 +26,14 @@ def rdb(monkeypatch):
         pytest.skip("needs a local redis (tests use db 15)")
     r.flushdb()
     monkeypatch.setattr(budget, "r", r)
+    # The timezone lookup is cached in a module-level dict with a 5s TTL, which is right
+    # in production and wrong across tests: a test that adopts America/Los_Angeles left
+    # every test running in the next five seconds on that zone, which surfaced as a flat
+    # 4-hour offset in the phase and stats suites. Bust it at both ends.
+    budget._tz_bust()
     yield r
     r.flushdb()
+    budget._tz_bust()
 
 
 @pytest.fixture()

@@ -477,3 +477,93 @@ def test_the_two_timing_constants_cannot_drift_apart(client):
     closes it for any ratio, but the relationship is still the thing a future edit could
     break, so it is asserted rather than remembered."""
     assert budget.SESSION_IDLE_TTL >= budget.HEARTBEAT_MAX_GAP
+
+
+# --- travelling: the curfew follows you, the books do not (yet) -----------------------
+
+from datetime import datetime as _dt
+from zoneinfo import ZoneInfo as _Z
+
+LA, NY = "America/Los_Angeles", "America/New_York"
+
+
+def _epoch(zone, y, m, d, hh, mm=0):
+    return _dt(y, m, d, hh, mm, tzinfo=_Z(zone)).timestamp()
+
+
+def test_zone_is_adopted_only_after_it_holds(rdb):
+    t0 = _epoch(NY, 2026, 9, 15, 12)
+    assert budget.note_client_tz(LA, t0) is None            # first sighting: pending only
+    assert budget.policy_tz() == budget.HOME_TZ
+    # Still short of the window.
+    assert budget.note_client_tz(LA, t0 + budget.TZ_ADOPT_AFTER - 60) is None
+    assert budget.policy_tz() == budget.HOME_TZ
+    # And past it.
+    assert budget.note_client_tz(LA, t0 + budget.TZ_ADOPT_AFTER + 1) == LA
+    assert budget.policy_tz() == LA
+
+
+def test_flapping_between_zones_never_accumulates(rdb):
+    """The impulsive case: a zone that keeps changing must never age into an adoption."""
+    t0 = _epoch(NY, 2026, 9, 15, 12)
+    for i in range(12):
+        budget.note_client_tz(LA if i % 2 else "Asia/Tokyo", t0 + i * 3600)
+    assert budget.policy_tz() == budget.HOME_TZ
+
+
+def test_a_forged_or_unknown_zone_is_dropped(rdb):
+    t0 = _epoch(NY, 2026, 9, 15, 12)
+    for bad in ("", "Mars/Olympus", "../../etc/passwd", "UTC+25", None):
+        assert budget.note_client_tz(bad, t0) is None
+    assert budget.policy_tz() == budget.HOME_TZ
+    assert not rdb.get("tz_pending")
+
+
+def test_one_adoption_per_cooldown(rdb):
+    t0 = _epoch(NY, 2026, 9, 15, 12)
+    budget.note_client_tz(LA, t0)
+    assert budget.note_client_tz(LA, t0 + budget.TZ_ADOPT_AFTER + 1) == LA
+    t1 = t0 + budget.TZ_ADOPT_AFTER + 2
+    budget.note_client_tz("Asia/Tokyo", t1)
+    assert budget.note_client_tz("Asia/Tokyo", t1 + budget.TZ_ADOPT_AFTER + 1) is None
+    assert budget.policy_tz() == LA
+
+
+def test_curfew_follows_the_adopted_zone(rdb, monkeypatch):
+    """7pm in California is 10pm in Boston. The box's clock says wind-down; your body
+    says early evening, and your body is the one going to bed."""
+    when = _epoch(LA, 2026, 9, 15, 19, 30)                   # 19:30 PDT == 22:30 EDT
+    monkeypatch.setattr(budget, "HOME_TZ", NY)
+    budget._tz_bust()
+    assert budget.phase(when) == "winddown"                  # the bug, as reported
+    rdb.set("tz_policy", LA); budget._tz_bust()
+    assert budget.phase(when) == "day"                       # ...and fixed
+    assert not budget.in_night(when)
+
+
+def test_adopting_a_zone_does_not_hand_out_a_fresh_budget(rdb, monkeypatch):
+    """The trap. reset_day() keys off the local hour and catch_up_reset() answers a
+    disagreement by DELETING spent:{pool}. If the accounting zone moved with the policy
+    zone, flying west would pay out a full budget on landing and another at 07:00 local.
+    """
+    monkeypatch.setattr(budget, "HOME_TZ", NY)
+    budget._tz_bust()
+    when = _epoch(NY, 2026, 9, 15, 8)                        # 08:00 EDT == 05:00 PDT
+    rdb.set("last_reset", budget.reset_day(when))
+    rdb.set("spent:main", 900)
+
+    rdb.set("tz_policy", LA); budget._tz_bust()              # adopted mid-morning
+    assert budget.accounting_tz() == NY, "the books must not move on adoption"
+    assert budget.reset_day(when) == rdb.get("last_reset")
+    assert budget.catch_up_reset(when) is False, "a reset fired on a timezone change"
+    assert float(rdb.get("spent:main")) == 900
+
+
+def test_the_books_move_once_at_the_next_reset_and_do_not_re_fire(rdb, monkeypatch):
+    monkeypatch.setattr(budget, "HOME_TZ", NY)
+    rdb.set("tz_policy", LA); budget._tz_bust()
+    when = _epoch(LA, 2026, 9, 16, 7, 5)                     # just past 07:00 PDT
+    budget.daily_reset(when)
+    assert budget.accounting_tz() == LA                      # moved, exactly once
+    assert rdb.get("last_reset") == budget.reset_day(when)   # re-stamped in the NEW zone
+    assert budget.catch_up_reset(when) is False              # so nothing fires twice

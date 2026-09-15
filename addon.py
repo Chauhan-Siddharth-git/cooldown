@@ -185,7 +185,11 @@ HEARTBEAT_SCRIPT = """
 
   function ping() {
     if (document.visibilityState !== "visible") return;
-    fetch("/budget/heartbeat?site=" + SITE + "&_=" + Date.now(), { method: "POST", cache: "no-store", keepalive: true })
+    // The phone knows what zone it is in and the Pi does not -- its clock never leaves
+    // Boston. Sent every ping because it costs nothing and the server ignores repeats.
+    var tz = "";
+    try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (e) {}
+    fetch("/budget/heartbeat?site=" + SITE + "&tz=" + encodeURIComponent(tz) + "&_=" + Date.now(), { method: "POST", cache: "no-store", keepalive: true })
       .then(function (res) {
         if (res.status === 403) { window.location.reload(); return null; }
         return res.json();

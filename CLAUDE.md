@@ -29,6 +29,18 @@ usually need checking against both.
 - **New listener** → bind loopback + `tailscale0`. Never `0.0.0.0`; `COOLDOWN_LISTEN` is
   the Docker-only override, safe there only because compose publishes to host loopback.
 - **Comparing a hostname** → `addon.host_matches()`. Nowhere else.
+- **Reading the local clock** → `local_policy()` if it decides *bedtime* (an hour-of-day
+  compared against `NIGHT_START_HOUR`/`NIGHT_END_HOUR`), `local_acct()` if it becomes a
+  *date key* (`usage:`/`entries:`/`reflect:`/`worth:{day}`, and `reset_day`). Never bare
+  `time.localtime()`. The two zones differ while you are travelling, and they differ on
+  purpose: the curfew follows your body within hours of landing, the books follow one
+  clean transition later, inside `daily_reset()`. Move the books early and you mint
+  budget — `reset_day()` keys off the local hour and `catch_up_reset()` answers a
+  disagreement by deleting `spent:{pool}`, so an EDT→PDT switch at 08:00 pays out a full
+  budget on landing and another at 07:00 local. The zone itself arrives on the heartbeat
+  and is therefore **advisory**: it is checked against a closed set, must hold for
+  `TZ_ADOPT_AFTER` before it counts, is rate-limited to one adoption per
+  `TZ_ADOPT_COOLDOWN`, and every change is logged and shown on `/health`.
 - **New `req.get`/`req.post` in `addon.py`** → the path must be validated against the
   closed endpoint set *before* it reaches a URL. Never concatenate.
 - **Touching the gate template** → it is readable by any script on the gated site.

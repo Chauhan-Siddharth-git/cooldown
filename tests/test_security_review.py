@@ -339,12 +339,40 @@ def test_reset_day_belongs_to_yesterday_before_the_reset_hour(rdb):
 
 def test_importing_app_does_not_reset_anything(rdb):
     """catch_up_reset DELETES budget state, so it must live in __main__, not at module
-    scope where `import app` (tests, backup tooling, a REPL) would trigger it."""
+    scope where `import app` (tests, backup tooling, a REPL) would trigger it.
+
+    Checked against the parse tree, not the source text. The text version matched the
+    name anywhere it appeared -- including inside a comment explaining what the function
+    does, which is how it started failing on a change that added no call at all. It also
+    missed `catch_up_reset( )` and `catch_up_reset(now)`, so it was simultaneously too
+    strict and too loose.
+    """
+    import ast
     src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                           "app.py")).read()
-    body, _, main = src.partition("if __name__ == '__main__':")
-    assert "catch_up_reset()" not in body, "catch_up_reset is called at import time"
-    assert "catch_up_reset()" in main
+                            "app.py")).read()
+    tree = ast.parse(src)
+
+    def calls_in(nodes):
+        found = []
+        for n in nodes:
+            for sub in ast.walk(n):
+                if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+                        and sub.func.id == "catch_up_reset"):
+                    found.append(sub.lineno)
+        return found
+
+    guarded, unguarded = [], []
+    for node in tree.body:
+        is_main = (isinstance(node, ast.If) and isinstance(node.test, ast.Compare)
+                   and isinstance(node.test.left, ast.Name)
+                   and node.test.left.id == "__name__")
+        # Inside a def is fine -- it only runs when something calls it.
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        (guarded if is_main else unguarded).extend(calls_in([node]))
+
+    assert not unguarded, f"catch_up_reset called at import time, line(s) {unguarded}"
+    assert guarded, "catch_up_reset is no longer called from __main__ at all"
 
 
 # ---------- 10. swallowed errors are counted, not silent ----------
@@ -1571,8 +1599,14 @@ def _count_roundtrips(client, page):
     return calls["n"]
 
 
+# /health went 15 -> 16 when the page learned to say where you are: tz_state() reads the
+# three timezone keys. That is ONE mget behind a 5s cache, not a per-day read, which is
+# the thing this ceiling exists to catch -- and it only shows up at all because the rdb
+# fixture now busts that cache, so the cold path is measured every time instead of
+# whenever the previous test happened to land within five seconds. A constant +1 is the
+# honest cost of the feature; a ceiling that grows with `days` would not be.
 @pytest.mark.parametrize("page,ceiling", [
-    ("/wrapped", 30), ("/stats", 25), ("/digest", 20), ("/health", 15),
+    ("/wrapped", 30), ("/stats", 25), ("/digest", 20), ("/health", 16),
 ])
 def test_history_pages_do_not_read_one_key_per_day(rdb, client, page, ceiling):
     """/wrapped walked a year one key at a time: 2,924 sequential round-trips for one
