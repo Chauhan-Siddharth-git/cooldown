@@ -472,10 +472,16 @@ def test_the_box_origin_carries_the_headers_it_earned(rdb, monkeypatch):
     The proxy keeps nosniff and no-store on the gated origin, where they were earned, and
     the box origin is not required to mirror it.
     """
+    # same-origin, not no-referrer. Both withhold the Referer entirely on a cross-origin
+    # request, which is the leak that earned this header; no-referrer additionally
+    # suppressed it on the box's requests to ITSELF, which bought nothing and cost the
+    # dashboard's dismiss button on iOS -- WebKit derives the Origin header from the
+    # referrer policy and sent `Origin: null`, which the CSRF guard refused. Narrowing to
+    # same-origin is the fix, so the value is pinned here rather than left to drift back.
     EARNED = {
         "X-Frame-Options": "DENY",
         "Content-Security-Policy": "frame-ancestors 'none'",
-        "Referrer-Policy": "no-referrer",
+        "Referrer-Policy": "same-origin",
     }
     on_the_box = box("/stats")
     assert EARNED.items(), ("EARNED.items() is empty, so the loop below would assert nothing and this test would pass having checked nothing")

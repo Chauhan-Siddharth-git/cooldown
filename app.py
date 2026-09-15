@@ -155,6 +155,22 @@ def _refuse_cross_origin_writes():
 # address to reddit.com in the Referer. HTTP → HTTPS is an upgrade, not a downgrade, so
 # the browser default did not withhold it.
 #
+# It says "same-origin", not "no-referrer", and the difference is a bug this header caused.
+# WebKit derives the Origin HEADER from the referrer policy: under no-referrer, Safari
+# sends `Origin: null` even on a same-origin form POST. The box origin is plain HTTP, and
+# Safari withholds Sec-Fetch-* on insecure origins, so _cross_origin_to_guarded_route()
+# fell through to the Origin branch, read null, and refused the dashboard's own
+# "that was me" button:
+#
+#   [CSRF] refused POST /boot-ack: Origin='null' vs Host='<box>:5000'
+#   (ua=Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X))
+#
+# same-origin keeps the entire property that earned the header -- a cross-origin request
+# still sends NO Referer, so the tailnet address still never reaches reddit.com -- and
+# stops suppressing the referrer on requests the box makes to itself, which it never had
+# a reason to do. The gated origin keeps no-referrer: it is HTTPS, Safari sends
+# Sec-Fetch-Site there, and its forms were never affected.
+#
 # The CSP here carries frame-ancestors and NOTHING else on purpose. These pages are built
 # from inline <script> and <style>; adding default-src or script-src would break every one
 # of them, and framing is the only thing this header is here to stop.
@@ -167,7 +183,7 @@ def _refuse_cross_origin_writes():
 SECURITY_HEADERS = {
     "X-Frame-Options": "DENY",
     "Content-Security-Policy": "frame-ancestors 'none'",
-    "Referrer-Policy": "no-referrer",
+    "Referrer-Policy": "same-origin",
 }
 
 
