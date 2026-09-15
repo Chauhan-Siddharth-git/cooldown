@@ -21,7 +21,7 @@ apscheduler==3.11.2
 mitmproxy>=11.0.2,<13
 # Provides zoneinfo data so a local TZ (for the midnight daily_reset) resolves
 # inside the slim image without installing system tzdata.
-tzdata==2024.1
+tzdata==2026.4
 
 # --- security floors, established by tools/check-deps.py against OSV ---------------
 # cryptography wheels below 48.0.1 bundle an OpenSSL vulnerable to CVE-2026-45447

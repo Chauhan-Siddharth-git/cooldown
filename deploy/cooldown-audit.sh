@@ -233,6 +233,41 @@ boot_pct="$(df --output=pcent /boot/firmware 2>/dev/null | tail -1 | tr -dc '0-9
 [ "${root_pct:-0}" -lt 85 ] || note "root filesystem ${root_pct}% full"
 [ "${boot_pct:-0}" -lt 85 ] || note "boot partition ${boot_pct}% full -- old kernels may not be getting removed"
 
+# --- are the features that record things still recording? -------------------------
+# Every check above asks whether a FILE matches. This asks whether a BEHAVIOUR still
+# happens, which is the class nothing here covered: the reflection prompt recorded
+# nothing from 2026-08-27 to 09-11 while entries ran at 11-14 a day (a CSS rule had
+# un-hidden the Continue button), and the worth verdict recorded nothing for the five
+# days after that while cooldowns fired (three blocked screens never asked). Both were
+# found by a person noticing something felt off. A feature that has stopped recording
+# looks exactly like one nobody used -- unless it is compared against the thing that
+# proves it WAS used. Each pair below is that comparison.
+#
+# Day keys are read in the accounting zone (tz_accounting), not the box's: while
+# travelling the two differ, and looking yesterday up under the wrong date would
+# manufacture the very "nothing recorded" this exists to detect. An EMPTY TZ means UTC
+# to GNU date, so the variable is only applied when set. Non-digits are stripped
+# before arithmetic so a redis error reads as 0 -- toward the alarm, as elsewhere here.
+acct_tz="$(redis-cli --raw GET tz_accounting 2>/dev/null)"
+dkey() { if [ -n "$acct_tz" ]; then TZ="$acct_tz" date -d "$1 days ago" +%F; else date -d "$1 days ago" +%F; fi; }
+_num() { local v="${1//[^0-9]/}"; echo "${v:-0}"; }
+sum_llen() { local t=0 i; for i in $(seq 0 $(( $2 - 1 ))); do t=$(( t + $(_num "$(redis-cli --raw LLEN "$1:$(dkey "$i")" 2>/dev/null)") )); done; echo "$t"; }
+sum_get()  { local t=0 i; for i in $(seq 0 $(( $2 - 1 ))); do t=$(( t + $(_num "$(redis-cli --raw GET  "$1:$(dkey "$i")" 2>/dev/null)") )); done; echo "$t"; }
+
+# Reflection: shown on ~70% of entries after the first each day, so nine entries over
+# three days should have produced several answers. Zero is a broken prompt, not a quiet
+# week -- a quiet week has zero entries too, and is not flagged.
+entries3="$(sum_get entries 3)"; reflect3="$(sum_llen reflect 3)"
+[ "$entries3" -lt 9 ] || [ "$reflect3" -gt 0 ] || \
+    note "reflection prompt recorded nothing in 3 days across $entries3 entries -- not being asked, or not answerable"
+
+# Worth verdict: asked on every screen you land on because a session ended, which a
+# cooldown always is. Three cooldowns with no verdict means the question is not reaching
+# a screen -- or reaching one that cannot submit it.
+cooldowns5="$(sum_llen cooldown_events 5)"; worth5="$(sum_llen worth 5)"
+[ "$cooldowns5" -lt 3 ] || [ "$worth5" -gt 0 ] || \
+    note "no worth verdict in 5 days across $cooldowns5 cooldowns -- the question is not reaching a screen you land on"
+
 # --- does the RUNNING BOX match what the repo claims? ------------------------------
 # The category this file was missing. Every check above asks "is the box in a safe
 # state"; these ask "is the box the thing we think we deployed". That is a different
@@ -415,6 +450,8 @@ printf '"deployed_rev":"%s","deploy_drift":%d,"manifest_files":%d,"ca_constraine
        "$([ "${ca_nc:-0}" -gt 0 ] && echo true || echo false)"
 printf '"missing_exec":%d,"not_enabled":%d,"dead_timers":%d,"fw_policy6":"%s",' \
        "${missing_exec:-0}" "${not_enabled:-0}" "${dead_timers:-0}" "${fw_policy6:-unknown}"
+printf '"entries3":%d,"reflect3":%d,"cooldowns5":%d,"worth5":%d,' \
+       "${entries3:-0}" "${reflect3:-0}" "${cooldowns5:-0}" "${worth5:-0}"
 printf '"tampered_files":%d,"tampered_all":%d,"backup_restores":%d,"full_checked":%d,"findings":%d,"checked":%d}\n' \
        "${tampered:--1}" "${tampered_all:--1}" "${backup_restores:--1}" "${full_checked:-0}" "${#findings[@]}" "$(date +%s)"
 } > "$TMP"
