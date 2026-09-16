@@ -261,6 +261,37 @@ entries3="$(sum_get entries 3)"; reflect3="$(sum_llen reflect 3)"
 [ "$entries3" -lt 9 ] || [ "$reflect3" -gt 0 ] || \
     note "reflection prompt recorded nothing in 3 days across $entries3 entries -- not being asked, or not answerable"
 
+# The dead-man's switch. Unlike everything else on this list it cannot fail silently --
+# if the pings stop, the external service raises the alarm, so sabotage and triggering are
+# the same event. What CAN fail silently is the switch never having been set up, or the
+# timer being disabled while the state file keeps an old "ok" from last week. Both look
+# like health from here, so both are checked.
+dm_state="$(cat /var/lib/cooldown-deadman.state 2>/dev/null)"
+dm_ok=false
+dm_age=-1
+if [ -z "$dm_state" ]; then
+    note "the dead-man's switch has never run -- nothing off this box would notice it going quiet"
+elif [ "${dm_state#* }" = "not-configured" ]; then
+    note "the dead-man's switch has no URL configured -- see deploy/cooldown-deadman.service"
+elif [ "${dm_state#* }" != "ok" ]; then
+    note "the dead-man's switch ping is FAILING (${dm_state#* }) -- the far end will fire, which is correct, but fix the cause"
+else
+    dm_ts="$(_num "${dm_state%% *}")"
+    if [ "$dm_ts" -le 0 ]; then
+        note "the dead-man's switch state file is unreadable ('$dm_state') -- unknown, not fine"
+    else
+        dm_age=$(( $(date +%s) - dm_ts ))
+        # It runs every 5 minutes. Twenty means it has stopped running, which the far end
+        # is about to notice anyway -- but hearing it here first is the difference between
+        # fixing a timer and being woken by an alarm.
+        if [ "$dm_age" -gt 1200 ]; then
+            note "the dead-man's switch last pinged $(( dm_age / 60 )) minutes ago -- the timer has stopped"
+        else
+            dm_ok=true
+        fi
+    fi
+fi
+
 # The off-box alert channel. Distinguishes BROKEN from merely UNPROVEN, because they are
 # different problems: the first is knowable now, the second only means nothing has needed
 # saying. Reporting the second as the first is how a check becomes noise.
@@ -514,6 +545,7 @@ printf '"missing_exec":%d,"not_enabled":%d,"dead_timers":%d,"fw_policy6":"%s",' 
 printf '"entries3":%d,"reflect3":%d,"cooldowns5":%d,"worth5":%d,' \
        "${entries3:-0}" "${reflect3:-0}" "${cooldowns5:-0}" "${worth5:-0}"
 printf '"alert_ok":%s,"alert_age_days":%d,' "${alert_ok:-false}" "${alert_age:--1}"
+printf '"deadman_ok":%s,"deadman_age":%d,' "${dm_ok:-false}" "${dm_age:--1}"
 printf '"tampered_files":%d,"tampered_all":%d,"backup_restores":%d,"full_checked":%d,"findings":%d,"checked":%d}\n' \
        "${tampered:--1}" "${tampered_all:--1}" "${backup_restores:--1}" "${full_checked:-0}" "${#findings[@]}" "$(date +%s)"
 } > "$TMP"

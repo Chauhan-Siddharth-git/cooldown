@@ -1,0 +1,16 @@
+[Unit]
+Description=Budget: dead-man's-switch ping every 5 minutes
+
+[Timer]
+# Soon after boot, so a restart re-establishes the heartbeat quickly rather than leaving a
+# gap the far end could read as continued absence.
+OnBootSec=90s
+OnUnitActiveSec=5min
+# Persistent=false on purpose. A catch-up ping after downtime would assert the box was
+# alive during a window in which it was not -- which is precisely the window this exists
+# to record. The switch must never retroactively vouch for a gap.
+Persistent=false
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

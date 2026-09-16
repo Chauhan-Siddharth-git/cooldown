@@ -1,0 +1,17 @@
+[Unit]
+Description=Budget: ping the external dead-man's-switch
+# Not Requires= on anything. This must ping even when the app or the proxy is down --
+# a box that is up but broken is a different fact from a box that is gone, and conflating
+# them would make the switch fire for the wrong reason.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# The URL lives in a drop-in at 0600, never in the repo:
+#   /etc/systemd/system/cooldown-deadman.service.d/url.conf
+#     [Service]
+#     Environment=COOLDOWN_DEADMAN_URL=https://hc-ping.com/<uuid>
+# deploy.sh installs this unit and never touches .d/, so a deploy cannot wipe it --
+# the same arrangement the alert URL already uses.
+ExecStart=/usr/local/sbin/cooldown-deadman.sh

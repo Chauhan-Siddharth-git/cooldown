@@ -549,3 +549,40 @@ def test_entry_screens_still_do_not_ask(client, rdb, day, monkeypatch):
     html = gate(client, "reddit")
     assert "Enter" in html
     assert "Was it worth it?" not in html
+
+
+def test_the_deadman_row_appears_only_when_it_is_not_pinging(client, rdb, monkeypatch):
+    """The switch cannot fail silently at the far end -- stopped pings ARE the alarm --
+    but it can fail to have been set up at all, or its timer can stop, and both of those
+    look like calm from here. Those are the cases the row exists for.
+
+    It must also stay hidden when healthy: a row that is always present is a row you stop
+    reading, which is how the reflection prompt became a rubber stamp.
+    """
+    import app as b
+
+    def health_with(audit):
+        monkeypatch.setattr(b, "_audit", lambda: audit)
+        # collect_health() caches its payload for 2s so the 4s page poll does not spawn a
+        # handful of systemctl subprocesses per hit. Three renders inside one test land
+        # well inside that window, so without this every assertion below would be made
+        # against the FIRST audit dict -- the test would pass or fail for reasons having
+        # nothing to do with the template.
+        b._HEALTH_CACHE.clear()
+        return client.get("/health").data.decode()
+
+    base = {"manifest_files": 12, "deployed_rev": "abc", "fresh": True}
+
+    healthy = health_with({**base, "deadman_ok": True, "deadman_age": 120})
+    assert "Dead-man" not in healthy, "the row shows while the switch is healthy"
+
+    never = health_with({**base, "deadman_ok": False, "deadman_age": -1})
+    assert "Dead-man" in never and "not pinging" in never
+
+    stale = health_with({**base, "deadman_ok": False, "deadman_age": 2400})
+    assert "Dead-man" in stale and "40 min ago" in stale
+
+    # An audit that predates the field must not be read as a broken switch: absent is
+    # unknown, and this row would otherwise fire on every box until the audit next ran.
+    old = health_with({**base})
+    assert "Dead-man" not in old, "a missing field rendered as a failure"

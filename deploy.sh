@@ -107,6 +107,7 @@ case "${1:-code}" in
     scp -o BatchMode=yes deploy/cooldown-*.service deploy/cooldown-*.timer \
         deploy/cooldown-redirect.sh deploy/cooldown-updates.sh deploy/cooldown-audit.sh deploy/cooldown-verify-backup.py \
         deploy/cooldown-alert-test.sh deploy/cooldown-cawatch.sh \
+        deploy/cooldown-deadman.sh \
         deploy/cooldown-journald.conf "$PI:$STAGE/"
     # -D on the journald drop-in: journald.conf.d/ exists on this box but not on a fresh
     # image, and an install that fails there would leave the box on volatile storage while
@@ -118,6 +119,7 @@ case "${1:-code}" in
                  sudo install -m755 $STAGE/cooldown-verify-backup.py /usr/local/sbin/cooldown-verify-backup.py &&
                  sudo install -m755 $STAGE/cooldown-alert-test.sh /usr/local/sbin/cooldown-alert-test.sh &&
                  sudo install -m755 $STAGE/cooldown-cawatch.sh /usr/local/sbin/cooldown-cawatch.sh &&
+                 sudo install -m755 $STAGE/cooldown-deadman.sh /usr/local/sbin/cooldown-deadman.sh &&
                  sudo install -D -m644 $STAGE/cooldown-journald.conf /etc/systemd/journald.conf.d/50-cooldown-persistent.conf &&
                  rm -rf $STAGE &&
                  sudo systemctl daemon-reload && echo 'units installed + daemon-reloaded'"
@@ -125,6 +127,7 @@ case "${1:-code}" in
           /usr/local/sbin/cooldown-updates.sh=deploy/cooldown-updates.sh \
           /usr/local/sbin/cooldown-audit.sh=deploy/cooldown-audit.sh \
           /usr/local/sbin/cooldown-cawatch.sh=deploy/cooldown-cawatch.sh \
+          /usr/local/sbin/cooldown-deadman.sh=deploy/cooldown-deadman.sh \
           /usr/local/sbin/cooldown-alert-test.sh=deploy/cooldown-alert-test.sh \
           /usr/local/sbin/cooldown-verify-backup.py=deploy/cooldown-verify-backup.py
     echo "NOTE: restart services yourself if a unit changed (sudo systemctl restart <svc>)."

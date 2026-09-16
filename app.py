@@ -4912,6 +4912,18 @@ HEALTH_PAGE = """
       </div>
       <!-- Where the curfew thinks you are. Rendered only when it is NOT the box's own
            clock, so at home this row does not exist and cannot become wallpaper. -->
+      {# The dead-man's switch. Same rule: only shown when it is not healthy. Unlike the
+         alert channel this one cannot fail quietly at the far end -- stopped pings ARE
+         the alarm -- but it CAN fail to have been set up, or its timer can stop, and both
+         of those look like calm from here. #}
+      {% if a.get('manifest_files') and not a.get('deadman_ok', True) %}
+      <div class="row">
+        <span class="k">Dead-man</span>
+        <span class="v">{% if a.get('deadman_age', -1) < 0 %}<b>not pinging</b> &middot; nothing off this box
+          would notice it going quiet{% else %}<b>stale</b> &middot; last ping
+          {{ (a.deadman_age // 60) }} min ago, expected every 5{% endif %}</span>
+      </div>
+      {% endif %}
       {# The off-box channel. Shown only when it is NOT healthy: a green row saying
          "alerts fine" every day is how you stop reading rows. Since a planned restart no
          longer alerts, the ABSENCE of a notification carries meaning, and it carries none
