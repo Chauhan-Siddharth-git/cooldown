@@ -349,13 +349,25 @@ def test_the_box_origin_check_is_exercising_something(rdb):
     parametrised test silently becomes zero tests and reports green. Absence of a failure
     would then be indistinguishable from a pass.
 
-    The three named here are the ones that would be missed by an obvious weaker version:
-    /boot-ack because F14 claims it is already covered, /exit as a GET because that WAS
-    F14, and /heartbeat because it answers 403 unprompted and fooled the first draft."""
+    The ones named here are those an obvious weaker version would miss: /boot-ack because
+    F14 claims it is already covered, and /heartbeat because it answers 403 unprompted and
+    fooled the first draft.
+
+    ("/exit", "GET") was the third, and was the sharpest of them, because it WAS F14 — a
+    state-changing route reachable by GET, which a check keyed on method alone would wave
+    through. It left with study mode on 2026-09-16, and no GET-reachable mutating route
+    replaced it. The property is therefore vacuously true today, which is a weaker thing
+    than it was and must not be mistaken for a stronger one: the assertion below checks
+    the SHAPE of the guard rather than that particular member, so the day a GET-mutating
+    route is added it is covered without anyone remembering this file."""
     rules = _mutating_rules()
     assert rules, "no mutating routes derived from url_map — the filter is broken"
-    for want in (("/boot-ack", "POST"), ("/exit", "GET"), ("/heartbeat", "POST")):
+    for want in (("/boot-ack", "POST"), ("/heartbeat", "POST")):
         assert want in rules, f"{want} missing from the derived set"
+    # Whatever the set contains, every member must be a real Flask rule with a method the
+    # guard actually inspects. This is what survives /exit: it is about the derivation,
+    # not about which routes happen to exist this week.
+    assert all(m in ("GET", "POST", "PUT", "PATCH", "DELETE") for _, m in rules), rules
 
 
 def _routes_reaching_sudo():

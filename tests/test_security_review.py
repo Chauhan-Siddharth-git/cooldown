@@ -165,12 +165,6 @@ def test_empty_or_wrong_token_is_never_a_match(rdb):
 
 # ---------- 4. cross-site GET to a state-changing endpoint ----------
 
-def test_cross_site_get_to_exit_is_rejected(rdb):
-    """<img src="https://www.reddit.com/budget/exit?site=reddit"> on any page."""
-    hdrs = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Dest": "image"}
-    assert probe("/budget/exit?site=reddit", hdrs).status_code == 403
-
-
 def test_cross_site_post_still_rejected(rdb):
     assert probe("/budget/enter?site=reddit", {"Sec-Fetch-Site": "cross-site"},
                  method="POST").status_code == 403

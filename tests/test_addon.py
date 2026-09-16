@@ -1,7 +1,7 @@
 """The mitmproxy addon: which hosts get gated/decrypted, CSP stripping and streaming
-decisions, the request gate (block / study lock / pass-through / CSRF), and what gets
+decisions, the request gate (block / pass-through / CSRF), and what gets
 injected into a page. These are the interception layer's security boundaries — getting
-host matching or the study lock wrong silently un-gates a site.
+host matching or the request gate wrong silently un-gates a site.
 """
 import os
 import sys
@@ -13,14 +13,6 @@ from mitmproxy.test import tflow
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import addon  # noqa: E402
-
-# Study mode ships OFF (STUDY_PLAYLISTS empty), but the lock still exists for anyone who
-# enables it — so these tests configure a playlist rather than depend on the shipped default.
-STUDY_PL = "PLtest0000study0000playlist"
-
-@pytest.fixture()
-def study_on(monkeypatch):
-    monkeypatch.setattr(addon, "STUDY_PLAYLISTS", [STUDY_PL])
 
 
 @pytest.fixture()
@@ -128,22 +120,7 @@ def test_facebook_is_overlay_only_never_budgeted():
     assert addon.overlay_for_host("www.facebook.com") is not None
 
 
-# ---------- study mode is locked to the course ----------
-
-@pytest.mark.parametrize("path,allowed", [
-    (f"/watch?list={STUDY_PL}", True),
-    (f"/playlist?list={STUDY_PL}", True),
-    (f"/watch?v=abc&list={STUDY_PL}&index=2", True),
-    ("/watch?v=abc", False),                       # a video with no playlist
-    ("/watch?list=PLsomeotherplaylist", False),    # someone else's playlist
-    ("/feed/subscriptions", False),
-    ("/results?search_query=cats", False),
-    ("/", False),
-    ("/shorts/abc", False),
-])
-def test_study_url_allowed(study_on, path, allowed):
-    assert addon.study_url_allowed(path) is allowed
-
+# ---------- session mode ----------
 
 def test_session_mode_reads_redis(rdb, session):
     assert addon.session_mode("reddit") is None
@@ -323,27 +300,6 @@ def test_active_session_passes_through(rdb, session):
     assert f.response is None                 # untouched -> goes to the real site
 
 
-def test_study_mode_bounces_off_course_navigation(rdb, session, study_on):
-    session("youtube", "study")
-    f = mkflow("www.youtube.com", "/feed/subscriptions", resp=False,
-               headers={"Sec-Fetch-Mode": "navigate"})
-    addon.BudgetAddon().request(f)
-    assert f.response.status_code == 302
-    assert STUDY_PL in f.response.headers["Location"]
-
-
-def test_study_mode_allows_the_course_and_its_subrequests(rdb, session, study_on):
-    session("youtube", "study")
-    ok = mkflow("www.youtube.com", f"/watch?list={STUDY_PL}",
-                resp=False, headers={"Sec-Fetch-Mode": "navigate"})
-    addon.BudgetAddon().request(ok)
-    assert ok.response is None
-
-    sub = mkflow("www.youtube.com", "/youtubei/v1/player", resp=False)   # not a navigation
-    addon.BudgetAddon().request(sub)
-    assert sub.response is None               # sub-requests must pass or the page breaks
-
-
 def test_regular_profile_is_flat_blocked(rdb):
     f = mkflow("www.reddit.com", "/", resp=False,
                headers={"User-Agent": "Mozilla/5.0 regular-profile"})
@@ -437,17 +393,14 @@ def test_no_injection_without_session(rdb):
     assert f.response.text == HTML            # untouched
 
 
-def test_youtube_gets_declutter_and_study_lock(rdb, session, study_on):
+def test_youtube_gets_declutter_during_a_session(rdb, session):
+    """Was test_youtube_gets_declutter_and_study_lock; the study half went with study
+    mode on 2026-09-16 and the declutter half is the part that was ever used."""
     session("youtube", "active")
     f = mkflow("www.youtube.com", "/", body=HTML)
     addon.BudgetAddon().response(f)
     assert "bp-yt-declutter" in f.response.text          # Shorts/feed surgery
     assert "serviceWorker" in f.response.text            # SW_KILL
-
-    session("youtube", "study")
-    s = mkflow("www.youtube.com", "/", body=HTML)
-    addon.BudgetAddon().response(s)
-    assert STUDY_PL in s.response.text   # STUDY_LOCK carries the allowlist
 
 
 def test_facebook_gets_overlay_but_never_the_heartbeat(rdb):

@@ -46,12 +46,6 @@ IGNORED_HOSTS = [
     "api.puzzmo.com", "cdn.puzzmo.com",
 ]
 
-# YouTube "study mode" allowlist — must match STUDY_PLAYLISTS in app.py. A study
-# session is free but LOCKED to these playlists: only /watch and /playlist URLs
-# carrying an allowlisted list= are permitted; everything else (search, home feed,
-# Shorts, other channels) bounces back to the course.
-STUDY_PLAYLISTS = []   # OFF by default; must match app.py. See the note there.
-
 # Timeouts, because these calls run on mitmproxy's event loop. Without them a Redis
 # that is reachable but wedged (swapping, blocked on an AOF rewrite) hangs the proxy
 # itself rather than failing a request -- and a hung proxy is every gated site hanging.
@@ -296,57 +290,6 @@ ytd-watch-next-secondary-results-renderer { display: none !important; }
     anchor.parentNode.insertBefore(d, anchor);
   }
   setInterval(nudge, 1000);
-})();
-</script>
-"""
-
-# Injected during a YouTube study session (on top of the heartbeat + declutter).
-# The proxy bounces off-course *full navigations*, but most YouTube navigation is
-# client-side (SPA) and never reaches the proxy — so this JS enforces the same
-# playlist allowlist on in-page navigation, and hides the search box to remove the
-# temptation. __PLAYLISTS__ is replaced with the allowlist at injection time.
-STUDY_LOCK = """
-<style id="bp-yt-studylock">
-#search, #search-form, ytd-searchbox, .ytSearchboxComponentHost,
-ytm-searchbox, .searchbox { display: none !important; }
-#bp-yt-exit {
-  position: fixed; top: 10px; right: 10px; z-index: 99999; border: none;
-  background: #3ea6ff; color: #0a0a0a; padding: 8px 12px; border-radius: 6px;
-  font-family: sans-serif; font-size: 13px; font-weight: 600; cursor: pointer;
-}
-</style>
-<script>
-(function () {
-  var ALLOWED = __PLAYLISTS__;
-  var HOME = "/playlist?list=" + ALLOWED[0];
-  var exiting = false;
-  function allowed() {
-    var p = location.pathname;
-    if (p !== "/watch" && p !== "/playlist") return false;
-    var list = new URLSearchParams(location.search).get("list");
-    return !!list && ALLOWED.indexOf(list) !== -1;
-  }
-  function ensureExitButton() {
-    if (!document.body || document.getElementById("bp-yt-exit")) return;
-    var b = document.createElement("button");
-    b.id = "bp-yt-exit";
-    b.textContent = "Exit study mode";
-    // Full navigation (not SPA) to the exit endpoint, which clears the session
-    // and bounces to the gate. The flag stops enforce() racing the navigation.
-    b.onclick = function () { exiting = true; window.location.assign("/budget/exit?site=youtube"); };
-    document.body.appendChild(b);
-  }
-  function enforce() {
-    if (exiting || location.pathname.indexOf("/budget") === 0) return;
-    if (!allowed()) location.replace(HOME);
-  }
-  ["pushState", "replaceState"].forEach(function (fn) {
-    var orig = history[fn];
-    history[fn] = function () { var r = orig.apply(this, arguments); enforce(); return r; };
-  });
-  window.addEventListener("popstate", enforce);
-  setInterval(function () { enforce(); ensureExitButton(); }, 500);
-  enforce(); ensureExitButton();
 })();
 </script>
 """
@@ -815,8 +758,12 @@ def blocked_now(host, now=None):
 
 
 def session_mode(site):
-    """Return the active session's mode ('active' or 'study'), or None if there's
-    no live session for this site."""
+    """Return the active session's mode ('active'), or None if there's no live session
+    for this site.
+
+    Still a lookup rather than a boolean, with study mode gone and 'active' the only
+    value: F03 was a fail-OPEN on exactly this read, and collapsing it to a truth test
+    would make a second mode, if one is ever added, silently behave like the first."""
     token = r.get(f"active_token:{site}")
     if not token:
         return None
@@ -829,7 +776,12 @@ def session_mode(site):
 # These are the endpoints that have to live on the GATED site's origin, and only those:
 # the gate replaces the site's own page, the session endpoints are driven from it, and
 # /feed backs the gate's animated background. Everything data-rich has moved off.
-STATE_CHANGING = ("/enter", "/study", "/exit", "/heartbeat", "/reflect", "/worth")
+# /study and /exit left with study mode on 2026-09-16. /exit is gone because its ONLY
+# caller was the "Exit study mode" button inside the lock injection -- nothing else ever
+# linked to it, and a state-changing endpoint on the gated origin that nothing calls is
+# surface with no benefit. That takes this set from 8 endpoints to 6; CLAUDE.md called the
+# cap of 8 "fully spent", and it is now a quarter empty.
+STATE_CHANGING = ("/enter", "/heartbeat", "/reflect", "/worth")
 BUDGET_ENDPOINTS = frozenset(("", "/feed") + STATE_CHANGING)
 
 # Moved to the box's own origin — see the long note in app.py. A script on a gated site
@@ -847,14 +799,6 @@ def _forwarded_headers(flow):
     ct = flow.request.headers.get("Content-Type")
     return {"Content-Type": ct} if ct else {}
 
-
-def study_url_allowed(path):
-    """True only for /watch and /playlist URLs carrying an allowlisted playlist."""
-    parts = urlsplit(path)
-    if parts.path not in ("/watch", "/playlist"):
-        return False
-    lists = parse_qs(parts.query).get("list", [])
-    return any(l in STUDY_PLAYLISTS for l in lists)
 
 class BudgetAddon:
     def tls_clienthello(self, data):
@@ -1121,13 +1065,14 @@ class BudgetAddon:
                     {"Content-Type": "text/plain; charset=utf-8"})
                 return
 
-            # CSRF: the mutating endpoints (/enter, /study, /exit, /heartbeat, ...) are
+            # CSRF: the mutating endpoints (/enter, /heartbeat, /reflect, /worth) are
             # driven same-origin from the gate page / injected script. A forged request
             # from another site the user is visiting must be refused, so a malicious page
             # can't drive the budget state (or the return redirect).
-            # Covers GET too: /exit is reachable by GET (the study-mode exit button is a
-            # plain navigation), so a cross-site <img src=".../budget/exit"> would
-            # otherwise end the session.
+            # The method check still covers GET, and deliberately so. It was written for
+            # /exit, which was GET-reachable and is now gone -- but the rule is about the
+            # SET, not that member: any future endpoint that changes state via GET is
+            # covered the day it is added, rather than the day someone remembers this.
             if (flow.request.method != "GET" or sub in STATE_CHANGING) and \
                _is_cross_origin(flow):
                 flow.response = http.Response.make(
@@ -1245,17 +1190,6 @@ class BudgetAddon:
         fetch_dest = flow.request.headers.get("Sec-Fetch-Dest", "")
         is_navigation = fetch_mode == "navigate" or fetch_dest == "document"
 
-        # Study mode: free, but locked to the course playlist. Off-course full
-        # navigations bounce back to the playlist; allowed navs + all sub-requests
-        # (the API calls that load the video) pass through so the page works.
-        if mode == "study":
-            if is_navigation and not study_url_allowed(path):
-                flow.response = http.Response.make(
-                    302, b"",
-                    {"Location": f"https://{host}/playlist?list={STUDY_PLAYLISTS[0]}"}
-                )
-            return
-
         # Normal budget session: there's budget left AND a recently *visible* tab.
         # The injected heartbeat keeps the session alive and charges time; we just
         # let traffic through here. Background/idle traffic is free.
@@ -1347,7 +1281,7 @@ class BudgetAddon:
             # the initial cached load — see notes).
             injection = SW_KILL + ov["inject"]
         else:
-            # Only inject during a live session (budgeted or study).
+            # Only inject during a live session.
             # Wrapped for the same reason as the request-side read, but quieter: the
             # outcome on failure (no injection) is identical to the outcome this branch
             # already produces for "no session", and request() has by then both failed
@@ -1364,8 +1298,6 @@ class BudgetAddon:
                 injection += SW_KILL
             if site == "youtube":
                 injection += YOUTUBE_DECLUTTER
-                if mode == "study":
-                    injection += STUDY_LOCK.replace("__PLAYLISTS__", json.dumps(STUDY_PLAYLISTS))
         # Carry the nonce we added to the page's CSP, so the browser will run these
         # scripts under the site's own (still-enforced) policy. No nonce means either the
         # page had no CSP or its policy already allowed inline scripts — either way the

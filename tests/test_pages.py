@@ -1,18 +1,10 @@
-"""Gate + stats rendering per state, and the enter/study routes."""
+"""Gate + stats rendering per state, and the enter route."""
 import time
 
 import pytest
 from urllib.parse import quote
 
 import app as budget
-
-STUDY_PL = "PLtest0000study0000playlist"
-
-@pytest.fixture()
-def study_on(monkeypatch):
-    """Study mode ships OFF; switch it on for the tests that exercise it."""
-    monkeypatch.setattr(budget, "STUDY_PLAYLISTS", [STUDY_PL])
-
 
 def gate(client, site="reddit"):
     return client.get(f"/budget?site={site}").data.decode()
@@ -23,8 +15,8 @@ def gate(client, site="reddit"):
 def test_day_enter_page(client, rdb, day):
     html = gate(client, "youtube")
     assert "Enter YouTube" in html
-    assert "15:00" in html                       # full budget as the headline
-    assert "Study mode" not in html         # study ships off
+    cap = budget.SITES["youtube"]["budget_seconds"]
+    assert f"{cap // 60}:{cap % 60:02d}" in html   # full budget as the headline
     assert "/budget/stats" not in html           # the dashboard is NOT on this origin
     assert "Budget" not in html                  # renamed to Countdown
 
@@ -52,7 +44,7 @@ def test_gate_hides_dashboard_links_when_the_box_has_no_address(client, rdb, day
 
 
 def test_day_site_spent_steers_no_cooldown(client, rdb, day):
-    rdb.set("spent:main", 600)
+    rdb.set("spent:main", budget.SITES["reddit"]["budget_seconds"])
     html = gate(client, "reddit")
     assert "Reddit is done for now" in html
     assert "YouTube" in html                     # steer to remaining time
@@ -116,7 +108,7 @@ def test_night_gate_beats_leftover_cooldown(client, rdb, night):
     assert "Take a break" not in html
 
 
-# ---------- enter / study ----------
+# ---------- enter ----------
 
 def test_enter_grants_session(client, rdb, day):
     resp = client.post("/enter?site=reddit")
@@ -192,38 +184,17 @@ def test_gate_enter_form_carries_next(client, rdb, day):
     assert "next=" in html                           # Enter form threads it through
 
 
-def test_study_locked_to_playlist_and_always_open(client, rdb, night, study_on):
-    rdb.set("spent:main", 900)                   # everything drained, at night
-    resp = client.post("/study?site=youtube")
-    assert "playlist?list=" in resp.headers["Location"]
-    tok = rdb.get("active_token:youtube")
-    assert tok and rdb.get(f"session:{tok}") == "study"
-
-
-def test_study_is_youtube_only(client, rdb, day):
-    resp = client.post("/study?site=reddit")
-    assert "/budget" in resp.headers["Location"]
-
-
 def test_news_gate_renders(client, rdb, day):
     html = gate(client, "news")
     assert "Enter News" in html
-    assert "10:00" in html                       # 10-min cap headline
-    assert "/budget/study" not in html           # news has no study mode
+    cap = budget.SITES["news"]["budget_seconds"]
+    assert f"{cap // 60}:{cap % 60:02d}" in html   # the news cap, as the headline
 
 
 def test_news_enter_returns_to_the_article(client, rdb, day):
     nxt = quote("https://www.cnn.com/2026/07/20/politics/story/index.html", safe="")
     resp = client.post(f"/enter?site=news&next={nxt}")
     assert "cnn.com/2026/07/20/politics" in resp.headers["Location"]   # not the home fallback
-
-
-def test_cooldown_screen_promotes_study(client, rdb, day, study_on):
-    rdb.set("cooldown:main", time.time() - 100)      # YouTube in cooldown
-    html = gate(client, "youtube")
-    assert "Study while you wait" in html            # promoted CTA copy
-    assert "study-cta" in html                       # primary styling
-    assert "one tap away" in html                    # nudge in the message
 
 
 def test_cooldown_screen_shows_escalation_note(client, rdb, day):
@@ -234,13 +205,6 @@ def test_cooldown_screen_shows_escalation_note(client, rdb, day):
     # and that it came from the escalated bank, not the plain one.
     assert any(v.format(label="Reddit") in html for v in budget.GATE_LINES["cooldown_escalated"])
     assert not any(v.format(label="Reddit") in html for v in budget.GATE_LINES["cooldown"])
-
-
-def test_reddit_cooldown_has_no_study_button(client, rdb, day):
-    rdb.set("cooldown:main", time.time() - 100)      # Reddit has no study mode
-    html = gate(client, "reddit")
-    assert "Study while you wait" not in html
-    assert "/budget/study" not in html               # no study form at all for reddit
 
 
 # ---------- stats ----------

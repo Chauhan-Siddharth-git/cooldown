@@ -4,34 +4,59 @@ import time
 
 import app as budget
 
-RATE = 0.25  # pool_max_budget("main") / REFILL_FULL_SECONDS = 900/3600
+POOL = budget.pool_max_budget("main")   # seconds; derived, never hardcoded
+SLICE = budget.SITES["reddit"]["budget_seconds"]   # a per-site cap SMALLER than the pool,
+# which is what makes the soft-pause path reachable at all. Derived for the same reason as
+# POOL: the 2026-09-16 budget experiment changed both numbers, and a test that hardcodes a
+# config value reports a deliberate change as a regression.
+RATE = POOL / budget.REFILL_FULL_SECONDS   # seconds of budget restored per idle second
 
 
 # ---------- shared bucket ----------
 
 def test_shared_bucket_per_site_caps(rdb, day):
-    rdb.set("spent:main", 600)
+    """Spend exactly the small slice: the small-cap sites are done, the big-cap one is not.
+    Written against the caps rather than against the numbers they happened to be, because
+    the 2026-09-16 experiment changed every one of them."""
+    big = budget.SITES["youtube"]["budget_seconds"]
+    assert SLICE < big, "no site has a cap below the pool -- the soft-pause path is gone"
+    rdb.set("spent:main", SLICE)
     assert budget.get_remaining_budget("reddit") == 0
     assert budget.get_remaining_budget("spotify") == 0
-    assert round(budget.get_remaining_budget("youtube")) == 300
+    assert round(budget.get_remaining_budget("youtube")) == big - SLICE
 
 
-def test_pool_max_budget_is_largest_cap():
-    assert budget.pool_max_budget("main") == 900
+def test_pool_max_budget_is_largest_cap(monkeypatch):
+    """Reads the pool size from config rather than hardcoding it, so a deliberate change
+    to the budget is not indistinguishable from a regression.
+
+    The second half matters more than the first. Until 2026-09-16 YouTube's cap (15 min)
+    was strictly the largest, so `== 900` happened to prove max() was being used. Every
+    cap is now 10, which makes that assertion true of max(), min(), first() or any other
+    selector -- vacuous in exactly the way rule 10 warns about. So the property is tested
+    against a pool where the caps actually differ."""
+    caps = [s["budget_seconds"] for k, s in budget.SITES.items() if budget.pool(k) == "main"]
+    assert budget.pool_max_budget("main") == max(caps)
+
+    bigger = {k: (v | {"budget_seconds": 99 * 60} if k == "puzzmo" else v)
+              for k, v in budget.SITES.items()}
+    monkeypatch.setattr(budget, "SITES", bigger)
+    assert budget.pool_max_budget("main") == 99 * 60, "not selecting the largest"
 
 
 def test_news_shares_main_bucket(rdb, day):
     assert budget.pool("news") == "main"
     assert "news" in budget.pool_sites("main")       # switching to news is NOT an escape hatch
-    rdb.set("spent:main", 600)                        # shared spend
-    assert budget.get_remaining_budget("news") == 0   # news 10-min slice gone with the rest
-    assert round(budget.get_remaining_budget("youtube")) == 300  # bigger cap still has room
+    rdb.set("spent:main", SLICE)                      # shared spend
+    assert budget.get_remaining_budget("news") == 0   # news slice gone with the rest
+    big = budget.SITES["youtube"]["budget_seconds"]
+    assert round(budget.get_remaining_budget("youtube")) == big - SLICE  # bigger cap has room
 
 
-def test_puzzmo_shares_bucket_with_10min_cap(rdb, day):
-    assert budget.SITES["puzzmo"]["budget_seconds"] == 600
+def test_puzzmo_shares_the_bucket_at_the_small_slice(rdb, day):
+    assert budget.SITES["puzzmo"]["budget_seconds"] == SLICE
     assert budget.pool("puzzmo") == "main"           # same shared bucket
-    rdb.set("spent:main", 550)
+    rdb.set("spent:main", SLICE - 50)
     assert round(budget.get_remaining_budget("puzzmo")) == 50
     assert "puzzmo" in budget.pool_sites("main")
 
@@ -65,10 +90,10 @@ def test_no_refill_during_active_session(rdb, day, session):
 
 
 def test_no_refill_during_cooldown(rdb, day):
-    rdb.set("spent:main", 900)
+    rdb.set("spent:main", POOL)
     rdb.set("cooldown:main", time.time())
     rdb.set("last_heartbeat:main", time.time() - 3600)
-    assert budget.get_spent("reddit") == 900
+    assert budget.get_spent("reddit") == POOL
 
 
 def test_no_refill_outside_day(rdb, night):
@@ -158,169 +183,7 @@ def test_recent_cooldown_count_window(rdb, day):
     assert budget.recent_cooldown_count(now) == 1
 
 
-def test_escalated_cooldown_counts_down_full_duration(rdb, day):
-    # A 2h escalated cooldown that started 30m ago still has ~90m left (not ~30m).
-    rdb.set("cooldown:main", time.time() - 1800)
-    rdb.set("cooldown_secs:main", 7200)
-    rem = budget.get_cooldown_remaining("reddit")
-    assert 5395 <= rem <= 5400
-
-
-def test_heartbeat_full_drain_logs_cooldown_event(client, rdb, day, session):
-    session("youtube", last_gap=15)
-    rdb.set("spent:main", 890)
-    hb(client, "youtube")
-    events = rdb.lrange(f"cooldown_events:{time.strftime('%Y-%m-%d')}", 0, -1)
-    assert len(events) == 1
-    assert events[0].endswith(" youtube")
-
-
-def test_cooldown_expiry_in_day_restores_budget(rdb, day):
-    rdb.set("spent:main", 900)
-    rdb.set("cooldown:main", time.time() - budget.COOLDOWN_SECONDS - 5)
-    assert budget.get_cooldown_remaining("reddit") == 0
-    assert rdb.get("cooldown:main") is None
-    assert rdb.get("spent:main") is None          # budget restored
-
-
-def test_cooldown_expiry_at_night_does_not_restore(rdb, night):
-    rdb.set("spent:main", 900)
-    rdb.set("cooldown:main", time.time() - budget.COOLDOWN_SECONDS - 5)
-    assert budget.get_cooldown_remaining("reddit") == 0
-    assert rdb.get("spent:main") == "900"         # no fresh night buffer
-
-
-# ---------- heartbeat ----------
-
-def hb(client, site="reddit"):
-    return client.post(f"/heartbeat?site={site}")
-
-
-def test_heartbeat_charges_gap(client, rdb, day, session):
-    session("reddit", last_gap=15)
-    resp = hb(client)
-    assert resp.status_code == 200
-    assert 14 <= float(rdb.get("spent:main")) <= 16
-    assert 584 <= resp.get_json()["remaining"] <= 586
-
-
-def test_heartbeat_caps_a_large_gap_rather_than_ignoring_it(client, rdb, day, session):
-    """Renamed from test_heartbeat_ignores_large_gap, which asserted `spent is None` --
-    "away time is free". That was the design intent and it was the vulnerability: a
-    client pacing its pings just outside the window was away, free, and never logged
-    out. Away now costs one cap, which is the smallest charge that makes pacing pointless."""
-    session("reddit", last_gap=budget.HEARTBEAT_MAX_GAP + 30)
-    assert hb(client).status_code == 200
-    spent = float(rdb.get("spent:main"))
-    assert abs(spent - budget.HEARTBEAT_MAX_GAP) < 1, spent
-
-
-def test_heartbeat_without_session_is_blocked(client, rdb, day):
-    assert hb(client).status_code == 403
-
-
-def test_heartbeat_site_cap_blocks_without_cooldown(client, rdb, day, session):
-    session("reddit", last_gap=15)
-    rdb.set("spent:main", 595)                    # +15 crosses reddit's 600
-    assert hb(client).status_code == 403
-    assert rdb.get("cooldown:main") is None       # bucket not drained: no wall
-    assert rdb.get("active_token:reddit") is None # but this session is over
-
-
-def test_heartbeat_full_drain_starts_cooldown(client, rdb, day, session):
-    session("youtube", last_gap=15)
-    rdb.set("spent:main", 890)                    # +15 crosses the 900 wall
-    assert hb(client, "youtube").status_code == 403
-    assert rdb.get("cooldown:main") is not None
-
-
-def test_heartbeat_night_buffer_blocks_without_cooldown(client, rdb, night, session):
-    session("reddit", last_gap=15)
-    rdb.set("night_spent:main", 290)              # +15 crosses the 300 night buffer
-    assert hb(client).status_code == 403
-    assert rdb.get("cooldown:main") is None       # night never starts a cooldown
-
-
-def test_heartbeat_night_charges_night_counter_not_day(client, rdb, night, session):
-    session("reddit", last_gap=15)
-    rdb.set("spent:main", 500)                     # day bucket untouched by night use
-    hb(client)
-    assert 14 <= budget.night_spent("main") <= 16  # night buffer charged
-    assert rdb.get("spent:main") == "500"          # day counter left alone
-
-
-def test_study_heartbeat_logs_study_time(client, rdb, day, session):
-    session("youtube", mode="study")
-    rdb.set("last_study_beat", time.time() - 12)
-    hb(client, "youtube")
-    logged = float(rdb.get(f"study_usage:{time.strftime('%Y-%m-%d')}"))
-    assert 11 <= logged <= 13
-    assert rdb.get("spent:main") is None            # measured, never charged
-    assert rdb.ttl(f"study_usage:{time.strftime('%Y-%m-%d')}") > 0  # self-pruning
-
-
-def test_study_heartbeat_caps_a_large_gap_rather_than_ignoring_it(client, rdb, day, session):
-    """Study time is never charged, but it IS logged, and the log answers "am I actually
-    studying?". Discarding long gaps under-reported it in exactly the same shape as the
-    charging path, so both use charged_gap() and neither can drift from the other."""
-    session("youtube", mode="study")
-    rdb.set("last_study_beat", time.time() - 300)
-    hb(client, "youtube")
-    logged = float(rdb.get(f"study_usage:{time.strftime('%Y-%m-%d')}"))
-    assert abs(logged - budget.HEARTBEAT_MAX_GAP) < 1, logged
-    assert rdb.get("spent:main") is None            # still never charged
-
-
-def test_study_session_is_never_charged(client, rdb, day, session):
-    session("youtube", mode="study", last_gap=15)
-    resp = hb(client, "youtube")
-    assert resp.get_json()["status"] == "study"
-    assert rdb.get("spent:main") is None
-
-
-def test_heartbeat_records_usage_history(client, rdb, day, session):
-    session("reddit", last_gap=15)
-    hb(client)
-    today = time.strftime("%Y-%m-%d")
-    assert 14 <= float(rdb.get(f"usage:{today}:reddit")) <= 16
-    assert rdb.ttl(f"usage:{today}:reddit") > 0   # self-pruning
-    assert rdb.get("last_charge") is not None
-
-
-# ---------- daily reset ----------
-
-def test_daily_reset_clears_state_but_keeps_history(rdb, day, session):
-    session("reddit")
-    rdb.set("spent:main", 500)
-    rdb.set("night_spent:main", 120)
-    rdb.set("cooldown:main", time.time())
-    rdb.set("cooldown_secs:main", 7200)
-    rdb.set("refilled_through:main", time.time())
-    rdb.set("usage:2026-07-01:reddit", 480)
-    budget.daily_reset()
-    for key in ("spent:main", "night_spent:main", "cooldown:main", "cooldown_secs:main",
-                "last_heartbeat:main", "refilled_through:main", "active_token:reddit"):
-        assert rdb.get(key) is None, key
-    assert rdb.get("usage:2026-07-01:reddit") == "480"   # history survives
-
-
-# ---------- soft pauses + cluster brake ----------
-
-def test_soft_pause_is_logged(client, rdb, day, session):
-    session("reddit", last_gap=15)
-    rdb.set("spent:main", 595)                    # +15 maxes reddit's 600, bucket has room
-    hb(client)
-    events = rdb.lrange(f"soft_pauses:{time.strftime('%Y-%m-%d')}", 0, -1)
-    assert len(events) == 1
-    assert events[0].endswith(" reddit")
-    assert rdb.get("cooldown:main") is None        # still no hard cooldown
-
-def test_full_drain_does_not_log_soft_pause(client, rdb, day, session):
-    session("youtube", last_gap=15)
-    rdb.set("spent:main", 890)                     # +15 drains the whole 900 bucket
-    hb(client, "youtube")
-    assert rdb.get(f"soft_pauses:{time.strftime('%Y-%m-%d')}") is None
-    assert rdb.get("cooldown:main") is not None
+# ---------- soft-pause cluster brake ----------
 
 def _sp(rdb, now, site, ago):
     day = time.strftime("%Y-%m-%d", time.localtime(now))
@@ -351,6 +214,141 @@ def test_cluster_ignores_stale_cluster(rdb):
         _sp(rdb, now, "reddit", ago)
     _sp(rdb, now, "reddit", 0)        # one fresh -> only 1 counts in window
     assert budget.maybe_cluster_cooldown("reddit", now) is False
+
+
+def test_escalated_cooldown_counts_down_full_duration(rdb, day):
+    # A 2h escalated cooldown that started 30m ago still has ~90m left (not ~30m).
+    rdb.set("cooldown:main", time.time() - 1800)
+    rdb.set("cooldown_secs:main", 7200)
+    rem = budget.get_cooldown_remaining("reddit")
+    assert 5395 <= rem <= 5400
+
+
+def test_heartbeat_full_drain_logs_cooldown_event(client, rdb, day, session):
+    session("youtube", last_gap=15)
+    rdb.set("spent:main", POOL - 10)
+    hb(client, "youtube")
+    events = rdb.lrange(f"cooldown_events:{time.strftime('%Y-%m-%d')}", 0, -1)
+    assert len(events) == 1
+    assert events[0].endswith(" youtube")
+
+
+def test_cooldown_expiry_in_day_restores_budget(rdb, day):
+    rdb.set("spent:main", POOL)
+    rdb.set("cooldown:main", time.time() - budget.COOLDOWN_SECONDS - 5)
+    assert budget.get_cooldown_remaining("reddit") == 0
+    assert rdb.get("cooldown:main") is None
+    assert rdb.get("spent:main") is None          # budget restored
+
+
+def test_cooldown_expiry_at_night_does_not_restore(rdb, night):
+    rdb.set("spent:main", POOL)
+    rdb.set("cooldown:main", time.time() - budget.COOLDOWN_SECONDS - 5)
+    assert budget.get_cooldown_remaining("reddit") == 0
+    assert rdb.get("spent:main") == str(POOL)         # no fresh night buffer
+
+
+# ---------- heartbeat ----------
+
+def hb(client, site="reddit"):
+    return client.post(f"/heartbeat?site={site}")
+
+
+def test_heartbeat_charges_gap(client, rdb, day, session):
+    session("reddit", last_gap=15)
+    resp = hb(client)
+    assert resp.status_code == 200
+    assert 14 <= float(rdb.get("spent:main")) <= 16
+    assert SLICE - 16 <= resp.get_json()["remaining"] <= SLICE - 14
+
+
+def test_heartbeat_caps_a_large_gap_rather_than_ignoring_it(client, rdb, day, session):
+    """Renamed from test_heartbeat_ignores_large_gap, which asserted `spent is None` --
+    "away time is free". That was the design intent and it was the vulnerability: a
+    client pacing its pings just outside the window was away, free, and never logged
+    out. Away now costs one cap, which is the smallest charge that makes pacing pointless."""
+    session("reddit", last_gap=budget.HEARTBEAT_MAX_GAP + 30)
+    assert hb(client).status_code == 200
+    spent = float(rdb.get("spent:main"))
+    assert abs(spent - budget.HEARTBEAT_MAX_GAP) < 1, spent
+
+
+def test_heartbeat_without_session_is_blocked(client, rdb, day):
+    assert hb(client).status_code == 403
+
+
+def test_heartbeat_site_cap_blocks_without_cooldown(client, rdb, day, session):
+    session("reddit", last_gap=15)
+    rdb.set("spent:main", SLICE - 5)                    # +15 crosses reddit's slice
+    assert hb(client).status_code == 403
+    assert rdb.get("cooldown:main") is None       # bucket not drained: no wall
+    assert rdb.get("active_token:reddit") is None # but this session is over
+
+
+def test_soft_pause_is_logged(client, rdb, day, session):
+    session("reddit", last_gap=15)
+    rdb.set("spent:main", SLICE - 5)                    # +15 maxes reddit's slice, bucket has room
+    hb(client)
+    events = rdb.lrange(f"soft_pauses:{time.strftime('%Y-%m-%d')}", 0, -1)
+    assert len(events) == 1
+    assert events[0].endswith(" reddit")          # "<epoch> reddit"
+    assert rdb.get("cooldown:main") is None        # still no hard cooldown
+
+
+def test_full_drain_does_not_log_soft_pause(client, rdb, day, session):
+    session("youtube", last_gap=15)
+    rdb.set("spent:main", POOL - 10)                     # +15 drains the whole 900 bucket
+    hb(client, "youtube")
+    assert rdb.get(f"soft_pauses:{time.strftime('%Y-%m-%d')}") is None  # that's a cooldown, not a soft pause
+    assert rdb.get("cooldown:main") is not None
+
+
+def test_heartbeat_full_drain_starts_cooldown(client, rdb, day, session):
+    session("youtube", last_gap=15)
+    rdb.set("spent:main", POOL - 10)                    # +15 crosses the 900 wall
+    assert hb(client, "youtube").status_code == 403
+    assert rdb.get("cooldown:main") is not None
+
+
+def test_heartbeat_night_buffer_blocks_without_cooldown(client, rdb, night, session):
+    session("reddit", last_gap=15)
+    rdb.set("night_spent:main", 290)              # +15 crosses the 300 night buffer
+    assert hb(client).status_code == 403
+    assert rdb.get("cooldown:main") is None       # night never starts a cooldown
+
+
+def test_heartbeat_night_charges_night_counter_not_day(client, rdb, night, session):
+    session("reddit", last_gap=15)
+    rdb.set("spent:main", 500)                     # day bucket untouched by night use
+    hb(client)
+    assert 14 <= budget.night_spent("main") <= 16  # night buffer charged
+    assert rdb.get("spent:main") == "500"          # day counter left alone
+
+
+def test_heartbeat_records_usage_history(client, rdb, day, session):
+    session("reddit", last_gap=15)
+    hb(client)
+    today = time.strftime("%Y-%m-%d")
+    assert 14 <= float(rdb.get(f"usage:{today}:reddit")) <= 16
+    assert rdb.ttl(f"usage:{today}:reddit") > 0   # self-pruning
+    assert rdb.get("last_charge") is not None
+
+
+# ---------- daily reset ----------
+
+def test_daily_reset_clears_state_but_keeps_history(rdb, day, session):
+    session("reddit")
+    rdb.set("spent:main", 500)
+    rdb.set("night_spent:main", 120)
+    rdb.set("cooldown:main", time.time())
+    rdb.set("cooldown_secs:main", 7200)
+    rdb.set("refilled_through:main", time.time())
+    rdb.set("usage:2026-07-01:reddit", 480)
+    budget.daily_reset()
+    for key in ("spent:main", "night_spent:main", "cooldown:main", "cooldown_secs:main",
+                "last_heartbeat:main", "refilled_through:main", "active_token:reddit"):
+        assert rdb.get(key) is None, key
+    assert rdb.get("usage:2026-07-01:reddit") == "480"   # history survives
 
 
 # ---------- reflection prompt: why you reached, and whether naming it helped ----------
@@ -550,13 +548,13 @@ def test_adopting_a_zone_does_not_hand_out_a_fresh_budget(rdb, monkeypatch):
     budget._tz_bust()
     when = _epoch(NY, 2026, 9, 15, 8)                        # 08:00 EDT == 05:00 PDT
     rdb.set("last_reset", budget.reset_day(when))
-    rdb.set("spent:main", 900)
+    rdb.set("spent:main", POOL)
 
     rdb.set("tz_policy", LA); budget._tz_bust()              # adopted mid-morning
     assert budget.accounting_tz() == NY, "the books must not move on adoption"
     assert budget.reset_day(when) == rdb.get("last_reset")
     assert budget.catch_up_reset(when) is False, "a reset fired on a timezone change"
-    assert float(rdb.get("spent:main")) == 900
+    assert float(rdb.get("spent:main")) == POOL
 
 
 def test_the_books_move_once_at_the_next_reset_and_do_not_re_fire(rdb, monkeypatch):

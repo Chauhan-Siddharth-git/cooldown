@@ -258,28 +258,30 @@ def monitor_origin(ip=None):
 SITES = {
     "reddit": {
         "home": "https://www.reddit.com",
-        "budget_seconds": 10 * 60,
+        "budget_seconds": 400,   # 600 -> 400, the same 2/3 (PLAN.md experiment)
         "label": "Reddit",
         "emoji": "🤙",
         "group": "main",
     },
     "youtube": {
         "home": "https://www.youtube.com",
-        "budget_seconds": 15 * 60,
+        # 900 -> 600 on 2026-09-16. See the pre-registration in PLAN.md; do not change
+        # this or anything else affecting usage before 2026-10-01.
+        "budget_seconds": 600,
         "label": "YouTube",
         "emoji": "🎬",
         "group": "main",
     },
     "spotify": {
         "home": "https://open.spotify.com",
-        "budget_seconds": 10 * 60,
+        "budget_seconds": 400,   # 600 -> 400, the same 2/3 (PLAN.md experiment)
         "label": "Spotify",
         "emoji": "🎧",
         "group": "main",
     },
     "puzzmo": {
         "home": "https://www.puzzmo.com/today/",
-        "budget_seconds": 10 * 60,
+        "budget_seconds": 400,   # 600 -> 400, the same 2/3 (PLAN.md experiment)
         "label": "Puzzmo",
         "emoji": "🧩",
         "group": "main",
@@ -291,7 +293,7 @@ SITES = {
     # you were opening); a neutral non-news page keeps it from being an escape hatch.
     "news": {
         "home": "https://www.google.com",
-        "budget_seconds": 10 * 60,
+        "budget_seconds": 400,   # 600 -> 400, the same 2/3 (PLAN.md experiment)
         "label": "News",
         "emoji": "📰",
         "group": "main",
@@ -392,7 +394,7 @@ NIGHT_END_HOUR = 7             # 7am local  (also when the daily reset fires)
 NIGHT_BUDGET_SECONDS = 5 * 60
 # Wind-down: for this long BEFORE night, each site's cap ramps linearly from its daytime
 # budget down to the night buffer (and refill turns off), easing you toward lights-out
-# instead of a sudden 11pm wall. Study mode stays available at all hours regardless.
+# instead of a sudden 11pm wall.
 WINDDOWN_SECONDS = 60 * 60
 
 # --- Where YOU are, which is not where the box is --------------------------------------
@@ -430,16 +432,6 @@ HOME_TZ = os.environ.get("BUDGET_HOME_TZ", "")
 TZ_ADOPT_AFTER = 4 * 3600       # a zone must be reported this consistently to be adopted
 TZ_ADOPT_COOLDOWN = 20 * 3600   # ...and at most one adoption per this long
 
-# YouTube "study mode" allowlist. Entering study mode grants a FREE session (no
-# budget charge, ignores cooldown) that the proxy LOCKS to these playlists —
-# search / home feed / Shorts / other channels bounce back to the course. To add a
-# course: open its playlist on YouTube and copy the value after "list=" in the URL.
-# Keep this list in sync with STUDY_PLAYLISTS in addon.py.
-# Study mode: a free, always-open escape hatch locked to an allow-listed YouTube playlist.
-# OFF by default — put one or more playlist IDs here AND in addon.py (both lists must match)
-# to switch it on. Ships off because a placeholder ID renders a study button that goes
-# nowhere, and because the feature only earns its keep if you'll genuinely use it.
-STUDY_PLAYLISTS = []
 
 # ---------------------------------------------------------------------------
 # THEMES. Every page declares the same core CSS variables, so a theme is just a second
@@ -820,10 +812,6 @@ BUDGET_PAGE = """
         }
         button:active{transform:scale(.985)}
         .enter{background:var(--go);color:#06120b}
-        .study{background:transparent;color:var(--muted);border:1px solid var(--line)}
-        .study:active{opacity:.7}
-        /* Promoted to primary on the cooldown screens — the productive door out. */
-        .study-cta{background:var(--sleep);color:#0a1020;border:none;font-weight:600}
         .blocked{background:#1c2028;color:var(--muted);cursor:default}
         .hint{font-size:12px;color:#5f6773;margin-top:2px}
         .foot{display:block;margin-top:18px;font-size:12px;color:#5f6773;text-decoration:none}
@@ -931,12 +919,6 @@ BUDGET_PAGE = """
             </div>
             {% elif button_text %}
             <button class="blocked" disabled>{{ button_text }}</button>
-            {% endif %}
-            {% if show_study %}
-            <form action="/budget/study?site={{ site }}" method="post">
-                <button class="study{% if study_primary %} study-cta{% endif %}" type="submit">{% if study_primary %}Study while you wait{% else %}Study mode{% endif %}</button>
-            </form>
-            <div class="hint">{% if study_primary %}Turn the break into real progress — locked to the course, no scrolling.{% else %}Locked to the course playlist — no scrolling.{% endif %}</div>
             {% endif %}
         </div>
         <!-- Absolute links to the BOX, not relative ones onto the gated site: the
@@ -2235,18 +2217,16 @@ def _safe_next(site, nxt):
 
 def render_gate(site, label, *, overline, message, title="", mood="wait",
                 can_enter=False, button_text="", headline="",
-                countdown=0, show_study=False, study_primary=False, refresh=0, next_url="",
+                countdown=0, refresh=0, next_url="",
                 show_reflect=False, reflect_q="", ask_worth=False):
     # One template, many states. `overline` is the uppercase kicker; `countdown` (secs)
     # renders a live ticking timer that reloads at zero; `headline` renders a big static
     # time; `mood` picks the accent colour (go/wait/sleep). `next_url`, when set, makes
     # the Enter button return to the original link instead of the site home.
-    # `study_primary` promotes the Study button to the main CTA — used on the cooldown
-    # screens, turning the enforced break into a one-tap redirect to the course.
     return render_page(BUDGET_PAGE, pass_line=_try(pass_line, PASS_LINES[0]),
         site=site, label=label, overline=overline, title=title, message=message, mood=mood,
         can_enter=can_enter, button_text=button_text, headline=headline,
-        countdown=int(countdown), show_study=show_study, study_primary=study_primary,
+        countdown=int(countdown),
         refresh=refresh, next_url=next_url,
         show_reflect=show_reflect, reflect_q=reflect_q, ask_worth=ask_worth,
         regret_json=_try(regret_pairs, ""),
@@ -2260,7 +2240,6 @@ def budget_page():
     ask_worth = bool(_try(lambda: r.get("pending_worth")))
 
     p = pool(site)
-    study_ok = (site == "youtube" and bool(STUDY_PLAYLISTS))
     ph = phase()
     # The addon passes the original URL the user was heading to, so Enter can return
     # there instead of the site home. Validated in /enter (must be on the same site).
@@ -2268,29 +2247,29 @@ def budget_page():
 
     # Night / wind-down own the gate (before any leftover daytime cooldown). Refill is
     # off in both; night is a small fixed buffer, wind-down a shrinking one. No cooldown
-    # machinery here (Tailscale-off still escapes), and study mode stays available.
+    # machinery here (Tailscale-off still escapes).
     if ph in ("night", "winddown"):
         remaining = get_remaining_budget(site)   # night-aware (own buffer) vs winddown ramp
         if ph == "night":
             if remaining <= 0:
                 return render_gate(site, label, overline=f"{label} · Bedtime", mood="sleep",
-                    countdown=secs_until_hour(NIGHT_END_HOUR), show_study=study_ok,
+                    countdown=secs_until_hour(NIGHT_END_HOUR),
                     title="Get some sleep", ask_worth=ask_worth,
                     message=gate_line("night_closed", label=label, end=NIGHT_END_HOUR))
             nshow, nq = reflect_decision()
             return render_gate(site, label, overline=f"{label} · Night mode", mood="sleep",
-                headline=clock(remaining), can_enter=True, show_study=study_ok, next_url=nxt,
+                headline=clock(remaining), can_enter=True, next_url=nxt,
                 show_reflect=nshow, reflect_q=nq,
                 message=gate_line("night", label=label, end=NIGHT_END_HOUR))
         # wind-down
         if remaining <= 0:
             return render_gate(site, label, overline=f"{label} · Winding down", mood="wait",
-                countdown=secs_until_hour(NIGHT_START_HOUR), show_study=study_ok,
+                countdown=secs_until_hour(NIGHT_START_HOUR),
                 title="Paused for now", ask_worth=ask_worth,
                 message=gate_line("winddown_spent", label=label))
         wshow, wq = reflect_decision()
         return render_gate(site, label, overline=f"{label} · Winding down", mood="wait",
-            headline=clock(remaining), can_enter=True, show_study=study_ok, next_url=nxt,
+            headline=clock(remaining), can_enter=True, next_url=nxt,
             show_reflect=wshow, reflect_q=wq,
             message=gate_line("winddown", label=label))
 
@@ -2299,17 +2278,15 @@ def budget_page():
     if cooldown_remaining > 0:
         escalated = float(r.get(f"cooldown_secs:{p}") or COOLDOWN_SECONDS) > COOLDOWN_SECONDS
         msg = gate_line("cooldown_escalated" if escalated else "cooldown", label=label)
-        if study_ok:
-            msg += " Put the break to work — the course is one tap away."
         return render_gate(site, label, overline=f"{label} · Cooldown", mood="wait",
-            countdown=cooldown_remaining, show_study=study_ok, study_primary=study_ok,
+            countdown=cooldown_remaining,
             title="Take a break", message=msg, ask_worth=ask_worth)
 
     # One site looping (repeated cap-hits in a short window) -> a short site-specific breather.
     soft_cd = get_soft_cd_remaining(site)
     if soft_cd > 0:
         return render_gate(site, label, overline=f"{label} · Short break", mood="wait",
-            countdown=soft_cd, show_study=study_ok, study_primary=study_ok,
+            countdown=soft_cd,
             title="Take a breather", ask_worth=ask_worth,
             message=gate_line("soft", label=label))
 
@@ -2320,10 +2297,8 @@ def budget_page():
     if spent >= pool_max_budget(p):
         start_cooldown(p, site)
         msg = gate_line("cooldown", label=label)
-        if study_ok:
-            msg += " Or turn the break into progress: the course is one tap away."
         return render_gate(site, label, overline=f"{label} · Time's up", mood="wait",
-            countdown=get_cooldown_remaining(site), show_study=study_ok, study_primary=study_ok,
+            countdown=get_cooldown_remaining(site),
             title="Whole bucket spent", message=msg, ask_worth=ask_worth)
 
     # This site's slice used up, but the bucket still has time for a bigger-cap site.
@@ -2333,13 +2308,13 @@ def budget_page():
         steer = f" Still time on {' & '.join(others)}." if others else ""
         return render_gate(site, label, overline=f"{label} · Spent", mood="wait",
             title=f"{label} is done for now", button_text=f"{label} used up",
-            show_study=study_ok, refresh=15, ask_worth=ask_worth,
+            refresh=15, ask_worth=ask_worth,
             message=gate_line("spent", label=label, steer=steer))
 
     # Enter.
     show_reflect, reflect_q = reflect_decision()
     return render_gate(site, label, overline=f"{label} · Time left", mood="go",
-        headline=clock(remaining), can_enter=True, show_study=study_ok, next_url=nxt,
+        headline=clock(remaining), can_enter=True, next_url=nxt,
         show_reflect=show_reflect, reflect_q=reflect_q,
         message=gate_line("day", label=label))
 
@@ -2392,36 +2367,6 @@ def enter():
     # Return to the original link the user clicked (validated same-site), else home.
     return redirect(_safe_next(site, request.args.get("next", "")) or SITES[site]["home"])
 
-@app.route('/study', methods=['POST'])
-def study():
-    site = resolve_site(request.args.get("site"))
-    # Study mode is YouTube-only and deliberately bypasses budget AND cooldown —
-    # the lock-to-playlist enforcement (in the proxy + injected JS) is what keeps
-    # it honest, so there's no time accounting here.
-    if site != "youtube" or not STUDY_PLAYLISTS:
-        return redirect(f'/budget?site={site}')
-    # Study mode (locked to the course playlist) stays available at all hours — including
-    # wind-down and overnight — since it's the productive escape, not a doomscroll path.
-
-    token = str(uuid.uuid4())
-    r.setex(f"session:{token}", SESSION_IDLE_TTL, "study")
-    r.set(f"active_token:{site}", token)
-    r.set("last_study_beat", time.time())   # baseline so the first heartbeat gap counts
-
-    return redirect(f"https://www.youtube.com/playlist?list={STUDY_PLAYLISTS[0]}")
-
-@app.route('/exit', methods=['POST', 'GET'])
-def exit_session():
-    # Ends the current session (study or budgeted) and returns to the gate.
-    # Used by the in-page "Exit study mode" button; clearing the session is what
-    # lets the next navigation fall through to the budget gate.
-    site = resolve_site(request.args.get("site"))
-    token = r.get(f"active_token:{site}")
-    if token:
-        r.delete(f"session:{token}")
-    r.delete(f"active_token:{site}")
-    return redirect(SITES[site]["home"])
-
 def charged_gap(now, last):
     """Seconds to charge for a ping, given the previous ping's timestamp.
 
@@ -2455,25 +2400,10 @@ def heartbeat():
     if not mode:
         return jsonify({"status": "blocked"}), 403  # session idled out
 
-    # Refresh the idle TTL, preserving the session mode ("active" or "study").
+    # Refresh the idle TTL. `mode` is always "active" now that study mode is gone, but it
+    # is still read and written rather than assumed: F03 was a fail-OPEN on exactly this
+    # value, and a hardcoded "active" here would make a future second mode fail silently.
     r.setex(f"session:{token}", SESSION_IDLE_TTL, mode)
-
-    # Study mode is free and always available: keep the session alive, never charge/cool.
-    # We still LOG the foreground seconds (separately from budgeted usage) so "am I
-    # actually studying?" is measurable — same visibility-gated, gap-capped accounting
-    # as usage, but it never touches spent/cooldown.
-    if mode == "study":
-        now = time.time()
-        last = r.get("last_study_beat")
-        if last:
-            gap = charged_gap(now, last)
-            if gap > 0:
-                day = time.strftime("%Y-%m-%d")
-                r.incrbyfloat(f"study_usage:{day}", gap)
-                r.expire(f"study_usage:{day}", HISTORY_TTL)
-                r.set("last_study_charge", now)
-        r.set("last_study_beat", now)
-        return jsonify({"status": "study"})
 
     p = pool(site)
     last = r.get(f"last_heartbeat:{p}")
@@ -3181,8 +3111,6 @@ def stats():
     week_rapid = sum(1 for a, b in zip(cd_events, cd_events[1:])
                      if b - a <= RAPID_REPEAT_WINDOW)
 
-    # Study mode (free, unbudgeted) is logged separately — this is the one metric the
-    # whole thing is FOR, so surface it. Today + this-week's foreground study minutes.
     today_key = time.strftime("%Y-%m-%d", local_acct(now))
 
     today_ts = sorted(t for t in cd_events

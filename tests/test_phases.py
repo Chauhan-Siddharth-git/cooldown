@@ -26,9 +26,9 @@ def test_phase_boundaries():
 
 def test_effective_cap_day():
     now = local_epoch(14)
-    assert budget.effective_cap("reddit", now) == 600
-    assert budget.effective_cap("youtube", now) == 900
-    assert budget.effective_cap("spotify", now) == 600
+    assert budget.effective_cap("reddit", now) == budget.SITES["reddit"]["budget_seconds"]
+    assert budget.effective_cap("youtube", now) == budget.SITES["youtube"]["budget_seconds"]
+    assert budget.effective_cap("spotify", now) == budget.SITES["spotify"]["budget_seconds"]
 
 
 def test_effective_cap_night_is_shared_buffer():
@@ -39,8 +39,9 @@ def test_effective_cap_night_is_shared_buffer():
 
 def test_effective_cap_winddown_ramps_linearly():
     mid = local_epoch(22, 30)   # halfway down the 1h ramp
-    assert budget.effective_cap("reddit", mid) == 450     # (600+300)/2
-    assert budget.effective_cap("youtube", mid) == 600    # (900+300)/2
+    N = budget.NIGHT_BUDGET_SECONDS
+    assert budget.effective_cap("reddit", mid) == (budget.SITES["reddit"]["budget_seconds"] + N) / 2
+    assert budget.effective_cap("youtube", mid) == (budget.SITES["youtube"]["budget_seconds"] + N) / 2
     late = local_epoch(22, 57)  # 3 min out -> close to the night buffer
     assert 300 <= budget.effective_cap("reddit", late) <= 320
 

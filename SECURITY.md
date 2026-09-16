@@ -511,9 +511,11 @@ directly, so you never type the address.
 What stays on the gated site's origin is only what has to be: the gate itself (it renders
 in place of the site), the session endpoints behind it, and `/feed` — two aggregate
 bytes-per-second numbers that drive the moving background, behind a token that unlocks
-nothing else. That's eight endpoints where it used to be twelve — the eighth is `/worth`,
-the post-session "was that worth it?" answer, which is asked *on the gate* and so has to
-live where the gate lives.
+nothing else. That's six endpoints where it used to be twelve. It was eight until 2026-09-16, when
+study mode was deleted for never having been used — `/study` went with it, and `/exit`
+went too, because the only thing that ever linked to `/exit` was study mode's own exit
+button. A state-changing endpoint on the gated origin that nothing calls is surface with
+no benefit.
 
 Moving them also moved them out from behind the proxy's cross-site check, which is where
 F25 came from. Writes are now refused at both origins: the proxy rejects cross-site
