@@ -284,10 +284,25 @@ that the project is small, readable, tested, and reviewed rather than trusted.
 **The box quietly rots.**
 It's a computer that runs unattended for years. Unpatched software is how boring machines
 become someone else's. The installer offers to switch on automatic security updates — say
-yes, and leave it on. Upgrades install at 03:00 and, if a kernel landed, the box reboots at
-04:00. That reboot used to be off, on the grounds that a gateway restarting drops every
-routed device; at 4am the only routed device is a phone nobody is holding, and a kernel
-patch that never takes effect is not a patch.
+yes, and leave it on. Upgrades install at 03:00 and, if a kernel landed, the box reboots in
+the small hours. That reboot used to be off, on the grounds that a gateway restarting drops
+every routed device; at 4am the only routed device is a phone nobody is holding, and a
+kernel patch that never takes effect is not a patch.
+
+The hour is no longer fixed. It was a flat 04:00, which is a slot to hide in: anyone who
+wanted the SD card could power the box down inside that window and the restart would look
+like every other restart. It is now rewritten daily to a random minute between 03:30 and
+04:44. That alone stops nothing — what it does is remove the cover, so that the question
+"it rebooted, and the box never said it was going to" stays worth asking.
+
+Because the box does say so. A scheduled reboot is announced off the box *before* it
+happens, carrying the reason, the CA fingerprint and a hash of the deploy manifest; a boot
+that matches an announcement raises no banner and no alert, and one that does not still
+raises both. Before this, every kernel update sent an alert reading "unexplained reboot",
+identical in shape to what a theft would send — so the channel was noise, which is a worse
+hole than the predictable hour. The ordering is what carries the weight: whoever holds the
+card can read the alert URL and send new messages, but cannot backdate an announcement into
+the past or un-send one that already arrived.
 
 Switching it on is not the same as it working, which this project learned the hard way
 (F11, F21): the setting was enabled for weeks while the box installed nothing, because the
