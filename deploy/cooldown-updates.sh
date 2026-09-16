@@ -152,6 +152,58 @@ printf '"boot_ok":%s,"jobs_waiting":%d,"stuck_jobs":%d,' \
 printf '"last_run":%d,"last_result":"%s","checked":%d}\n' \
        "${last_epoch:-0}" "${last_result:-unknown}" "$(date +%s)" >> "$TMP"
 
+# --- half three: stop the reboot happening at a time anyone can predict -------------
+#
+# unattended-upgrades reboots at Automatic-Reboot-Time, which shipped as a fixed "04:00".
+# A fixed hour is a slot to hide in: anyone who wanted the SD card could power the box
+# down inside that window, and the restart would look like every other restart. Spreading
+# the time over a window does not stop anything by itself -- it removes the cover, so that
+# "it rebooted, and the box never said it was going to" stays a question worth asking.
+#
+# Rewritten once a day, keyed on the date, from a drop-in that sorts after
+# 50unattended-upgrades so it wins. The time is chosen well before apt-daily-upgrade runs;
+# if a reboot is already scheduled, changing this does not move it, which is correct --
+# the announcement has already gone out naming the old time.
+#
+# Deliberately NOT done by turning Automatic-Reboot off and rebooting ourselves. A reboot
+# this script owns is a reboot that can silently stop happening, and an unapplied kernel
+# patch is a worse outcome than a predictable one. F21 was eleven days of the box not
+# patching itself while everything looked fine.
+REBOOT_CONF=/etc/apt/apt.conf.d/99cooldown-reboot-time
+REBOOT_STAMP=/var/lib/.cooldown-reboot-time-day
+today="$(date +%F)"
+if [ "$(cat "$REBOOT_STAMP" 2>/dev/null || echo)" != "$today" ]; then
+    # 03:30-04:44. Bounded well away from the 07:00 daily reset and from the hours anyone
+    # is plausibly using the box, so a reboot still lands when nothing is in flight.
+    h=$(( 3 + RANDOM % 2 ))
+    if [ "$h" -eq 3 ]; then m=$(( 30 + RANDOM % 30 )); else m=$(( RANDOM % 45 )); fi
+    newtime="$(printf '%02d:%02d' "$h" "$m")"
+    # Validate before writing. A malformed value here does not fail loudly -- it makes
+    # unattended-upgrades skip the reboot, so the kernel patch sits unapplied and nothing
+    # says so, which is the exact failure mode this box has already had once.
+    if printf '%s' "$newtime" | grep -qE '^(0[34]):[0-5][0-9]$'; then
+        # Staged in the SAME directory as the target so the mv is atomic (a rename across
+        # filesystems is a copy, and a half-written apt config is one apt may read).
+        # Derived from REBOOT_CONF rather than hardcoded, which also lets this be tested
+        # against a scratch directory instead of /etc.
+        conf_tmp="$(mktemp "$(dirname "$REBOOT_CONF")/.99cooldown-reboot.XXXXXX")" || conf_tmp=""
+        if [ -n "$conf_tmp" ]; then
+            printf 'Unattended-Upgrade::Automatic-Reboot-Time "%s";\n' "$newtime" > "$conf_tmp"
+            # apt-config parses the whole directory; if this file were bad, EVERY apt
+            # setting could fall back to a default. Prove it parses before installing it.
+            if APT_CONFIG="$conf_tmp" apt-config dump >/dev/null 2>&1; then
+                chmod 644 "$conf_tmp" && mv "$conf_tmp" "$REBOOT_CONF" \
+                    && printf '%s\n' "$today" > "$REBOOT_STAMP"
+            else
+                rm -f "$conf_tmp"
+                logger -t cooldown-updates "refusing to install unparseable reboot-time conf"
+            fi
+        fi
+    else
+        logger -t cooldown-updates "generated reboot time '$newtime' failed validation"
+    fi
+fi
+
 # 644 on purpose: the app runs as a different user than this script, and /var/lib for
 # this project is 700. Nothing in here is sensitive -- counts and two booleans.
 # Validate before publishing. A malformed field would make the reader fall back to

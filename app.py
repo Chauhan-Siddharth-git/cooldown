@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, available_timezones
 import os
 import subprocess
+import hashlib
 import json
 import re
 import random
@@ -4018,6 +4019,131 @@ def send_alert(text):
     return True
 
 
+# --- planned reboots: say so BEFORE, off the box ---------------------------------------
+#
+# The box takes kernel updates automatically and reboots at a fixed hour to apply them.
+# Two problems came out of that, and the second is the one that matters.
+#
+# The obvious one: a fixed hour is a slot to hide in. Anyone who wanted the SD card could
+# power the box down inside that window and the reboot would look routine.
+#
+# The real one: the alert could not tell the two apart AT ALL. send_alert fired on every
+# new boot id with the same wording, so the kernel update on 2026-09-16 produced
+# "unexplained reboot", delivered, indistinguishable in shape from what a theft would
+# send. A channel that cries wolf every month is not a channel you read.
+#
+# The fix is to declare intent before the fact. systemd records a scheduled shutdown in
+# /run/systemd/shutdown/scheduled the moment unattended-upgrades asks for one, which is
+# ~45 minutes ahead of time, so the box can announce the reboot while it is still only a
+# plan. A reboot with a prior announcement is routine; a reboot without one is not.
+#
+# WHY THIS IS WORTH ANYTHING, given that whoever holds the card can read ALERT_URL: they
+# can send future messages, but ntfy timestamps server-side, so they cannot backdate an
+# announcement into the past and they cannot un-send one that already arrived. The
+# ordering is the evidence, not the secrecy.
+#
+# The announcement carries the CA fingerprint and a hash of the deploy manifest for the
+# same reason. Both are currently pinned ON the box -- cooldown-audit.sh holds the CA
+# fingerprint -- and whoever holds the card can rewrite that pin. A notification already
+# on your phone is the one copy of the baseline the box does not control.
+#
+# HONEST LIMIT: root on the box can suppress these, so a MISSING announcement is
+# ambiguous -- attack, dead network, or ntfy having a bad day. It is a reason to look, not
+# proof of anything. Same limit send_alert already documents.
+REBOOT_SCHEDULE_FILE = "/run/systemd/shutdown/scheduled"
+REBOOT_REQUIRED_PKGS = "/var/run/reboot-required.pkgs"
+DEPLOY_MANIFEST = "/var/lib/cooldown-deployed.manifest"
+AUDIT_STATE = "/var/lib/cooldown-audit.json"
+PLANNED_REBOOT_TTL = 6 * 3600      # a stale plan must not excuse a much later reboot
+PLANNED_BOOT_GRACE = 20 * 60       # how late a boot may be and still be the planned one
+
+
+def scheduled_reboot():
+    """Epoch of a reboot systemd has scheduled, or None.
+
+    Absence is the normal state and must not be recorded as an error: this is polled every
+    few minutes, and routing a missing file through _note_error would bury the error
+    counter under it.
+    """
+    try:
+        vals = {}
+        with open(REBOOT_SCHEDULE_FILE, encoding="utf-8") as fh:
+            for line in fh:
+                k, _, v = line.strip().partition("=")
+                vals[k] = v
+        if vals.get("MODE") != "reboot":
+            return None                       # a scheduled poweroff is not this
+        return float(vals["USEC"]) / 1_000_000
+    except FileNotFoundError:
+        return None                           # nothing scheduled: the usual case
+    except Exception as exc:
+        _note_error(exc)
+        return None
+
+
+def reboot_baseline():
+    """(ca_fingerprint, manifest_hash) -- the two things worth pinning off the box.
+
+    Read from files the app can actually reach: the CA itself is mode 700 and owned by the
+    proxy user, but cooldown-audit.sh publishes its fingerprint into world-readable state.
+    """
+    ca = ""
+    try:
+        with open(AUDIT_STATE, encoding="utf-8") as fh:
+            ca = (json.load(fh) or {}).get("ca_fp", "") or ""
+    except Exception:
+        pass
+    man = ""
+    try:
+        with open(DEPLOY_MANIFEST, "rb") as fh:
+            man = hashlib.sha256(fh.read()).hexdigest()[:16]
+    except Exception:
+        pass
+    return ca, man
+
+
+def _reboot_reason():
+    """Which packages asked for the reboot, per Debian's own marker file."""
+    try:
+        with open(REBOOT_REQUIRED_PKGS, encoding="utf-8") as fh:
+            pkgs = sorted({p.strip() for p in fh if p.strip()})
+        if pkgs:
+            head = ", ".join(pkgs[:3])
+            return head + (f" +{len(pkgs) - 3} more" if len(pkgs) > 3 else "")
+    except Exception:
+        pass
+    return "reason not recorded"
+
+
+def announce_planned_reboot(now=None):
+    """Announce a scheduled reboot once, before it happens. Returns the key, or None."""
+    when = scheduled_reboot()
+    if when is None:
+        return None
+    key = f"{when:.0f}"
+    if _try(lambda: r.get("planned_reboot"), None) == key:
+        return None                           # already announced this one
+    ca, man = reboot_baseline()
+    _try(lambda: r.setex("planned_reboot", PLANNED_REBOOT_TTL, key))
+    _try(lambda: send_alert(
+        f"cooldown: PLANNED reboot {time.strftime('%H:%M', local_policy(when))} "
+        f"({_reboot_reason()}) ca={ca or '?'} manifest={man or '?'}"))
+    return key
+
+
+def planned_reboot_covers(boot_ts):
+    """Was this boot the one the box announced? Bounded on BOTH sides: an announcement
+    does not excuse a reboot that happened before it was made, nor one hours afterwards."""
+    raw = _try(lambda: r.get("planned_reboot"), None)
+    if not raw:
+        return False
+    try:
+        scheduled = float(raw)
+    except (TypeError, ValueError):
+        return False
+    return scheduled - 60 <= boot_ts <= scheduled + PLANNED_BOOT_GRACE
+
+
 def _boot_time():
     """Epoch seconds when the kernel started, from /proc/stat btime."""
     try:
@@ -4066,14 +4192,23 @@ def boot_watch():
             # that was. Falls back to now() if /proc/stat is unreadable, which restores the
             # old behaviour rather than losing the event.
             now = _boot_time() or time.time()
-            r.rpush("boot_events", f"{now:.0f}")
+            # A reboot the box announced in advance is not evidence of anything, and
+            # treating it as such is what emptied this channel of meaning: the same
+            # "unexplained reboot" went out for every kernel update, monthly, so the one
+            # that mattered would have read identically. Planned boots are recorded in the
+            # history -- they still happened -- but raise no banner and send no alert.
+            planned = planned_reboot_covers(now)
+            r.rpush("boot_events", f"{now:.0f}" + (" planned" if planned else ""))
             r.ltrim("boot_events", -50, -1)
-            r.set("unacked_boot", f"{now:.0f}")
-            # Off the box at the moment it happens. The banner can be cleared by whoever
-            # holds the card; a sent notification cannot be un-sent.
-            _try(lambda: send_alert(
-                f"cooldown: unexplained reboot at "
-                f"{time.strftime('%Y-%m-%d %H:%M', local_policy(now))}"))
+            if planned:
+                r.delete("planned_reboot")       # consumed; it excuses exactly one boot
+            else:
+                r.set("unacked_boot", f"{now:.0f}")
+                # Off the box at the moment it happens. The banner can be cleared by
+                # whoever holds the card; a sent notification cannot be un-sent.
+                _try(lambda: send_alert(
+                    f"cooldown: UNPLANNED reboot at "
+                    f"{time.strftime('%Y-%m-%d %H:%M', local_policy(now))}"))
     return r.get("unacked_boot")
 
 def boot_history(now=None, limit=5):
@@ -4087,11 +4222,15 @@ def boot_history(now=None, limit=5):
     now = now if now is not None else time.time()
     out = []
     for ts in reversed(_try(lambda: r.lrange("boot_events", -limit, -1), []) or []):
+        # "<epoch>" or "<epoch> planned". Entries written before the tag existed are bare
+        # and must keep parsing, so the tag is read positionally and its absence means
+        # "not known to be planned" rather than breaking the row.
+        parts = str(ts).split()
         try:
-            when = float(ts)
-        except (TypeError, ValueError):
+            when = float(parts[0])
+        except (TypeError, ValueError, IndexError):
             continue
-        out.append({"ts": when,
+        out.append({"ts": when, "planned": len(parts) > 1 and parts[1] == "planned",
                     "when": time.strftime("%-d %b, %-I:%M %p", local_policy(when)),
                     "ago": _short_ago(now - when)})
     return out
@@ -4447,7 +4586,7 @@ HEALTH_PAGE = """
     {% endif %}
     {% if boot_history %}
     <div class="kicker" style="margin:-6px 0 14px">restarts on record:
-      {%- for b in boot_history %} {{ b.when }} ({{ b.ago }}){{ "," if not loop.last }}{% endfor %}
+      {%- for b in boot_history %} {{ b.when }} ({{ b.ago }}{% if b.planned %}, planned{% endif %}){{ "," if not loop.last }}{% endfor %}
     </div>
     {% endif %}
 
@@ -4905,6 +5044,16 @@ def sample_acct():
 # scheduler, and doing it this way avoids the forward reference the other jobs live with.
 scheduler.add_job(sample_acct, 'interval', seconds=ACCT_SAMPLE_SECS, max_instances=1,
                   coalesce=True, next_run_time=datetime.now())
+
+# Every 5 minutes, not hourly: systemd writes the schedule ~45 minutes ahead, and the
+# announcement is worthless if it lands after the reboot it describes. Cheap -- it reads
+# one file that usually does not exist, and only sends when the schedule is new.
+#
+# Registered down here, beside the other late job, because add_job resolves the name at
+# import: putting it next to daily_reset (line ~3400) raised NameError, since
+# announce_planned_reboot is defined several hundred lines further down.
+scheduler.add_job(announce_planned_reboot, 'interval', minutes=5, max_instances=1,
+                  coalesce=True)
 
 
 @app.route('/feed')

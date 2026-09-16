@@ -615,3 +615,105 @@ def test_the_first_ever_run_still_does_not_cry_wolf(rdb, monkeypatch):
     b.boot_watch()
     assert not rdb.get("unacked_boot")
     assert rdb.get("last_boot_id") == "boot-id-CCCC"
+
+
+# --- planned reboots -------------------------------------------------------------------
+
+def _sched_file(tmp_path, usec, mode="reboot"):
+    p = tmp_path / "scheduled"
+    p.write_text(f"USEC={int(usec * 1_000_000)}\nWARN_WALL=1\nMODE={mode}\n")
+    return str(p)
+
+
+def test_a_scheduled_reboot_is_announced_once_before_it_happens(rdb, tmp_path, monkeypatch):
+    """The whole point: the box says a reboot is coming BEFORE it happens, off the box.
+    ntfy timestamps server-side, so an announcement cannot be backdated by someone who
+    later reads ALERT_URL off the card -- the ordering is the evidence, not the secrecy.
+    """
+    import app as b
+    when = time.time() + 2400
+    monkeypatch.setattr(b, "REBOOT_SCHEDULE_FILE", _sched_file(tmp_path, when))
+    sent = []
+    monkeypatch.setattr(b, "send_alert", lambda t: sent.append(t) or True)
+
+    assert b.announce_planned_reboot() == f"{when:.0f}"
+    assert len(sent) == 1 and "PLANNED reboot" in sent[0]
+    assert rdb.get("planned_reboot") == f"{when:.0f}"
+    # Polled every 5 minutes, so re-announcing the same reboot would send ~9 duplicates.
+    assert b.announce_planned_reboot() is None
+    assert len(sent) == 1
+
+
+def test_nothing_scheduled_announces_nothing(rdb, tmp_path, monkeypatch):
+    import app as b
+    sent = []
+    monkeypatch.setattr(b, "send_alert", lambda t: sent.append(t) or True)
+    monkeypatch.setattr(b, "REBOOT_SCHEDULE_FILE", str(tmp_path / "does-not-exist"))
+    assert b.announce_planned_reboot() is None
+    # A scheduled POWEROFF is not a reboot and must not be announced as one.
+    monkeypatch.setattr(b, "REBOOT_SCHEDULE_FILE",
+                        _sched_file(tmp_path, time.time() + 600, mode="poweroff"))
+    assert b.announce_planned_reboot() is None
+    assert sent == []
+
+
+def test_an_announced_reboot_raises_no_banner_and_no_alert(rdb, monkeypatch):
+    """The half that restores the signal. Before this, every kernel update sent
+    'unexplained reboot' -- identical in shape to what a theft would send -- so the
+    channel was noise and the one message that mattered would have read the same."""
+    import app as b
+    boot = time.time()
+    rdb.set("planned_reboot", f"{boot - 12:.0f}")     # announced, boot 12s later
+    rdb.set("last_boot_id", "PREVIOUS")
+    monkeypatch.setattr(b, "_boot_time", lambda: boot)
+    monkeypatch.setattr(b, "_first_line", lambda p: "NEW-BOOT-ID")
+    sent = []
+    monkeypatch.setattr(b, "send_alert", lambda t: sent.append(t) or True)
+
+    b.boot_watch()
+    assert not rdb.get("unacked_boot"), "a planned reboot raised the banner"
+    assert sent == [], "a planned reboot sent an alert"
+    assert rdb.lrange("boot_events", -1, -1)[0].endswith(" planned"), "not recorded as planned"
+    assert not rdb.get("planned_reboot"), "the announcement must excuse exactly one boot"
+
+
+def test_an_unannounced_reboot_still_alarms(rdb, monkeypatch):
+    """Guards the guard. If this passed too, the feature would be a mute button."""
+    import app as b
+    boot = time.time()
+    rdb.set("last_boot_id", "PREVIOUS")
+    monkeypatch.setattr(b, "_boot_time", lambda: boot)
+    monkeypatch.setattr(b, "_first_line", lambda p: "NEW-BOOT-ID")
+    sent = []
+    monkeypatch.setattr(b, "send_alert", lambda t: sent.append(t) or True)
+
+    b.boot_watch()
+    assert rdb.get("unacked_boot") == f"{boot:.0f}"
+    assert len(sent) == 1 and "UNPLANNED" in sent[0]
+    assert not rdb.lrange("boot_events", -1, -1)[0].endswith(" planned")
+
+
+def test_an_announcement_does_not_excuse_a_distant_reboot(rdb, monkeypatch):
+    """Bounded on both sides. A stale plan must not cover a reboot hours later, and must
+    not cover one that happened BEFORE the announcement was made."""
+    import app as b
+    base = time.time()
+    rdb.set("planned_reboot", f"{base:.0f}")
+    assert b.planned_reboot_covers(base + 12)                       # the real one
+    assert b.planned_reboot_covers(base + b.PLANNED_BOOT_GRACE - 1)
+    assert not b.planned_reboot_covers(base + b.PLANNED_BOOT_GRACE + 60)   # too late
+    assert not b.planned_reboot_covers(base - 600)                         # before it
+    rdb.delete("planned_reboot")
+    assert not b.planned_reboot_covers(base)
+
+
+def test_boot_history_still_reads_entries_written_before_the_tag(rdb):
+    """Existing boot_events are bare epochs. Tagging must not make the old ones vanish
+    from the history -- that would erase the record this feature exists to keep."""
+    import app as b
+    old, new = time.time() - 86400, time.time() - 60
+    rdb.rpush("boot_events", f"{old:.0f}")
+    rdb.rpush("boot_events", f"{new:.0f} planned")
+    rows = b.boot_history()
+    assert len(rows) == 2, rows
+    assert rows[0]["planned"] is True and rows[1]["planned"] is False
