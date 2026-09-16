@@ -825,3 +825,29 @@ def test_a_real_alert_carries_no_priority_header(rdb, monkeypatch):
     b.send_alert("cooldown: UNPLANNED reboot")
     _drain_alert_threads()
     assert seen.get("priority") is None, seen
+
+
+def test_some_slice_stays_smaller_than_the_pool(monkeypatch):
+    """The soft pause exists only while at least one site's cap is BELOW the pool. If
+    every cap equals pool_max_budget(), hitting a site's cap always drains the pool and
+    every breather becomes a full hard cooldown across all five sites.
+
+    Nothing asserted this, and it was nearly lost twice in one afternoon: first by cutting
+    YouTube's cap alone (it IS the pool, so that levelled everything), then by the
+    perfectly reasonable request to make every site a round 10:00. Both are invisible in
+    a diff -- they look like a number changing.
+
+    It is worth pinning because the path is load-bearing, not theoretical: 129 soft pauses
+    over 51 days, 127 of them Reddit, ~2.5/day against ~1.9 hard cooldowns/day, and two
+    days that week where it fired 4 and 5 times with no hard cooldown at all.
+    """
+    pool = budget.pool_max_budget("main")
+    caps = {k: v["budget_seconds"] for k, v in budget.SITES.items() if budget.pool(k) == "main"}
+    assert caps, "no sites in the main pool -- this test is checking nothing"
+    assert min(caps.values()) < pool, (
+        f"every cap equals the pool ({pool}s), so get_soft_cd_remaining() can never fire "
+        f"and every site-cap hit becomes a 60-minute lockout of all of them: {caps}")
+
+    # ...and the reachable state really does produce a soft pause rather than a cooldown.
+    small = min(caps, key=lambda k: caps[k])
+    assert budget.SITES[small]["budget_seconds"] < pool

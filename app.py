@@ -258,30 +258,30 @@ def monitor_origin(ip=None):
 SITES = {
     "reddit": {
         "home": "https://www.reddit.com",
-        "budget_seconds": 400,   # 600 -> 400, the same 2/3 (PLAN.md experiment)
+        "budget_seconds": 7 * 60,   # 10 -> 7 min (PLAN.md experiment)
         "label": "Reddit",
         "emoji": "🤙",
         "group": "main",
     },
     "youtube": {
         "home": "https://www.youtube.com",
-        # 900 -> 600 on 2026-09-16. See the pre-registration in PLAN.md; do not change
+        # 15 -> 10 min on 2026-09-16. See the pre-registration in PLAN.md; do not change
         # this or anything else affecting usage before 2026-10-01.
-        "budget_seconds": 600,
+        "budget_seconds": 10 * 60,
         "label": "YouTube",
         "emoji": "🎬",
         "group": "main",
     },
     "spotify": {
         "home": "https://open.spotify.com",
-        "budget_seconds": 400,   # 600 -> 400, the same 2/3 (PLAN.md experiment)
+        "budget_seconds": 7 * 60,   # 10 -> 7 min (PLAN.md experiment)
         "label": "Spotify",
         "emoji": "🎧",
         "group": "main",
     },
     "puzzmo": {
         "home": "https://www.puzzmo.com/today/",
-        "budget_seconds": 400,   # 600 -> 400, the same 2/3 (PLAN.md experiment)
+        "budget_seconds": 7 * 60,   # 10 -> 7 min (PLAN.md experiment)
         "label": "Puzzmo",
         "emoji": "🧩",
         "group": "main",
@@ -293,7 +293,7 @@ SITES = {
     # you were opening); a neutral non-news page keeps it from being an escape hatch.
     "news": {
         "home": "https://www.google.com",
-        "budget_seconds": 400,   # 600 -> 400, the same 2/3 (PLAN.md experiment)
+        "budget_seconds": 7 * 60,   # 10 -> 7 min (PLAN.md experiment)
         "label": "News",
         "emoji": "📰",
         "group": "main",
