@@ -261,6 +261,40 @@ entries3="$(sum_get entries 3)"; reflect3="$(sum_llen reflect 3)"
 [ "$entries3" -lt 9 ] || [ "$reflect3" -gt 0 ] || \
     note "reflection prompt recorded nothing in 3 days across $entries3 entries -- not being asked, or not answerable"
 
+# The off-box alert channel. Distinguishes BROKEN from merely UNPROVEN, because they are
+# different problems: the first is knowable now, the second only means nothing has needed
+# saying. Reporting the second as the first is how a check becomes noise.
+#
+# This matters more since planned reboots stopped alerting: absence of a notification now
+# means "no unplanned reboot", and a dead channel makes absence mean nothing while still
+# reading as calm. app.py sends a min-priority probe weekly so "worked recently" stays a
+# fact rather than an assumption.
+alert_raw="$(redis-cli --raw GET alert_last 2>/dev/null)"
+alert_ok=false
+alert_age=-1
+if [ -z "$alert_raw" ]; then
+    note "the alert channel has never sent anything -- an unplanned reboot would reach nobody"
+else
+    alert_ts="$(_num "${alert_raw%% *}")"
+    alert_outcome="${alert_raw#* }"
+    if [ "$alert_outcome" != "ok" ]; then
+        note "the last off-box alert FAILED ($alert_outcome) -- notifications are down"
+    elif [ "$alert_ts" -gt 0 ]; then
+        alert_age=$(( ( $(date +%s) - alert_ts ) / 86400 ))
+        if [ "$alert_age" -gt 9 ]; then
+            note "no alert has succeeded in $alert_age days -- the weekly probe should keep this under 8, so the channel is unproven rather than quiet"
+        else
+            alert_ok=true
+        fi
+    else
+        # An unparseable timestamp leaves the channel in an UNKNOWN state, and unknown
+        # must never fall through quietly: the first version of this check did exactly
+        # that, reporting nothing while alert_ok stayed false, so a corrupt key read
+        # identically to a healthy one.
+        note "alert_last is unreadable ('$alert_raw') -- the channel's state is unknown, not fine"
+    fi
+fi
+
 # Worth verdict: asked on every screen you land on because a session ended, which a
 # cooldown always is. Three cooldowns with no verdict means the question is not reaching
 # a screen -- or reaching one that cannot submit it.
@@ -479,6 +513,7 @@ printf '"missing_exec":%d,"not_enabled":%d,"dead_timers":%d,"fw_policy6":"%s",' 
        "${missing_exec:-0}" "${not_enabled:-0}" "${dead_timers:-0}" "${fw_policy6:-unknown}"
 printf '"entries3":%d,"reflect3":%d,"cooldowns5":%d,"worth5":%d,' \
        "${entries3:-0}" "${reflect3:-0}" "${cooldowns5:-0}" "${worth5:-0}"
+printf '"alert_ok":%s,"alert_age_days":%d,' "${alert_ok:-false}" "${alert_age:--1}"
 printf '"tampered_files":%d,"tampered_all":%d,"backup_restores":%d,"full_checked":%d,"findings":%d,"checked":%d}\n' \
        "${tampered:--1}" "${tampered_all:--1}" "${backup_restores:--1}" "${full_checked:-0}" "${#findings[@]}" "$(date +%s)"
 } > "$TMP"

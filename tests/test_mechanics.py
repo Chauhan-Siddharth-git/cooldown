@@ -717,3 +717,113 @@ def test_boot_history_still_reads_entries_written_before_the_tag(rdb):
     rows = b.boot_history()
     assert len(rows) == 2, rows
     assert rows[0]["planned"] is True and rows[1]["planned"] is False
+
+
+# --- the alert channel itself ----------------------------------------------------------
+
+def test_alert_state_separates_broken_from_merely_unproven(rdb, monkeypatch):
+    """Two different problems. "Failing" is knowable now; "unproven" only means nothing
+    has needed saying. Reporting the second as the first is how a check becomes noise,
+    and reporting the first as the second would hide a dead channel."""
+    import app as b
+    monkeypatch.setattr(b, "ALERT_URL", "https://example.invalid/t")
+    now = time.time()
+
+    rdb.delete("alert_last")
+    assert b.alert_state(now)["state"] == "never used"
+
+    # Deliberately a minute off the day boundary. "%.0f" ROUNDS, so a timestamp built as
+    # exactly now-3d can be stored up to half a second late, and flooring the difference
+    # then yields 2 -- which failed in about a third of runs and looked like flakiness in
+    # the code rather than arithmetic in the test.
+    rdb.set("alert_last", f"{now - 3 * 86400 - 60:.0f} ok")
+    s = b.alert_state(now)
+    assert s["ok"] and s["state"] == "ok" and s["age_days"] == 3
+
+    rdb.set("alert_last", f"{now - 12 * 86400 - 60:.0f} ok")
+    s = b.alert_state(now)
+    assert not s["ok"] and s["state"] == "unproven", s
+
+    rdb.set("alert_last", f"{now - 60:.0f} http 500")
+    s = b.alert_state(now)
+    assert not s["ok"] and s["state"] == "failing" and "500" in s["detail"]
+
+    # Unreadable must not read as healthy.
+    rdb.set("alert_last", "garbage")
+    assert not b.alert_state(now)["ok"]
+
+
+def test_no_alert_url_is_reported_not_silently_fine(rdb, monkeypatch):
+    """A box with no alert URL cannot tell you anything off-box. That is a configuration
+    choice, but it must be visible rather than indistinguishable from a working one."""
+    import app as b
+    monkeypatch.setattr(b, "ALERT_URL", "")
+    s = b.alert_state()
+    assert s["configured"] is False and not s["ok"]
+
+
+def test_the_probe_sends_weekly_and_does_not_buzz(rdb, monkeypatch):
+    """A canary that woke the phone every week would be turned off, and a turned-off
+    canary is worse than none: its silence still reads as health."""
+    import app as b
+    monkeypatch.setattr(b, "ALERT_URL", "https://example.invalid/t")
+    sent = []
+    monkeypatch.setattr(b, "send_alert", lambda t, priority=None: sent.append((t, priority)))
+    now = time.time()
+
+    assert b.alert_probe(now) is True
+    assert len(sent) == 1 and sent[0][1] == "min", sent
+    # Runs hourly; must not send hourly.
+    assert b.alert_probe(now + 3600) is False
+    assert b.alert_probe(now + 6 * 86400) is False
+    assert b.alert_probe(now + 8 * 86400) is True
+    assert len(sent) == 2
+
+
+def _drain_alert_threads(timeout=3):
+    """Wait for send_alert's worker to finish before the test ends.
+
+    It runs on a daemon thread and its LAST act is writing alert_last. Letting that thread
+    outlive the test means the write lands in whatever database the next test is using --
+    which made test_alert_state_separates_broken_from_merely_unproven fail in roughly
+    three runs out of eight, looking exactly like a bug in the code under test. Joining by
+    thread name keeps this in the tests, where the problem is, rather than adding a handle
+    to production code that only tests would use.
+    """
+    import threading
+    for t in threading.enumerate():
+        if t.name == "cooldown-alert":
+            t.join(timeout)
+            assert not t.is_alive(), "alert thread did not finish; it would pollute the next test"
+
+
+def test_the_probe_goes_through_the_same_path_a_real_alert_uses(rdb, monkeypatch):
+    """A probe that used a different URL, method or header would prove something adjacent
+    to the thing that has to work. This asserts it reaches the real sender."""
+    import app as b
+    monkeypatch.setattr(b, "ALERT_URL", "https://example.invalid/t")
+    seen = {}
+    def fake_urlopen(req, timeout=None):
+        seen["url"] = req.full_url
+        seen["priority"] = req.headers.get("Priority")
+        raise RuntimeError("stop here; the request shape is what matters")
+    monkeypatch.setattr(b.urllib.request, "urlopen", fake_urlopen)
+    rdb.delete("alert_probe_at")
+    b.alert_probe()
+    _drain_alert_threads()
+    assert seen.get("url") == "https://example.invalid/t", seen
+    assert seen.get("priority") == "min", seen
+
+
+def test_a_real_alert_carries_no_priority_header(rdb, monkeypatch):
+    """Only the probe is silent. An unplanned reboot must arrive at normal priority."""
+    import app as b
+    monkeypatch.setattr(b, "ALERT_URL", "https://example.invalid/t")
+    seen = {}
+    def fake_urlopen(req, timeout=None):
+        seen["priority"] = req.headers.get("Priority")
+        raise RuntimeError("stop")
+    monkeypatch.setattr(b.urllib.request, "urlopen", fake_urlopen)
+    b.send_alert("cooldown: UNPLANNED reboot")
+    _drain_alert_threads()
+    assert seen.get("priority") is None, seen

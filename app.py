@@ -3983,8 +3983,12 @@ ALERT_URL = os.environ.get("COOLDOWN_ALERT_URL", "").strip()
 ALERT_TIMEOUT = 5
 
 
-def send_alert(text):
+def send_alert(text, priority=None):
     """POST one line off the box. Never raises, never blocks, never leaks.
+
+    `priority` maps to ntfy's Priority header. The weekly probe sends "min", which
+    delivers without buzzing: a canary that woke the phone every week would be turned off,
+    and a turned-off canary is worse than none because its silence still reads as health.
 
     NOT BLOCKING: boot_watch() runs inside a request, so a webhook that hangs would hang
     the dashboard with it. Sent on a daemon thread with a timeout.
@@ -3995,7 +3999,9 @@ def send_alert(text):
 
     RESULT RECORDED: a send that silently failed is indistinguishable from no alert,
     which is the exact failure this feature exists to prevent. The outcome lands in
-    `alert_last` and shows on /health.
+    `alert_last`, which alert_state() reads and /health shows. That last clause was in
+    this docstring for months before it was true: the key was written and read by
+    nothing.
 
     Honest limit: an attacker with root can read ALERT_URL and suppress this. Nothing on
     the box survives the box. The half that catches that is an OFF-box liveness detector
@@ -4007,8 +4013,11 @@ def send_alert(text):
     def go():
         outcome = "unknown"
         try:
+            hdrs = {"Content-Type": "text/plain"}
+            if priority:
+                hdrs["Priority"] = priority
             req_ = urllib.request.Request(ALERT_URL, data=text.encode("utf-8"),
-                                          headers={"Content-Type": "text/plain"})
+                                          headers=hdrs)
             with urllib.request.urlopen(req_, timeout=ALERT_TIMEOUT) as resp:
                 outcome = "ok" if 200 <= resp.status < 300 else f"http {resp.status}"
         except Exception as e:
@@ -4017,6 +4026,76 @@ def send_alert(text):
 
     threading.Thread(target=go, daemon=True, name="cooldown-alert").start()
     return True
+
+
+# --- is the alert channel still there? -------------------------------------------------
+#
+# Everything above sends off-box notifications and then assumes they arrived. send_alert
+# records its outcome in `alert_last` and its own docstring claimed that "shows on
+# /health" -- it never did. The key was written and read by nothing, so a channel that had
+# been failing for months would look exactly like one that simply had nothing to say.
+#
+# That matters more now than it did. Since planned reboots stopped alerting, the ABSENCE
+# of a notification is meaningful: no alert means no unplanned reboot. If the channel is
+# dead, absence means nothing at all, and silence reads as safety while telling you
+# nothing. The inverse of the failure this alert exists to catch.
+#
+# Two halves, because they answer different questions:
+#   · the last send FAILED        -> broken now, and knowable immediately
+#   · the last send was long ago  -> not broken, merely UNPROVEN, which is not the same
+#                                    thing and must not be reported as if it were
+#
+# The probe fixes the second: a min-priority publish once a week, through the same code
+# path a real alert uses, so "worked recently" is a fact rather than a hope. Testing the
+# real path matters -- a probe that used a different URL, method or header would prove
+# something adjacent to the thing that has to work.
+ALERT_PROBE_DAYS = 7
+ALERT_PROVEN_WITHIN_DAYS = 9       # a weekly probe should keep this under 8
+
+
+def alert_probe(now=None):
+    """Exercise the alert path so its silence means something. Returns True if sent."""
+    if not ALERT_URL:
+        return False
+    now = time.time() if now is None else now
+    last = _try(lambda: r.get("alert_probe_at"), None)
+    try:
+        if last and now - float(last) < ALERT_PROBE_DAYS * 86400:
+            return False
+    except (TypeError, ValueError):
+        pass
+    _try(lambda: r.set("alert_probe_at", f"{now:.0f}"))
+    # No hostname, no address, same rule as every other message on this channel.
+    send_alert("cooldown: weekly channel check, nothing wrong", priority="min")
+    return True
+
+
+def alert_state(now=None):
+    """What /health needs to say about the off-box channel, in the vocabulary that
+    distinguishes broken from unproven."""
+    now = time.time() if now is None else now
+    if not ALERT_URL:
+        return {"configured": False, "ok": False, "state": "not configured",
+                "age_days": None, "detail": "no alert URL is set"}
+    raw = _try(lambda: r.get("alert_last"), None) or ""
+    parts = raw.split(None, 1)
+    try:
+        when = float(parts[0])
+    except (TypeError, ValueError, IndexError):
+        return {"configured": True, "ok": False, "state": "never used",
+                "age_days": None, "detail": "nothing has ever been sent"}
+    outcome = (parts[1] if len(parts) > 1 else "unknown").strip()
+    age_days = max(0, int((now - when) // 86400))
+    if outcome != "ok":
+        return {"configured": True, "ok": False, "state": "failing",
+                "age_days": age_days, "detail": f"last send failed: {outcome}"}
+    if age_days > ALERT_PROVEN_WITHIN_DAYS:
+        return {"configured": True, "ok": False, "state": "unproven",
+                "age_days": age_days,
+                "detail": f"nothing has succeeded in {age_days} days; the weekly probe "
+                          f"should keep this under {ALERT_PROBE_DAYS + 1}"}
+    return {"configured": True, "ok": True, "state": "ok", "age_days": age_days,
+            "detail": f"last send succeeded {age_days}d ago"}
 
 
 # --- planned reboots: say so BEFORE, off the box ---------------------------------------
@@ -4833,6 +4912,22 @@ HEALTH_PAGE = """
       </div>
       <!-- Where the curfew thinks you are. Rendered only when it is NOT the box's own
            clock, so at home this row does not exist and cannot become wallpaper. -->
+      {# The off-box channel. Shown only when it is NOT healthy: a green row saying
+         "alerts fine" every day is how you stop reading rows. Since a planned restart no
+         longer alerts, the ABSENCE of a notification carries meaning, and it carries none
+         if the channel is dead.
+
+         A Jinja comment, not an HTML one, so it never reaches the browser. The HTML
+         version shipped this reasoning into the page source and tripped
+         test_health_page_does_not_invent_a_schedule_it_does_not_know, which forbids the
+         word the comment happened to use. Developer commentary has no business in a
+         rendered page either way. #}
+      {% if alert.get('state') and not alert.get('ok') %}
+      <div class="row">
+        <span class="k">Alerts</span>
+        <span class="v"><b>{{ alert.state }}</b> &middot; {{ alert.detail }}</span>
+      </div>
+      {% endif %}
       {% if tz.get('travelling') or tz.get('pending') %}
       <div class="row">
         <span class="k">Location</span>
@@ -4973,6 +5068,7 @@ def health():
     return render_page(HEALTH_PAGE,
         d=d, boot_alert=boot_alert, boot_history=_try(boot_history, []),
         tz=_try(tz_state, {}) or {},
+        alert=_try(alert_state, {}) or {},
         cpu_lines=_cpu_lines(d["cpu"].get("hist", [])[-CPU_CARD_SAMPLES:]),
         cpu_colors=CPU_LINE_COLORS,
         card_min=max(1, round(CPU_CARD_SAMPLES * 4 / 60)),
@@ -5054,6 +5150,11 @@ scheduler.add_job(sample_acct, 'interval', seconds=ACCT_SAMPLE_SECS, max_instanc
 # announce_planned_reboot is defined several hundred lines further down.
 scheduler.add_job(announce_planned_reboot, 'interval', minutes=5, max_instances=1,
                   coalesce=True)
+# Hourly, but alert_probe() itself enforces the weekly spacing. Putting the interval here
+# instead would mean a restart resets the clock, and this box restarts for kernel updates
+# -- a probe that only fires after 7 uninterrupted days could go a long time without ever
+# firing, which is exactly the silent-nothing-happened failure it exists to detect.
+scheduler.add_job(alert_probe, 'interval', hours=1, max_instances=1, coalesce=True)
 
 
 @app.route('/feed')
