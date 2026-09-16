@@ -43,11 +43,36 @@ master key, and passes it along. Your phone accepts the reseal because you told 
 
 That works beautifully **and** it makes one new thing true:
 
-> **Anyone holding that master key can read the mail from every device that trusts it —
-> not just Reddit and YouTube. Everything. Your bank, your email, your messages.**
+> **Anyone holding that master key can read traffic from every device that trusts it.**
 
-Cooldown only *looks* at the handful of sites you list. But the *capability* is total.
-That's why the rest of this page exists.
+How much traffic depends entirely on one thing, and this section used to get it wrong.
+
+**Originally the capability really was total** — bank, email, messages, everything — and
+this page said so in those words. That stopped being true when the key was rebuilt with
+*name constraints* (F26): a list, baked into the certificate itself, of the only domains it
+is permitted to vouch for. There are 96, and they are the sites the gate covers. A stolen
+key cannot produce a usable certificate for your bank, because your bank is not on the
+list and the list is not editable without the signature falling apart. Email and URI
+identities are excluded outright, so it cannot be used to forge signed mail either.
+
+**But that protection lives in the client, not in the key**, and a client that does not
+check the list does not benefit from it. This is not hypothetical here. In September 2026
+the zombsroyale iOS app accepted a certificate for a domain deliberately left *off* the
+permitted list — it never checked. Every mainstream browser and operating system does
+check. Sloppy apps do not, and one was found on the phone this box protects, by accident,
+while investigating something else.
+
+So the honest version is three sentences rather than one:
+
+- Through a **browser**, or anything using the operating system's own TLS, a stolen key
+  reaches the 96 listed sites and nothing else.
+- Through an **app that skips certificate checks**, it reaches whatever that app talks to,
+  and no constraint on the key changes that.
+- Bare **IP addresses** are unconstrained, which is a deliberate accepted risk recorded in
+  the case study (F38), because constraining them broke transparent interception.
+
+That is a much smaller blast radius than "everything", and it is not zero. It is still the
+reason the rest of this page exists.
 
 ---
 
@@ -58,8 +83,8 @@ most: **what is different about your life afterwards.**
 
 | | Without Cooldown | With Cooldown |
 |---|---|---|
-| **Who can read your browsing** | You and the websites. Nobody in between — not your internet provider, not the café wifi. | The same, **plus** anyone who gets the master key off your box. |
-| **If someone breaks into your home wifi** | They see scrambled noise. Modern encryption holds. | Same — **unless** they also get the key. Then they see everything in plain text. |
+| **Who can read your browsing** | You and the websites. Nobody in between — not your internet provider, not the café wifi. | The same, **plus** anyone who gets the master key off your box — for the 96 listed sites, and for anything reached by an app that skips certificate checks. |
+| **If someone breaks into your home wifi** | They see scrambled noise. Modern encryption holds. | Same — **unless** they also get the key. Then the listed sites are plain text to them; your bank and mail are not, because the key may not vouch for them. |
 | **If hardware is physically stolen** | Stealing your router gets someone almost nothing. | The Pi's memory card holds a working key to your traffic, and it isn't encrypted. Whoever holds the card holds the key — for years. |
 | **Code sitting in the path of your traffic** | Your operating system and browser. Written by large teams, patched constantly, attacked and fixed by thousands of people. | All of that, **plus roughly 3,700 lines written by one person in their spare time.** |
 | **If that code has a bug** | Not applicable. | A website you visit might be able to reach further than it should — into the box, or your home network. |
