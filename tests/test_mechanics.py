@@ -567,3 +567,51 @@ def test_the_books_move_once_at_the_next_reset_and_do_not_re_fire(rdb, monkeypat
     assert budget.accounting_tz() == LA                      # moved, exactly once
     assert rdb.get("last_reset") == budget.reset_day(when)   # re-stamped in the NEW zone
     assert budget.catch_up_reset(when) is False              # so nothing fires twice
+
+
+def test_a_reboot_is_recorded_at_the_time_it_HAPPENED(rdb, monkeypatch):
+    """Not at the time it was noticed. boot_watch() only runs when /health renders, so
+    the two can be hours apart: a 04:00 kernel-update reboot went unnoticed until 09:45
+    and the banner reported 09:45 -- five and three quarter hours late, and inside the
+    window the owner was awake and using the machine.
+
+    That is the worst error this feature can make. Its job is to let you say "yes, I
+    unplugged it" or "no, I didn't", and a wrong timestamp makes an explainable reboot
+    look unexplainable and an unexplainable one look like something you might have done.
+    """
+    import app as b
+    real_boot = 1_789_536_012.0                   # 04:00-ish
+    noticed_at = real_boot + 5.75 * 3600          # ...noticed at 09:45
+    monkeypatch.setattr(b, "_boot_time", lambda: real_boot)
+    monkeypatch.setattr(b, "_first_line", lambda p: "boot-id-AAAA")
+    monkeypatch.setattr(b, "send_alert", lambda *a, **k: True)
+    monkeypatch.setattr(b.time, "time", lambda: noticed_at)
+
+    rdb.set("last_boot_id", "boot-id-PREVIOUS")   # so this is not the first-ever run
+    b.boot_watch()
+
+    assert float(rdb.get("unacked_boot")) == real_boot, "banner shows when it was noticed"
+    assert float(rdb.lrange("boot_events", -1, -1)[0]) == real_boot, "history shows the same"
+
+
+def test_an_unreadable_proc_stat_still_records_the_reboot(rdb, monkeypatch):
+    """Fall back to now() rather than losing the event: a late timestamp is bad, no
+    tamper-evidence at all is worse."""
+    import app as b
+    monkeypatch.setattr(b, "_boot_time", lambda: None)
+    monkeypatch.setattr(b, "_first_line", lambda p: "boot-id-BBBB")
+    monkeypatch.setattr(b, "send_alert", lambda *a, **k: True)
+    rdb.set("last_boot_id", "boot-id-PREVIOUS")
+    b.boot_watch()
+    assert rdb.get("unacked_boot"), "the reboot was dropped when /proc/stat was unreadable"
+
+
+def test_the_first_ever_run_still_does_not_cry_wolf(rdb, monkeypatch):
+    import app as b
+    monkeypatch.setattr(b, "_boot_time", lambda: 1_789_536_012.0)
+    monkeypatch.setattr(b, "_first_line", lambda p: "boot-id-CCCC")
+    monkeypatch.setattr(b, "send_alert", lambda *a, **k: True)
+    rdb.delete("last_boot_id")
+    b.boot_watch()
+    assert not rdb.get("unacked_boot")
+    assert rdb.get("last_boot_id") == "boot-id-CCCC"

@@ -4018,6 +4018,18 @@ def send_alert(text):
     return True
 
 
+def _boot_time():
+    """Epoch seconds when the kernel started, from /proc/stat btime."""
+    try:
+        with open("/proc/stat", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("btime "):
+                    return float(line.split()[1])
+    except Exception as exc:
+        _note_error(exc)
+    return None
+
+
 def boot_watch():
     """Notice that the box has rebooted, and remember it until you say it was you.
 
@@ -4040,7 +4052,20 @@ def boot_watch():
         first_ever = r.get("last_boot_id") is None
         r.set("last_boot_id", bid)
         if not first_ever:                       # don't cry wolf on the very first run
-            now = time.time()
+            # WHEN THE BOX BOOTED, not when this function first noticed. They are not the
+            # same number and the difference is not small: a kernel update rebooted the box
+            # at 04:00:12 and nothing loaded /health until 09:45, so the banner reported a
+            # reboot "at 09:45" -- five and three quarter hours late, and squarely inside
+            # the window the owner was awake and using the machine. That is the worst
+            # possible error for this feature. Its whole job is to let you say "yes, that
+            # was me, I unplugged it" or "no, it wasn't", and a wrong timestamp makes an
+            # explainable reboot look unexplainable and an unexplainable one look like
+            # something you might have done.
+            #
+            # btime is what the kernel recorded at boot, so it is right however long ago
+            # that was. Falls back to now() if /proc/stat is unreadable, which restores the
+            # old behaviour rather than losing the event.
+            now = _boot_time() or time.time()
             r.rpush("boot_events", f"{now:.0f}")
             r.ltrim("boot_events", -50, -1)
             r.set("unacked_boot", f"{now:.0f}")
