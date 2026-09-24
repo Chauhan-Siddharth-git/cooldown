@@ -851,3 +851,93 @@ def test_some_slice_stays_smaller_than_the_pool(monkeypatch):
     # ...and the reachable state really does produce a soft pause rather than a cooldown.
     small = min(caps, key=lambda k: caps[k])
     assert budget.SITES[small]["budget_seconds"] < pool
+
+
+# --- the dead-man heartbeat trace ------------------------------------------------------
+
+def _dm_log(tmp_path, monkeypatch, lines):
+    import app as b
+    p = tmp_path / "deadman.log"
+    p.write_text("".join(l + "\n" for l in lines))
+    monkeypatch.setattr(b, "DEADMAN_LOG", str(p))
+    return b
+
+
+def test_a_steady_rhythm_is_alive(tmp_path, monkeypatch):
+    now = time.time()
+    b = _dm_log(tmp_path, monkeypatch, [f"{now - i * 300:.0f} ok" for i in range(36)])
+    t = b.deadman_trace(now)
+    assert t["count"] == 36 and not t["flat"] and t["age"] < 60
+
+
+def test_twelve_quiet_minutes_is_a_flatline(tmp_path, monkeypatch):
+    """Asserted against the threshold, not an exact age. The first version checked
+    age >= 780 on a ping built as now-780 with %.0f -- which ROUNDS, so the stored ping
+    could land half a second late and int() floor the age to 779. Flaky about half the
+    time, and it was the same mistake made in the alert-channel tests a week earlier."""
+    now = time.time()
+    b = _dm_log(tmp_path, monkeypatch, [f"{now - 13 * 60 - i * 300:.0f} ok" for i in range(20)])
+    t = b.deadman_trace(now)
+    assert t["flat"], "13 minutes without a ping must read as a flatline"
+    assert t["age"] > b.DEADMAN_FLATLINE_AFTER
+
+
+def test_a_failed_ping_is_a_gap_not_a_beat(tmp_path, monkeypatch):
+    """A ping that could not reach healthchecks.io did not happen as far as the far end is
+    concerned, so the trace must not draw it -- otherwise the picture would claim a
+    heartbeat the evidence does not have."""
+    now = time.time()
+    b = _dm_log(tmp_path, monkeypatch, [f"{now - 60:.0f} failed", f"{now - 360:.0f} failed",
+                                        f"{now - 900:.0f} ok"])
+    t = b.deadman_trace(now)
+    assert t["count"] == 1 and t["flat"], t
+
+
+def test_no_log_means_no_trace_rather_than_a_healthy_one(tmp_path, monkeypatch):
+    import app as b
+    monkeypatch.setattr(b, "DEADMAN_LOG", str(tmp_path / "absent.log"))
+    assert b.deadman_trace() is None
+
+
+def test_timer_jitter_does_not_draw_a_missed_beat(tmp_path, monkeypatch):
+    """Why beats are drawn at true times instead of in five-minute buckets. The timer
+    drifts by up to 30s; with fixed buckets, pings at 4:40 and 5:20 past the hour land in
+    the same slot and leave the next one empty -- a missed beat that never happened. Every
+    ping here is on time give or take 30s, so every one must become a beat."""
+    now = time.time()
+    jitter = [0, 25, -28, 15, -22, 29, -30, 10]
+    pings = [f"{now - i * 300 + jitter[i % len(jitter)]:.0f} ok" for i in range(36)]
+    b = _dm_log(tmp_path, monkeypatch, pings)
+    t = b.deadman_trace(now)
+    svg = str(b.deadman_svg(t, now))
+    # One R peak per beat: count the spikes that reach full amplitude.
+    peak_y = f"{64 * 0.64 - 64 * 0.52:.1f}"
+    assert svg.count("," + peak_y) == t["count"] == 36, "a jittery on-time ping was dropped"
+
+
+def test_the_trace_path_never_runs_backwards(tmp_path, monkeypatch):
+    """Two pings closer together than one beat width would otherwise produce an x that
+    goes backwards, and the line would scribble over itself."""
+    import re
+    now = time.time()
+    b = _dm_log(tmp_path, monkeypatch, [f"{now - 60:.0f} ok", f"{now - 61:.0f} ok",
+                                        f"{now - 62:.0f} ok", f"{now - 400:.0f} ok"])
+    svg = str(b.deadman_svg(b.deadman_trace(now), now))
+    d = re.search(r'd="M([^"]+)"', svg).group(1)
+    xs = [float(p.split(",")[0]) for p in d.replace("L", " ").split()]
+    assert xs == sorted(xs), "the path doubles back on itself"
+
+
+
+def test_nothing_is_drawn_outside_the_frame(tmp_path, monkeypatch):
+    """The newest ping is almost always within the last five minutes, so its beat sits
+    against the right edge. Unclamped it drew past the frame on essentially every render.
+    Monotonicity alone does not catch that -- the closing point can follow the overflow --
+    so the bound is asserted directly."""
+    import re
+    now = time.time()
+    b = _dm_log(tmp_path, monkeypatch, [f"{now - 5:.0f} ok", f"{now - 305:.0f} ok"])
+    svg = str(b.deadman_svg(b.deadman_trace(now), now, width=600))
+    d = re.search(r'd="M([^"]+)"', svg).group(1)
+    xs = [float(p.split(",")[0]) for p in d.replace("L", " ").split()]
+    assert max(xs) <= 600.0 and min(xs) >= 0.0, f"trace leaves the frame: {min(xs)}..{max(xs)}"

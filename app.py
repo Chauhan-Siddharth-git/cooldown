@@ -4151,6 +4151,96 @@ def planned_reboot_covers(boot_ts):
     return scheduled - 60 <= boot_ts <= scheduled + PLANNED_BOOT_GRACE
 
 
+# --- the dead-man's switch, drawn as a heartbeat ----------------------------------------
+#
+# A trace of every ping in the last three hours. Each successful ping is a beat, drawn at
+# the time it ACTUALLY landed. Bucketing into five-minute slots looked simpler and is
+# wrong: the timer drifts by up to 30s, so a fixed grid occasionally catches two pings in
+# one slot and none in the next, and draws a missed beat that never happened. True
+# positions mean the only thing that looks like a gap is a gap.
+#
+# This is a view of the pinger, not the evidence. The log lives on the box and whoever
+# holds the card can fake it; the record that counts is the one healthchecks.io keeps.
+# What this gives you is the thing a status line cannot: the rhythm. A single missed
+# ping, a slow drift, or a 35-minute hole at 3am are all visible at a glance.
+DEADMAN_LOG = "/var/lib/cooldown-deadman.log"
+DEADMAN_WINDOW = 3 * 3600
+DEADMAN_FLATLINE_AFTER = 12 * 60     # two missed pings plus slack
+# One PQRST beat: (dx, dy). dx spans one beat width centred on the ping; dy is a fraction
+# of the amplitude, positive upward. P bump, Q dip, R spike, S dip, T bump.
+_BEAT = ((-0.50, 0.00), (-0.34, 0.10), (-0.22, 0.00), (-0.12, -0.14), (-0.04, 1.00),
+         (0.06, -0.34), (0.14, 0.00), (0.30, 0.22), (0.44, 0.00), (0.50, 0.00))
+
+
+def deadman_trace(now=None):
+    """Successful pings in the window, the last one, and whether the line is flat."""
+    now = time.time() if now is None else now
+    try:
+        with open(DEADMAN_LOG, encoding="utf-8") as fh:
+            raw = fh.read().split("\n")
+    except FileNotFoundError:
+        return None                                  # never pinged: say so, draw nothing
+    except Exception as exc:
+        _note_error(exc)
+        return None
+    pings = []
+    for line in raw:
+        parts = line.split()
+        if len(parts) != 2 or parts[1] != "ok":
+            continue                                 # failed pings are gaps, by design
+        try:
+            t = float(parts[0])
+        except ValueError:
+            continue
+        if now - DEADMAN_WINDOW <= t <= now + 60:
+            pings.append(t)
+    pings.sort()
+    last = pings[-1] if pings else None
+    return {"pings": pings, "count": len(pings), "last": last,
+            "age": None if last is None else max(0, int(now - last)),
+            "flat": last is None or now - last > DEADMAN_FLATLINE_AFTER}
+
+
+def deadman_svg(trace, now=None, width=600, height=64):
+    """The trace as inline SVG. Server-side on purpose: the indicator for 'is the box
+    alive' must not depend on a script running in the page."""
+    now = time.time() if now is None else now
+    start = now - DEADMAN_WINDOW
+    base, amp, beat_w = height * 0.64, height * 0.52, 9.0
+    pts, last_x = [(0.0, base)], 0.0
+    last_cx = None
+    for t in trace["pings"]:
+        # Clamped inside the frame. The newest ping is nearly always within the last five
+        # minutes, so its beat sits against the right edge; unclamped it ran past the
+        # closing point and the path doubled back on itself -- on essentially every render,
+        # since that edge case is the steady state. Costs at most ~2 minutes of position
+        # for a ping in the last couple of minutes, which nobody can see at this scale.
+        cx = min((t - start) / DEADMAN_WINDOW * width, width - beat_w / 2)
+        if cx - beat_w / 2 < last_x:
+            continue                                 # overlapping beat: keep the path monotonic
+        for dx, dy in _BEAT:
+            pts.append((cx + dx * beat_w, base - dy * amp))
+        last_x, last_cx = cx + beat_w / 2, cx
+    pts.append((max(float(width), last_x), base))
+    d = "M" + " L".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+    state = "flat" if trace["flat"] else "ok"
+    if last_cx is not None and not trace["flat"]:
+        dot_x = last_cx - 0.04 * beat_w              # the R peak of the latest drawn beat
+        dot_y = base - amp
+    else:
+        dot_x, dot_y = float(width), base            # flatline: the dot rides the baseline
+    label = ("flatline" if trace["flat"] else
+             f"{trace['count']} pings in the last 3 hours, latest {trace['age'] // 60} min ago")
+    return Markup(
+        f'<svg class="ecg ecg-{state}" viewBox="0 0 {width} {height}" role="img" '
+        f'aria-label="dead-man switch heartbeat: {label}" preserveAspectRatio="none">'
+        f'<line class="ecg-base" x1="0" y1="{base:.1f}" x2="{width}" y2="{base:.1f}"/>'
+        f'<path class="ecg-trace" d="{d}"/>'
+        f'<rect class="ecg-sweep" x="-60" y="0" width="60" height="{height}"/>'
+        f'<circle class="ecg-dot" cx="{dot_x:.1f}" cy="{dot_y:.1f}" r="3.2"/>'
+        f'</svg>')
+
+
 def _boot_time():
     """Epoch seconds when the kernel started, from /proc/stat btime."""
     try:
@@ -4840,6 +4930,47 @@ HEALTH_PAGE = """
       </div>
       <!-- Where the curfew thinks you are. Rendered only when it is NOT the box's own
            clock, so at home this row does not exist and cannot become wallpaper. -->
+      {# The heartbeat. The one row here that shows while HEALTHY, which breaks this
+         page's own rule that a status is rendered only when something is wrong -- a green
+         "alerts fine" every day is how you stop reading rows. A trace is different from a
+         row: the rhythm is read at a glance rather than read at all, and a flatline is
+         visually loud in a way no line of text is. Shape carries the meaning, so it
+         survives colour-blindness: spikes are alive, a straight line is not. #}
+      {% if dm %}
+      <style>
+        .ecg-wrap{margin:14px 0 6px}
+        .ecg{width:100%;height:56px;display:block;overflow:visible}
+        .ecg-base{stroke:var(--line);stroke-width:1;stroke-dasharray:2 4}
+        .ecg-trace{fill:none;stroke-width:1.7;stroke-linejoin:round;stroke-linecap:round}
+        .ecg-ok .ecg-trace,.ecg-ok .ecg-dot{stroke:var(--go);fill:var(--go)}
+        .ecg-ok .ecg-trace{fill:none}
+        .ecg-flat .ecg-trace{stroke:var(--bad)}
+        .ecg-flat .ecg-dot{fill:var(--bad)}
+        .ecg-sweep{fill:var(--fg);opacity:.06}
+        .ecg-cap{font-size:12px;color:var(--muted);display:flex;justify-content:space-between;gap:8px}
+        .ecg-cap b{color:var(--bad);letter-spacing:.08em}
+        /* Only transform and opacity animate, on a promoted layer. Animating the path or
+           its stroke repaints the whole trace every frame -- the frost overlay taught this
+           page that lesson by making it scroll at a crawl. */
+        @keyframes ecg-sweep{from{transform:translateX(0)}to{transform:translateX(660px)}}
+        @keyframes ecg-beat{0%,100%{opacity:1}50%{opacity:.25}}
+        .ecg-ok .ecg-sweep{animation:ecg-sweep 4s linear infinite;will-change:transform}
+        .ecg-ok .ecg-dot{animation:ecg-beat 1.1s ease-in-out infinite;will-change:opacity}
+        .ecg-flat .ecg-dot{animation:ecg-beat .5s steps(1) infinite}
+        @media (prefers-reduced-motion:reduce){.ecg-sweep,.ecg-dot{animation:none!important}}
+      </style>
+      <div class="ecg-wrap">
+        {{ dm_svg }}
+        <div class="ecg-cap">
+          {% if dm.flat %}<span><b>FLATLINE</b> &middot; {% if dm.last %}no ping for
+            {{ dm.age // 60 }} min &mdash; the far end will fire{% else %}no pings in the last
+            3 hours{% endif %}</span>
+          {% else %}<span>dead-man's switch &middot; {{ dm.count }} beat{{ '' if dm.count == 1 else 's' }} in 3h &middot;
+            last {{ dm.age // 60 }} min ago</span>{% endif %}
+          <span>3h ago &rarr; now</span>
+        </div>
+      </div>
+      {% endif %}
       {# The dead-man's switch. Same rule: only shown when it is not healthy. Unlike the
          alert channel this one cannot fail quietly at the far end -- stopped pings ARE
          the alarm -- but it CAN fail to have been set up, or its timer can stop, and both
@@ -5008,6 +5139,8 @@ def health():
     return render_page(HEALTH_PAGE,
         d=d, boot_alert=boot_alert, boot_history=_try(boot_history, []),
         tz=_try(tz_state, {}) or {},
+        dm=(_dm := _try(deadman_trace, None)),
+        dm_svg=_try(lambda: deadman_svg(_dm), "") if _dm else "",
         alert=_try(alert_state, {}) or {},
         cpu_lines=_cpu_lines(d["cpu"].get("hist", [])[-CPU_CARD_SAMPLES:]),
         cpu_colors=CPU_LINE_COLORS,

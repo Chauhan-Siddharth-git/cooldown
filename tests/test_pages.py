@@ -550,3 +550,45 @@ def test_the_deadman_row_appears_only_when_it_is_not_pinging(client, rdb, monkey
     # unknown, and this row would otherwise fire on every box until the audit next ran.
     old = health_with({**base})
     assert "Dead-man" not in old, "a missing field rendered as a failure"
+
+
+def test_health_shows_the_heartbeat_and_a_loud_flatline(client, rdb, tmp_path, monkeypatch):
+    """Alive: a trace with a beat per ping and no alarm. Dead: the same trace in the bad
+    colour with FLATLINE spelled out. No log: nothing at all, rather than a flat line that
+    would read as an outage when the switch has simply never run."""
+    import app as b
+    log = tmp_path / "dm.log"
+    monkeypatch.setattr(b, "DEADMAN_LOG", str(log))
+    now = time.time()
+
+    def page(lines):
+        log.write_text("".join(l + "\n" for l in lines)) if lines is not None else (
+            log.unlink() if log.exists() else None)
+        b._HEALTH_CACHE.clear()
+        return client.get("/health").data.decode()
+
+    alive = page([f"{now - i * 300:.0f} ok" for i in range(36)])
+    assert 'class="ecg ecg-ok"' in alive and "FLATLINE" not in alive
+
+    dead = page([f"{now - 30 * 60 - i * 300:.0f} ok" for i in range(10)])
+    assert 'class="ecg ecg-flat"' in dead and "FLATLINE" in dead
+
+    none = page(None)
+    assert "ecg" not in none.split("<body")[1], "rendered a trace with no ping history"
+
+
+def test_the_heartbeat_animates_only_compositor_properties(client, rdb, tmp_path, monkeypatch):
+    """Animating a path, a stroke or a filter repaints every frame. The frost overlay did
+    that and dropped this page to a crawl, so the rule is written down as a test."""
+    import app as b, re
+    log = tmp_path / "dm.log"
+    log.write_text(f"{time.time():.0f} ok\n")
+    monkeypatch.setattr(b, "DEADMAN_LOG", str(log))
+    b._HEALTH_CACHE.clear()
+    html = client.get("/health").data.decode()
+    frames = re.findall(r"@keyframes ecg-[a-z]+\{(.*?)\}\}", html, re.S)
+    assert frames, "no heartbeat keyframes found -- this test is checking nothing"
+    for f in frames:
+        props = set(re.findall(r"([a-z-]+)\s*:", f))
+        assert props <= {"transform", "opacity"}, f"animates a repainting property: {props}"
+    assert "prefers-reduced-motion" in html

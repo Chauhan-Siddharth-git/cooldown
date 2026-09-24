@@ -65,3 +65,17 @@ else
 fi
 printf '%s %s\n' "$(date +%s)" "$outcome" > "$STATE" 2>/dev/null || true
 chmod 644 "$STATE" 2>/dev/null || true
+
+# A short rolling history for the heartbeat trace on /health. STATE answers "did the last
+# ping work"; a trace needs the rhythm, so a missed ping shows up as a visibly longer flat
+# stretch rather than being overwritten. 40 lines is a little over three hours at one ping
+# per five minutes. Rewritten through a temp file in the same directory so a reader never
+# sees a half-trimmed log.
+#
+# This is a VIEW of the pinger, not the evidence. It lives on the box, so whoever holds
+# the card can fake it; the record that counts is the one healthchecks.io keeps.
+LOG="${LOG:-/var/lib/cooldown-deadman.log}"
+printf '%s %s\n' "$(date +%s)" "$outcome" >> "$LOG" 2>/dev/null || true
+if tmp="$(mktemp "$(dirname "$LOG")/.deadman-log.XXXXXX" 2>/dev/null)"; then
+    tail -n 40 "$LOG" > "$tmp" 2>/dev/null && chmod 644 "$tmp" && mv "$tmp" "$LOG" || rm -f "$tmp"
+fi
