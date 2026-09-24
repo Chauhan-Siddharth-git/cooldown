@@ -592,3 +592,133 @@ def test_the_heartbeat_animates_only_compositor_properties(client, rdb, tmp_path
         props = set(re.findall(r"([a-z-]+)\s*:", f))
         assert props <= {"transform", "opacity"}, f"animates a repainting property: {props}"
     assert "prefers-reduced-motion" in html
+
+
+# --- health findings, in plain language -------------------------------------------------
+
+def _audit_ids():
+    import os, re
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(here, "deploy", "cooldown-audit.sh")
+    if not os.path.exists(path):
+        path = os.path.join(here, "deploy", "cooldown-audit.sh")
+    src = open(path, encoding="utf-8").read()
+    return {m.group(1) for m in re.finditer(r'(?:^|[ |&])note ([a-z0-9_]+) "', src, re.M)}
+
+
+def test_every_audit_finding_has_a_plain_explanation():
+    """The page used to show a count and say "Details: journalctl -t cooldown-audit". Every
+    finding now carries an id the page turns into what is wrong, why it matters and what to
+    do. A new audit check without an entry would silently fall back to technical text, so
+    this fails instead."""
+    import app as b
+    ids = _audit_ids()
+    assert len(ids) >= 40, f"only {len(ids)} audit ids found -- this test is checking nothing"
+    missing = sorted(ids - set(b.FINDINGS))
+    assert not missing, f"audit findings with no plain-language entry: {missing}"
+
+
+def test_no_explanation_outlives_its_check():
+    """Rule 10, the other direction: an entry for a finding the audit can no longer raise
+    is an exemption list quietly going stale."""
+    import app as b
+    orphans = sorted(set(b.FINDINGS) - _audit_ids())
+    assert not orphans, f"explanations for checks that no longer exist: {orphans}"
+
+
+def test_every_explanation_says_what_to_do():
+    """A warning with no resolution teaches you to ignore warnings. That is the exact
+    complaint that produced this table."""
+    import app as b
+    for fid, (cat, title, meaning, action) in b.FINDINGS.items():
+        assert cat in b.FINDING_CATEGORIES, fid
+        assert title and meaning and action, f"{fid} is missing part of its explanation"
+        assert len(action) > 12, f"{fid}: '{action}' is not an action"
+
+
+def _health_with_findings(client, monkeypatch, findings):
+    import app as b
+    real = b._audit
+    base = dict(real() or {})
+    base.update({"fresh": True, "findings": len(findings), "checked_ago": 60,
+                 "findings_list": findings, "ca_constrained": True})
+    monkeypatch.setattr(b, "_audit", lambda: base)
+    b._HEALTH_CACHE.clear()
+    return client.get("/health").data.decode()
+
+
+def test_a_feature_finding_is_not_presented_as_a_security_problem(client, rdb, monkeypatch):
+    """The finding that started this: a missing "was it worth it?" answer, shown as
+    "1 audit finding" under a Security heading. It must say No security problems, and
+    appear under Features with its resolution."""
+    html = _health_with_findings(client, monkeypatch, [
+        {"id": "worth_silent", "detail": "no worth verdict in 5 days across 4 cooldowns"}])
+    assert "No security problems" in html
+    sec = html.split(">Security<", 1)[1].split('class="srow', 1)[0]
+    assert "worth it" not in sec, "a feature finding leaked into the Security row"
+    assert ">Features<" in html and "Answer it next time it appears" in html
+    assert "journalctl -t cooldown-audit" not in html, "still telling the owner to open a terminal"
+
+
+def test_a_real_security_finding_says_what_to_do(client, rdb, monkeypatch):
+    html = _health_with_findings(client, monkeypatch, [
+        {"id": "ssh_password", "detail": "sshd now accepts password authentication"}])
+    sec = html.split(">Security<", 1)[1].split('class="srow', 1)[0]
+    assert "1</b> security" in sec
+    assert "accepts passwords" in sec and "PasswordAuthentication no" in sec
+
+
+def test_an_unknown_finding_is_shown_not_dropped(client, rdb, monkeypatch):
+    html = _health_with_findings(client, monkeypatch, [
+        {"id": "brand_new_check", "detail": "something the page has never heard of"}])
+    assert "something the page has never heard of" in html
+
+
+def test_errors_read_as_english(client, rdb, monkeypatch):
+    """'budget_handler: ReadTimeout, 3444m ago' -- an exception name and 2.4 days written as
+    minutes."""
+    import app as b
+    assert b._short_ago(3444 * 60) == "2 days ago"
+    assert b._short_ago(30) == "just now"
+    assert b._short_ago(3 * 3600) == "3 hours ago"
+    assert b._short_ago(None) == "at an unknown time"
+    assert "took too long" in b.plain_error("budget_handler: ReadTimeout")
+    assert "ReadTimeout" in b.plain_error("budget_handler: ReadTimeout"), "keep the name for debugging"
+
+
+def test_findings_survive_the_real_audit_reader_to_the_page(client, rdb, tmp_path, monkeypatch):
+    """Through the REAL _audit(), from a real JSON file, to the rendered page.
+
+    Every other findings test here replaces _audit() with a fake that already contains
+    findings_list. That is exactly how a missing line in _audit() -- the reader that
+    rebuilds the record field by field -- shipped to the live box: the audit wrote the
+    list, the page never received it, and the tests stayed green because they had
+    stepped around the one layer that was broken. This one does not."""
+    import app as b, json
+    f = tmp_path / "audit.json"
+    f.write_text(json.dumps({
+        "findings": 1, "checked": time.time() - 120, "ssh_keys": 1, "exposed_ports": "",
+        "ca_constrained": True, "ca_days": 3595, "mode": "quick",
+        "findings_list": [{"id": "worth_silent", "detail": "no worth verdict in 5 days"}]}))
+    monkeypatch.setattr(b, "AUDIT_STATE", str(f))
+    b._HEALTH_CACHE.clear()
+    html = client.get("/health").data.decode()
+    assert "Answer it next time it appears" in html, "the finding did not reach the page"
+    assert "can't describe yet" not in html, "fell back to the unexplained-finding message"
+    assert "No security problems" in html
+
+
+def test_the_second_clock_card_states_the_real_threshold(client, rdb, monkeypatch):
+    """The card tells the owner the warning fires below 40% of the second clock. That
+    threshold is ENFORCEMENT_RATIO in addon.py, a different process, so the page cannot
+    read it directly -- and a number copied into a template is how "172 processes exist"
+    went stale on the health page. This fails if the two drift apart."""
+    import app as b, addon
+    monkeypatch.setattr(b, "shadow_comparison", lambda *a, **k: {
+        "any": True, "settled": True, "days": 7, "running": "167 compared hours",
+        "rows": [], "hb": 382, "sh": 450, "ratio": 1.18})
+    html = client.get("/stats").data.decode()
+    pct = round(addon.ENFORCEMENT_RATIO * 100)
+    assert f"<b>{pct}%</b>" in html, f"the card no longer states the real {pct}% threshold"
+    assert "the injection could go" not in html, "the stale conclusion is back"
+    assert "give it a few days" not in html.lower()

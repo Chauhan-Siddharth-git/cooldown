@@ -35,7 +35,15 @@ CA_CERT="$CA_DIR/mitmproxy-ca-cert.pem"
 # been backing up nightly all along.
 BACKUP_DIR=/var/backups/cooldown
 findings=()
-note() { findings+=("$1"); logger -t cooldown-audit "$1"; }
+finding_ids=()
+# note <id> <technical message>
+#
+# The id is what /health looks up to explain the finding in plain language; the message
+# stays technical, because it goes to the journal and is for whoever is debugging. They
+# used to be the same string, which served neither reader: the page could only show a
+# COUNT and point at the journal. app.FINDINGS holds the plain version of every id, and a
+# test fails if a note here has none.
+note() { finding_ids+=("$1"); findings+=("$2"); logger -t cooldown-audit "[$1] $2"; }
 days_until() { echo $(( ( $1 - $(date +%s) ) / 86400 )); }
 
 # --- the trust anchor -------------------------------------------------------------
@@ -43,15 +51,15 @@ if [ -d "$CA_DIR" ]; then
     ca_mode="$(stat -c '%a' "$CA_DIR")"
     ca_owner="$(stat -c '%U' "$CA_DIR")"
     ca_mtime="$(stat -c '%Y' "$CA_DIR/mitmproxy-ca.pem" 2>/dev/null || echo 0)"
-    [ "$ca_mode" = "700" ] || note "CA directory is mode $ca_mode, expected 700"
-    [ "$ca_owner" = "cooldownproxy" ] || note "CA directory owned by $ca_owner, expected cooldownproxy"
+    [ "$ca_mode" = "700" ] || note ca_mode "CA directory is mode $ca_mode, expected 700"
+    [ "$ca_owner" = "cooldownproxy" ] || note ca_owner "CA directory owned by $ca_owner, expected cooldownproxy"
 
     # Fingerprint, not just mtime. Anyone who swaps the CA can restore a timestamp with
     # `touch -r` in one command; they cannot make a different key hash the same.
     ca_fp="$(openssl x509 -in "$CA_CERT" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2)"
     if [ -s "$PIN" ]; then
         pinned="$(cat "$PIN")"
-        [ "$ca_fp" = "$pinned" ] || note "CA FINGERPRINT CHANGED -- was ${pinned:0:20}..., now ${ca_fp:0:20}..."
+        [ "$ca_fp" = "$pinned" ] || note ca_fp_changed "CA FINGERPRINT CHANGED -- was ${pinned:0:20}..., now ${ca_fp:0:20}..."
     elif [ -n "$ca_fp" ]; then
         printf '%s' "$ca_fp" > "$PIN"; chmod 600 "$PIN"
         logger -t cooldown-audit "pinned CA fingerprint ${ca_fp:0:20}... (first run)"
@@ -61,10 +69,10 @@ if [ -d "$CA_DIR" ]; then
     # error and no obvious cause.
     ca_end="$(openssl x509 -in "$CA_CERT" -noout -enddate 2>/dev/null | cut -d= -f2)"
     ca_days=$(days_until "$(date -d "$ca_end" +%s 2>/dev/null || echo 0)")
-    [ "$ca_days" -gt 90 ] || note "CA certificate expires in $ca_days days -- rotate it (rotate-ca.sh)"
+    [ "$ca_days" -gt 90 ] || note ca_expiring "CA certificate expires in $ca_days days -- rotate it (rotate-ca.sh)"
 else
     ca_mode="missing"; ca_owner="missing"; ca_mtime=0; ca_fp=""; ca_days=0
-    note "CA directory $CA_DIR is missing"
+    note ca_missing "CA directory $CA_DIR is missing"
 fi
 
 # --- who can log in ---------------------------------------------------------------
@@ -87,14 +95,14 @@ for f in /home/*/.ssh/authorized_keys /root/.ssh/authorized_keys; do
     key_count=$((key_count + ${n:-0}))
 done
 pw_auth="$(sshd -T 2>/dev/null | awk '/^passwordauthentication/{print $2}')"
-[ "${pw_auth:-no}" = "no" ] || note "sshd now accepts password authentication"
+[ "${pw_auth:-no}" = "no" ] || note ssh_password "sshd now accepts password authentication"
 
 # Only meaningful since the journal became persistent. Before that this was always zero
 # because there was nothing to count -- which is exactly how an empty result got
 # reported as a clean one.
 failed_auth="$(journalctl -u ssh --since '24 hours ago' --no-pager 2>/dev/null \
                | grep -ciE 'Failed password|Invalid user|authentication failure' || true)"
-[ "${failed_auth:-0}" -lt 20 ] || note "$failed_auth failed SSH auth attempts in 24h"
+[ "${failed_auth:-0}" -lt 20 ] || note ssh_failed "$failed_auth failed SSH auth attempts in 24h"
 
 # --- the tailnet is now the only way in -------------------------------------------
 ts_expiry="$(tailscale status --json 2>/dev/null \
@@ -102,13 +110,13 @@ ts_expiry="$(tailscale status --json 2>/dev/null \
 ts_days=-1
 if [ -n "$ts_expiry" ]; then
     ts_days=$(days_until "$(date -d "$ts_expiry" +%s 2>/dev/null || echo 0)")
-    [ "$ts_days" -gt 30 ] || note "Tailscale key expires in $ts_days days -- port 22 is tailnet-only, so expiry means no remote access at all"
+    [ "$ts_days" -gt 30 ] || note ts_key_expiring "Tailscale key expires in $ts_days days -- port 22 is tailnet-only, so expiry means no remote access at all"
 fi
 
 # --- what is listening, and is the firewall loaded --------------------------------
 listeners="$(ss -tlnH 2>/dev/null | awk '{print $4}' | sed 's/.*://' | sort -un | tr '\n' ' ')"
 fw_rules="$(iptables -S INPUT 2>/dev/null | grep -c 'multiport\|tailscale0')"
-[ "$fw_rules" -gt 0 ] || note "no interface-scoped INPUT rules found -- the firewall is not loaded"
+[ "$fw_rules" -gt 0 ] || note fw_not_loaded "no interface-scoped INPUT rules found -- the firewall is not loaded"
 
 # Exposure depends on the POLICY, not just on which ports a rule names. Under the old
 # default-ACCEPT this was "any wildcard listener nobody wrote a rule for"; the moment the
@@ -188,14 +196,14 @@ for c in $(for x in $contained; do echo "$x"; done | sort -u); do
     _kept="$_kept$c "
 done
 contained="$_kept"
-[ -z "$exposed" ] || note "reachable from off-box and not contained by the firewall: $exposed"
-[ "$fw_policy" = "DROP" ]  || note "INPUT policy is $fw_policy, not DROP -- new listeners are exposed by default"
-[ "$fw_policy6" = "DROP" ] || note "IPv6 INPUT policy is ${fw_policy6:-unreadable}, not DROP -- v6 was previously never checked at all"
+[ -z "$exposed" ] || note fw_exposed "reachable from off-box and not contained by the firewall: $exposed"
+[ "$fw_policy" = "DROP" ]  || note fw_policy "INPUT policy is $fw_policy, not DROP -- new listeners are exposed by default"
+[ "$fw_policy6" = "DROP" ] || note fw_policy6 "IPv6 INPUT policy is ${fw_policy6:-unreadable}, not DROP -- v6 was previously never checked at all"
 
 # --- is anything still being written down -----------------------------------------
 journal_persistent=false
 [ "$(find /var/log/journal -name '*.journal' 2>/dev/null | wc -l)" -gt 0 ] && journal_persistent=true
-[ "$journal_persistent" = true ] || note "journal is not persisting -- a future audit will have no history to read"
+[ "$journal_persistent" = true ] || note journal_volatile "journal is not persisting -- a future audit will have no history to read"
 
 # Redis durability, asked of the RUNNING server rather than of the config file. AOF was
 # recorded as done back when this project was planned around Docker, where the route to it
@@ -210,9 +218,9 @@ journal_persistent=false
 # the config would leave the first true and the second false.
 aof="$(redis-cli info persistence 2>/dev/null | sed -n 's/^aof_enabled:\([0-9]*\).*/\1/p')"
 if [ -z "$aof" ]; then
-    note "could not read Redis persistence state -- durability is unverified, not fine"
+    note redis_unreadable "could not read Redis persistence state -- durability is unverified, not fine"
 elif [ "$aof" != "1" ]; then
-    note "Redis AOF is OFF -- an unclean stop loses every write since the last RDB snapshot"
+    note redis_aof_off "Redis AOF is OFF -- an unclean stop loses every write since the last RDB snapshot"
 fi
 
 # A backup that quietly stopped is the classic silent failure: you find out when you
@@ -221,17 +229,17 @@ backup_age=-1
 newest="$(ls -t "$BACKUP_DIR" 2>/dev/null | head -1)"
 if [ -n "$newest" ]; then
     backup_age=$(( ( $(date +%s) - $(stat -c %Y "$BACKUP_DIR/$newest") ) / 86400 ))
-    [ "$backup_age" -le 2 ] || note "newest backup is $backup_age days old -- the nightly backup has stopped"
-    [ -s "$BACKUP_DIR/$newest" ] || note "newest backup $newest is empty"
+    [ "$backup_age" -le 2 ] || note backup_stale "newest backup is $backup_age days old -- the nightly backup has stopped"
+    [ -s "$BACKUP_DIR/$newest" ] || note backup_empty "newest backup $newest is empty"
 else
-    note "no backups found in $BACKUP_DIR"
+    note backup_none "no backups found in $BACKUP_DIR"
 fi
 
 # Kernels accumulate now that unattended upgrades actually install them.
 root_pct="$(df --output=pcent / 2>/dev/null | tail -1 | tr -dc '0-9')"
 boot_pct="$(df --output=pcent /boot/firmware 2>/dev/null | tail -1 | tr -dc '0-9')"
-[ "${root_pct:-0}" -lt 85 ] || note "root filesystem ${root_pct}% full"
-[ "${boot_pct:-0}" -lt 85 ] || note "boot partition ${boot_pct}% full -- old kernels may not be getting removed"
+[ "${root_pct:-0}" -lt 85 ] || note disk_root "root filesystem ${root_pct}% full"
+[ "${boot_pct:-0}" -lt 85 ] || note disk_boot "boot partition ${boot_pct}% full -- old kernels may not be getting removed"
 
 # --- are the features that record things still recording? -------------------------
 # Every check above asks whether a FILE matches. This asks whether a BEHAVIOUR still
@@ -259,7 +267,7 @@ sum_get()  { local t=0 i; for i in $(seq 0 $(( $2 - 1 ))); do t=$(( t + $(_num "
 # week -- a quiet week has zero entries too, and is not flagged.
 entries3="$(sum_get entries 3)"; reflect3="$(sum_llen reflect 3)"
 [ "$entries3" -lt 9 ] || [ "$reflect3" -gt 0 ] || \
-    note "reflection prompt recorded nothing in 3 days across $entries3 entries -- not being asked, or not answerable"
+    note reflect_silent "reflection prompt recorded nothing in 3 days across $entries3 entries -- not being asked, or not answerable"
 
 # The dead-man's switch. Unlike everything else on this list it cannot fail silently --
 # if the pings stop, the external service raises the alarm, so sabotage and triggering are
@@ -270,22 +278,22 @@ dm_state="$(cat /var/lib/cooldown-deadman.state 2>/dev/null)"
 dm_ok=false
 dm_age=-1
 if [ -z "$dm_state" ]; then
-    note "the dead-man's switch has never run -- nothing off this box would notice it going quiet"
+    note deadman_never "the dead-man's switch has never run -- nothing off this box would notice it going quiet"
 elif [ "${dm_state#* }" = "not-configured" ]; then
-    note "the dead-man's switch has no URL configured -- see deploy/cooldown-deadman.service"
+    note deadman_unconfigured "the dead-man's switch has no URL configured -- see deploy/cooldown-deadman.service"
 elif [ "${dm_state#* }" != "ok" ]; then
-    note "the dead-man's switch ping is FAILING (${dm_state#* }) -- the far end will fire, which is correct, but fix the cause"
+    note deadman_failing "the dead-man's switch ping is FAILING (${dm_state#* }) -- the far end will fire, which is correct, but fix the cause"
 else
     dm_ts="$(_num "${dm_state%% *}")"
     if [ "$dm_ts" -le 0 ]; then
-        note "the dead-man's switch state file is unreadable ('$dm_state') -- unknown, not fine"
+        note deadman_unreadable "the dead-man's switch state file is unreadable ('$dm_state') -- unknown, not fine"
     else
         dm_age=$(( $(date +%s) - dm_ts ))
         # It runs every 5 minutes. Twenty means it has stopped running, which the far end
         # is about to notice anyway -- but hearing it here first is the difference between
         # fixing a timer and being woken by an alarm.
         if [ "$dm_age" -gt 1200 ]; then
-            note "the dead-man's switch last pinged $(( dm_age / 60 )) minutes ago -- the timer has stopped"
+            note deadman_stale "the dead-man's switch last pinged $(( dm_age / 60 )) minutes ago -- the timer has stopped"
         else
             dm_ok=true
         fi
@@ -304,16 +312,16 @@ alert_raw="$(redis-cli --raw GET alert_last 2>/dev/null)"
 alert_ok=false
 alert_age=-1
 if [ -z "$alert_raw" ]; then
-    note "the alert channel has never sent anything -- an unplanned reboot would reach nobody"
+    note alert_never "the alert channel has never sent anything -- an unplanned reboot would reach nobody"
 else
     alert_ts="$(_num "${alert_raw%% *}")"
     alert_outcome="${alert_raw#* }"
     if [ "$alert_outcome" != "ok" ]; then
-        note "the last off-box alert FAILED ($alert_outcome) -- notifications are down"
+        note alert_failing "the last off-box alert FAILED ($alert_outcome) -- notifications are down"
     elif [ "$alert_ts" -gt 0 ]; then
         alert_age=$(( ( $(date +%s) - alert_ts ) / 86400 ))
         if [ "$alert_age" -gt 9 ]; then
-            note "no alert has succeeded in $alert_age days -- the weekly probe should keep this under 8, so the channel is unproven rather than quiet"
+            note alert_stale "no alert has succeeded in $alert_age days -- the weekly probe should keep this under 8, so the channel is unproven rather than quiet"
         else
             alert_ok=true
         fi
@@ -322,7 +330,7 @@ else
         # must never fall through quietly: the first version of this check did exactly
         # that, reporting nothing while alert_ok stayed false, so a corrupt key read
         # identically to a healthy one.
-        note "alert_last is unreadable ('$alert_raw') -- the channel's state is unknown, not fine"
+        note alert_unreadable "alert_last is unreadable ('$alert_raw') -- the channel's state is unknown, not fine"
     fi
 fi
 
@@ -331,7 +339,7 @@ fi
 # a screen -- or reaching one that cannot submit it.
 cooldowns5="$(sum_llen cooldown_events 5)"; worth5="$(sum_llen worth 5)"
 [ "$cooldowns5" -lt 3 ] || [ "$worth5" -gt 0 ] || \
-    note "no worth verdict in 5 days across $cooldowns5 cooldowns -- the question is not reaching a screen you land on"
+    note worth_silent "no worth verdict in 5 days across $cooldowns5 cooldowns -- the question is not reaching a screen you land on"
 
 # --- does the RUNNING BOX match what the repo claims? ------------------------------
 # The category this file was missing. Every check above asks "is the box in a safe
@@ -363,16 +371,16 @@ if [ -r "$MANIFEST" ]; then
         case " $revs " in *" $rev "*) ;; *) revs="$revs $rev" ;; esac
         got="$(sha256sum "$path" 2>/dev/null | cut -d' ' -f1)"
         if [ -z "$got" ]; then
-            note "deployed file is MISSING: $path (manifest: $rev)"
+            note deployed_missing "deployed file is MISSING: $path (manifest: $rev)"
             drifted=$((drifted + 1))
         elif [ "$got" != "$want" ]; then
-            note "deployed file CHANGED since it was deployed: $path"
+            note deployed_changed "deployed file CHANGED since it was deployed: $path"
             drifted=$((drifted + 1))
         fi
     done < "$MANIFEST"
     # An empty manifest reconciles nothing while looking like a clean pass -- the exact
     # shape this whole section exists to catch, so it is called out rather than assumed.
-    [ "$manifest_files" -gt 0 ] || note "deploy manifest is EMPTY -- nothing was reconciled"
+    [ "$manifest_files" -gt 0 ] || note manifest_empty "deploy manifest is EMPTY -- nothing was reconciled"
     set -- $revs
     if [ "$#" -eq 1 ]; then
         deployed_rev="$1"
@@ -383,10 +391,10 @@ if [ -r "$MANIFEST" ]; then
         deployed_rev="mixed($#): $*"
     fi
 else
-    note "no deploy manifest at $MANIFEST -- cannot tell whether the box matches the repo"
+    note manifest_none "no deploy manifest at $MANIFEST -- cannot tell whether the box matches the repo"
 fi
 case "$deployed_rev" in
-    *-dirty) note "deployed from a DIRTY working tree ($deployed_rev) -- the revision does not describe what is running" ;;
+    *-dirty) note deploy_dirty "deployed from a DIRTY working tree ($deployed_rev) -- the revision does not describe what is running" ;;
 esac
 
 # 2. The CA carries name constraints -- not merely exists. The fingerprint pin above
@@ -396,7 +404,7 @@ esac
 ca_nc=0
 if [ -r "$CA_CERT" ]; then
     ca_nc="$(openssl x509 -in "$CA_CERT" -noout -text 2>/dev/null | grep -c 'X509v3 Name Constraints' || true)"
-    [ "${ca_nc:-0}" -gt 0 ] || note "the CA has NO name constraints -- a stolen key can vouch for any host (F26)"
+    [ "${ca_nc:-0}" -gt 0 ] || note ca_unconstrained "the CA has NO name constraints -- a stolen key can vouch for any host (F26)"
 fi
 
 # 3. Every unit's ExecStart points at a file that exists and is executable. A unit whose
@@ -408,7 +416,7 @@ for u in /etc/systemd/system/cooldown-*.service; do
     while read -r prog; do
         case "$prog" in /usr/local/*|/usr/bin/*|/home/pi/*) ;; *) continue ;; esac
         if [ ! -x "$prog" ]; then
-            note "$(basename "$u") ExecStart points at $prog which is not executable/present"
+            note exec_missing "$(basename "$u") ExecStart points at $prog which is not executable/present"
             missing_exec=$((missing_exec + 1))
         fi
     done <<EOF2
@@ -426,7 +434,7 @@ for u in /etc/systemd/system/cooldown-*.service /etc/systemd/system/cooldown-*.t
     n="$(basename "$u")"
     case "$(systemctl is-enabled "$n" 2>/dev/null)" in
         enabled|enabled-runtime|static|indirect) ;;
-        *) note "$n declares [Install] but is not enabled -- it will not start on boot"
+        *) note unit_not_enabled "$n declares [Install] but is not enabled -- it will not start on boot"
            not_enabled=$((not_enabled + 1)) ;;
     esac
 done
@@ -441,7 +449,7 @@ for t in /etc/systemd/system/cooldown-*.timer; do
     nrt="$(systemctl show "$n" -p NextElapseUSecRealtime --value 2>/dev/null)"
     nmo="$(systemctl show "$n" -p NextElapseUSecMonotonic --value 2>/dev/null)"
     if [ -z "$nrt" ] && { [ -z "$nmo" ] || [ "$nmo" = "0" ]; }; then
-        note "$n is active but has NO next elapse -- it will never fire again"
+        note timer_dead "$n is active but has NO next elapse -- it will never fire again"
         dead_timers=$((dead_timers + 1))
     fi
 done
@@ -453,7 +461,7 @@ done
 for fam in "v4:${fw_policy:-unknown}" "v6:${fw_policy6:-unknown}"; do
     case "${fam#*:}" in
         DROP) ;;
-        *) note "INPUT policy on ${fam%%:*} is ${fam#*:}, expected DROP" ;;
+        *) note fw_policy_fam "INPUT policy on ${fam%%:*} is ${fam#*:}, expected DROP" ;;
     esac
 done
 
@@ -491,7 +499,7 @@ if [ "$MODE" = "full" ]; then
         backup_restores=1
     else
         backup_restores=0
-        note "backup does NOT restore: $(printf '%s' "$vb" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("error") or "unknown")' 2>/dev/null || echo 'verifier failed to run')"
+        note backup_restore_fails "backup does NOT restore: $(printf '%s' "$vb" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("error") or "unknown")' 2>/dev/null || echo 'verifier failed to run')"
     fi
 
     # dpkg -V costs 67 seconds on this box -- measured 2026-09-15, quick tier 2s, whole
@@ -508,7 +516,7 @@ if [ "$MODE" = "full" ]; then
     nlines() { printf '%s' "$1" | awk 'NF {n++} END {print n+0}'; }
     tampered_all="$(nlines "$mods")"
     tampered="$(nlines "$(printf '%s' "$mods" | grep -vxF "$KNOWN_MODIFIED")")"
-    [ "$tampered" -eq 0 ] || note "$tampered packaged file(s) differ from their manifest (dpkg -V)"
+    [ "$tampered" -eq 0 ] || note dpkg_tampered "$tampered packaged file(s) differ from their manifest (dpkg -V)"
 
     # Rule 10: every list of exceptions needs something checking the exceptions still
     # exist. KNOWN_MODIFIED is the fourth exemption list in this project and was the only
@@ -522,7 +530,7 @@ if [ "$MODE" = "full" ]; then
     while IFS= read -r ex; do
         [ -n "$ex" ] || continue
         printf '%s' "$mods" | grep -qxF "$ex" || \
-            note "KNOWN_MODIFIED excuses $ex, which dpkg no longer reports as modified -- stale exemption"
+            note known_modified_stale "KNOWN_MODIFIED excuses $ex, which dpkg no longer reports as modified -- stale exemption"
     done <<< "$KNOWN_MODIFIED"
 fi
 
@@ -546,6 +554,12 @@ printf '"entries3":%d,"reflect3":%d,"cooldowns5":%d,"worth5":%d,' \
        "${entries3:-0}" "${reflect3:-0}" "${cooldowns5:-0}" "${worth5:-0}"
 printf '"alert_ok":%s,"alert_age_days":%d,' "${alert_ok:-false}" "${alert_age:--1}"
 printf '"deadman_ok":%s,"deadman_age":%d,' "${dm_ok:-false}" "${dm_age:--1}"
+printf '"findings_list":['
+for i in "${!finding_ids[@]}"; do
+    [ "$i" -gt 0 ] && printf ','
+    printf '{"id":"%s","detail":"%s"}' "$(esc "${finding_ids[$i]}")" "$(esc "${findings[$i]}")"
+done
+printf '],'
 printf '"tampered_files":%d,"tampered_all":%d,"backup_restores":%d,"full_checked":%d,"findings":%d,"checked":%d}\n' \
        "${tampered:--1}" "${tampered_all:--1}" "${backup_restores:--1}" "${full_checked:-0}" "${#findings[@]}" "$(date +%s)"
 } > "$TMP"

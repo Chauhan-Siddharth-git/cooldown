@@ -941,3 +941,28 @@ def test_nothing_is_drawn_outside_the_frame(tmp_path, monkeypatch):
     d = re.search(r'd="M([^"]+)"', svg).group(1)
     xs = [float(p.split(",")[0]) for p in d.replace("L", " ").split()]
     assert max(xs) <= 600.0 and min(xs) >= 0.0, f"trace leaves the frame: {min(xs)}..{max(xs)}"
+
+
+def test_the_meter_comparison_still_works_once_the_meter_is_old(rdb):
+    """The shadow meter started 2026-08-03. The comparison built its hour list starting at
+    the meter's FIRST hour and stopped at the first hour older than the window -- so once
+    the meter was more than `days` old, the first hour it examined was already too old and
+    it stopped having collected nothing. From about 2026-08-10 it returned zero hours, and
+    the stats page answered that with "too early to draw conclusions, give it a few days":
+    a permanent failure dressed as a temporary one, for six weeks.
+
+    Every earlier test ran with a freshly started meter, which is the one case that works.
+    """
+    import app as b
+    now = time.time()
+    rdb.set("shadow_started", f"{now - 60 * 86400:.0f}")          # a long-running meter
+    for i in range(2, 30):                                         # use inside the window
+        t = time.localtime(now - i * 3600)
+        d, h = time.strftime("%Y-%m-%d", t), time.strftime("%H", t)
+        rdb.set(f"usage_hour:{d}:{h}:reddit", 600)
+        rdb.set(f"shadow_hour:{d}:{h}:reddit", 660)
+    c = b.shadow_comparison(days=7, now=now)
+    hours = int(c["running"].split()[0])
+    assert hours > 100, f"an old meter compared only {hours} hours -- the window was skipped"
+    assert c["hb"] > 0 and c["sh"] > 0, c
+    assert c["settled"], "a week of data must not read as too early to tell"

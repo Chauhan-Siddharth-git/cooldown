@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo, available_timezones
 import os
 import subprocess
 import hashlib
+import ipaddress
 import json
 import re
 import random
@@ -1387,13 +1388,21 @@ STATS_PAGE = """
 
     {% if shadow.any %}
     <div class="card">
-        <h2>Experiment &mdash; measuring the same time two ways</h2>
-        <div class="sh-lede">The countdown is driven by a script injected into these sites.
-            That injection is the largest single risk in this project. The proxy is now also
-            measuring passively &mdash; watching the requests the sites make on their own, with
-            nothing injected. If the two columns track each other, the injection could go.</div>
+        {#- This card used to present a finished experiment as a live one. It asked whether
+            the two meters agreed closely enough that "the injection could go", and printed
+            "too early to draw conclusions, give it a few days". The experiment ended on
+            2026-08-10 with the opposite answer, and the "give it a few days" was a loop bug
+            returning zero hours since that same week. It now says what was decided, and what
+            the passive meter is for today. -#}
+        <h2>The second clock</h2>
+        <div class="sh-lede">Your time is counted by a small timer the box adds to these sites.
+            A second clock runs alongside it, counting the same time a different way: by
+            watching the traffic the sites send on their own, without adding anything to the
+            page. <b>Its job is to notice if the first clock ever stops working.</b> If the
+            sites keep loading but the timer stops counting, the two clocks disagree, and the
+            box warns you.</div>
         <table class="sh-tbl">
-            <tr><th>Site</th><th>Injected timer</th><th>Passive</th><th>&times;</th></tr>
+            <tr><th>Site</th><th>Timer</th><th>Second clock</th><th>&times;</th></tr>
             {% for row in shadow.rows %}
             <tr><td>{{ row.label }}</td><td>{{ row.hb }}m</td><td>{{ row.sh }}m</td>
                 <td>{% if row.ratio %}{{ row.ratio }}&times;{% else %}&mdash;{% endif %}</td></tr>
@@ -1402,16 +1411,17 @@ STATS_PAGE = """
                 <td>{% if shadow.ratio %}{{ shadow.ratio }}&times;{% else %}&mdash;{% endif %}</td></tr>
         </table>
         <div class="sh-note">
-            {%- if not shadow.settled %}<b>Running {{ shadow.running }} &mdash; too early to draw conclusions.</b>
-            Give it a few days.{% else %}Comparing the
-            {{ shadow.days }} day{{ '' if shadow.days == 1 else 's' }} the meter has been running
-            ({{ shadow.running }}).{% endif %}
-            Only whole hours where <i>both</i> meters were running are compared.
-            Two effects pull opposite ways: background tabs and autoplay make passive read
-            <b>high</b>, while <b>reading</b> makes it read <b>low</b> &mdash; a feed rendered in the
-            browser sends nothing to the network while you sit and scan it, so passive sees a gap
-            and discards it. A steady multiplier either way means passive plus a correction could
-            replace the injected timer. A number that jumps around means it can't.</div>
+            {%- if not shadow.settled %}Only {{ shadow.running }} so far, which is too few to read anything into yet.
+            {%- else %}Over the last {{ shadow.days }} day{{ '' if shadow.days == 1 else 's' }}.
+            {%- endif %}
+            <b>The two won't match exactly, and aren't meant to.</b> The second clock counts a
+            little high when a tab plays in the background, and a little low while you read a
+            page without scrolling, because nothing is loading then. What matters is that they
+            stay in the same ballpark. The warning only fires if the timer drops below
+            <b>40%</b> of the second clock, which would mean it had stopped working.
+            <br><br>Why keep the timer at all, if a second clock exists? This was tested in August,
+            and the answer was yes. The second clock can't tell whether you're actually looking at
+            the page, and the timer is also what draws the countdown and the one-minute warning.</div>
     </div>
     {% endif %}
 
@@ -3226,9 +3236,17 @@ def shadow_comparison(days=7, now=None):
     # looked exactly like a real finding. Start at the hour AFTER the meter came up, so
     # neither side gets credit for a partial hour.
     first = ((int(since) // 3600) + 1) * 3600
+    # Start at whichever is LATER: the first whole hour of the meter, or the start of the
+    # window. The loop used to start at `first` and stop at the first hour older than the
+    # window -- but `first` IS the oldest hour, so once the meter was more than `days`
+    # old the very first check failed and the loop exited having collected nothing. That
+    # happened around 2026-08-10, a week after the meter started, and from then on this
+    # returned zero hours while the page said "too early to draw conclusions, give it a
+    # few days" -- a permanent failure dressed as a temporary one, for six weeks.
+    window_start = ((int(now - days * 86400) // 3600) + 1) * 3600
     hours_list = []
-    t = first
-    while t < now - 3600 and (now - t) <= days * 86400:
+    t = max(first, window_start)
+    while t < now - 3600:
         hours_list.append(t)
         t += 3600
     hours_list = hours_list[-days * 24:]
@@ -3767,6 +3785,11 @@ def _top_processes(n=6):
     return rows[:n]
 
 
+# Tailscale's address ranges: 100.64.0.0/10 for IPv4, its ULA prefix for IPv6. A socket
+# bound to one of these is reachable over the tailnet and nowhere else.
+_TAILNET = (ipaddress.ip_network("100.64.0.0/10"), ipaddress.ip_network("fd7a:115c:a1e0::/48"))
+
+
 def _listening_ports():
     """TCP sockets in LISTEN, and crucially WHICH address they are bound to.
 
@@ -3775,8 +3798,9 @@ def _listening_ports():
     name the owning process as root, and a second sudo rule to prettify a status page is
     exactly the trade F6 and F7 were about. Ports are labelled from a static map instead.
     """
-    known = {5000: "dashboard", 8080: "proxy · transparent", 8081: "proxy · regular",
-             6379: "redis", 22: "ssh", 53: "dns"}
+    known = {5000: "this dashboard", 8080: "the proxy, for exit-node devices",
+             8081: "the proxy, for browsers set to use it", 6379: "the database",
+             22: "remote login (SSH)", 53: "DNS"}
     out = {}
     for path in ("/proc/net/tcp", "/proc/net/tcp6"):
         try:
@@ -3798,19 +3822,28 @@ def _listening_ports():
             # file — an invariant test forbids it, because the one legitimate reason to
             # write that address here is the one thing that must never happen.
             wildcard = set(hexaddr) == {"0"}
-            if len(hexaddr) == 8:                        # IPv4, little-endian words
-                addr = ".".join(str(int(hexaddr[i:i + 2], 16)) for i in (6, 4, 2, 0))
-            else:
-                addr = "::" if wildcard else "[v6]"
+            # Decoded properly, in both families. /proc stores each 32-bit word of the
+            # address little-endian. The IPv6 path used to replace every non-wildcard
+            # address with the placeholder "[v6]" BEFORE testing for loopback, so the
+            # loopback test could never match: redis on ::1, reachable only from this Pi,
+            # was shown as a mysterious "[v6]". Wrong in the safe direction, but wrong.
+            try:
+                raw = bytes.fromhex(hexaddr)
+                addr = ipaddress.ip_address(b"".join(raw[i:i + 4][::-1]
+                                                     for i in range(0, len(raw), 4)))
+            except ValueError:
+                addr = None
             if wildcard:
-                scope, rank = "all interfaces", 0
-            elif addr.startswith("127.") or addr == "::1":
-                scope, rank = "loopback only", 2
+                scope, rank, reach = "all interfaces", 0, ""
+            elif addr is not None and addr.is_loopback:
+                scope, rank, reach = "loopback only", 2, "this Pi only"
+            elif addr is not None and any(addr in n for n in _TAILNET):
+                scope, rank, reach = str(addr), 1, "Tailscale only"
             else:
-                scope, rank = addr, 1
+                scope, rank, reach = str(addr) if addr else hexaddr, 1, f"one address ({addr})"
             cur = out.get(port)
             if cur is None or rank < cur["rank"]:
-                out[port] = {"port": port, "scope": scope, "rank": rank,
+                out[port] = {"port": port, "scope": scope, "rank": rank, "reach": reach,
                              "what": known.get(port, "")}
     return sorted(out.values(), key=lambda r: (r["rank"], r["port"]))
 
@@ -3955,6 +3988,282 @@ def send_alert(text, priority=None):
     threading.Thread(target=go, daemon=True, name="cooldown-alert").start()
     return True
 
+
+# --- what each audit finding means, in plain language -----------------------------------
+#
+# cooldown-audit.sh detects problems and describes them for whoever is debugging: "INPUT
+# policy is ACCEPT", "Redis AOF is OFF", "dpkg -V". That wording is right for the journal
+# and wrong for the owner, who saw "1 audit finding" under a Security heading, was told to
+# run journalctl to learn what it was, and reasonably assumed a breach. It was a missing
+# "was it worth it?" answer.
+#
+# Every finding the audit can raise has an entry here, keyed by the id the audit emits.
+# Each says what is wrong, why it matters, and what to do -- including "nothing, it clears
+# itself" when that is the truth, because a warning with no resolution teaches you to
+# ignore warnings. tests/ fails if the audit gains a finding without an entry.
+#
+# Categories decide the heading. Only "security" goes under Security: a feature that has
+# stopped recording is a real problem, but calling it a security issue is how an
+# unimportant warning comes to look like an emergency.
+FINDING_CATEGORIES = {
+    "security": "Security",
+    "health": "Box health",
+    "watchers": "Watchers",
+    "features": "Features",
+}
+
+FINDINGS = {
+    # --- security: someone could get in, or the master key is at risk ---
+    "ca_mode": ("security",
+        "The master key's folder can be read by other accounts.",
+        "That key can decrypt your traffic to every gated site. It should be readable by the proxy alone.",
+        "On the Pi: sudo chmod 700 /var/lib/cooldown/mitmproxy"),
+    "ca_owner": ("security",
+        "The master key's folder belongs to the wrong account.",
+        "Only the proxy's own account should own the key that decrypts your traffic.",
+        "On the Pi: sudo chown -R cooldownproxy /var/lib/cooldown/mitmproxy"),
+    "ca_fp_changed": ("security",
+        "The master key has been replaced.",
+        "The certificate your devices trust is not the one the box was set up with. Either you rotated it on purpose, or someone swapped it.",
+        "If you just ran rotate-ca.sh, this is expected. If you didn't, treat it as a possible break-in and follow RECOVERY.md."),
+    "ca_expiring": ("security",
+        "Your master key expires soon.",
+        "When it expires, every gated site stops loading until a new one is trusted on each device.",
+        "Run ./rotate-ca.sh, then re-trust the new certificate on your phone and laptop."),
+    "ca_missing": ("security",
+        "The master key is missing.",
+        "Without it the proxy can't intercept anything, so gated sites won't load.",
+        "Restore it from backup, or generate a new one with ./rotate-ca.sh."),
+    "ca_unconstrained": ("security",
+        "The master key isn't restricted to your sites.",
+        "If it were stolen, it could forge certificates for any website, your bank included, instead of only the 96 sites the gate covers.",
+        "Run ./rotate-ca.sh, which generates a restricted one."),
+    "ssh_password": ("security",
+        "The Pi accepts passwords for remote login.",
+        "Anyone on your Tailscale network could try guessing a password, instead of needing your key.",
+        "Turn it off: set PasswordAuthentication no in /etc/ssh/sshd_config.d/ and restart ssh."),
+    "ssh_failed": ("security",
+        "Someone tried and failed to log in to the Pi remotely.",
+        "Usually one of your own devices with a stale setting. Worth a look if you can't explain it.",
+        "On the Pi: sudo journalctl -u ssh | grep Failed"),
+    "ts_key_expiring": ("security",
+        "Your Tailscale login for the Pi expires soon.",
+        "When it does, you lose remote access, and the only way back in is a keyboard and monitor on the box.",
+        "In the Tailscale admin console, re-authenticate the Pi or turn off key expiry for it."),
+    "fw_not_loaded": ("security",
+        "The firewall isn't running.",
+        "Services meant to be reachable only over Tailscale may be open to your whole home network.",
+        "On the Pi: sudo systemctl restart cooldown-redirect"),
+    "fw_exposed": ("security",
+        "Something on the Pi is reachable from outside that shouldn't be.",
+        "A service is listening where the firewall doesn't cover it. The detail line says which port.",
+        "Stop that service, or add it to the firewall rules in cooldown-redirect.sh."),
+    "fw_policy": ("security",
+        "The firewall allows by default instead of blocking.",
+        "Any new service started on the Pi would be exposed automatically.",
+        "On the Pi: sudo systemctl restart cooldown-redirect"),
+    "fw_policy6": ("security",
+        "The IPv6 firewall allows by default instead of blocking.",
+        "Same problem as the IPv4 one, on the half of the network that's easier to forget.",
+        "On the Pi: sudo systemctl restart cooldown-redirect"),
+    "fw_policy_fam": ("security",
+        "One side of the firewall allows by default instead of blocking.",
+        "New services would be exposed on that side automatically.",
+        "On the Pi: sudo systemctl restart cooldown-redirect"),
+    "deployed_changed": ("security",
+        "A file on the Pi was changed after it was deployed.",
+        "Either someone edited it directly on the box, or it was tampered with.",
+        "If you didn't edit it on the Pi yourself, redeploy with ./deploy.sh and look into how it changed."),
+    "dpkg_tampered": ("security",
+        "Some system files differ from what was installed.",
+        "Usually a manual edit you made. Occasionally a sign of tampering.",
+        "On the Pi: sudo dpkg -V lists which files, so you can tell which it is."),
+    # --- box health: the Pi working, and your data being safe ---
+    "journal_volatile": ("health",
+        "The Pi's logs aren't being saved.",
+        "They vanish on every reboot, so there'd be no history to look back on after a problem.",
+        "On the Pi: sudo mkdir -p /var/log/journal && sudo systemctl restart systemd-journald"),
+    "redis_unreadable": ("health",
+        "Can't check whether your data is being saved safely.",
+        "The database didn't answer the check, so its safety is unknown rather than fine.",
+        "On the Pi: systemctl status redis-server"),
+    "redis_aof_off": ("health",
+        "Your usage data isn't being saved continuously.",
+        "A power cut would lose everything recorded since the last snapshot.",
+        "On the Pi: redis-cli CONFIG SET appendonly yes, then set appendonly yes in /etc/redis/redis.conf to keep it."),
+    "backup_stale": ("health",
+        "The nightly backup has stopped.",
+        "Your newest backup is older than it should be.",
+        "On the Pi: systemctl status cooldown-backup.timer"),
+    "backup_empty": ("health",
+        "The newest backup is empty.",
+        "It exists, but there's nothing in it to restore.",
+        "On the Pi: systemctl status cooldown-backup, and check its log."),
+    "backup_none": ("health",
+        "There are no backups at all.",
+        "If the SD card failed, your usage history would be gone for good.",
+        "On the Pi: sudo systemctl start cooldown-backup, then check it ran."),
+    "backup_restore_fails": ("health",
+        "Your backup can't actually be restored.",
+        "The weekly check tried to load it into a scratch copy and failed, so it wouldn't bring your data back.",
+        "Check the backup job's log, and fix it before you need it."),
+    "disk_root": ("health",
+        "The SD card is nearly full.",
+        "When it fills, the Pi stops recording and may stop working properly.",
+        "On the Pi: sudo apt autoremove && sudo journalctl --vacuum-time=30d"),
+    "disk_boot": ("health",
+        "The boot partition is nearly full.",
+        "Old kernels probably aren't being cleaned up, and a full boot partition can block updates.",
+        "On the Pi: sudo apt autoremove"),
+    "deployed_missing": ("health",
+        "A file the Pi should be running is missing.",
+        "Something that was deployed has since disappeared.",
+        "Redeploy from the laptop: ./deploy.sh code"),
+    "manifest_empty": ("health",
+        "The Pi can't tell whether it's running the right code.",
+        "The record of what was deployed is empty.",
+        "Redeploy from the laptop: ./deploy.sh code"),
+    "manifest_none": ("health",
+        "The Pi can't tell whether it's running the right code.",
+        "There's no record of what was deployed.",
+        "Redeploy from the laptop: ./deploy.sh code"),
+    "deploy_dirty": ("health",
+        "The Pi is running code that was never committed.",
+        "It works, but you can't look up exactly what's running, because that version exists nowhere in git.",
+        "Commit your changes, then run ./deploy.sh again."),
+    "exec_missing": ("health",
+        "A service points at a program that doesn't exist.",
+        "That service will fail to start.",
+        "Redeploy from the laptop: ./deploy.sh units"),
+    "unit_not_enabled": ("health",
+        "A service won't start after the next reboot.",
+        "It's running now, but isn't set to come back on its own.",
+        "On the Pi: sudo systemctl enable, followed by the service name in the detail line."),
+    "timer_dead": ("health",
+        "A scheduled job will never run again.",
+        "Its timer is loaded but has no next run time.",
+        "On the Pi: sudo systemctl restart, followed by the timer name in the detail line."),
+    "known_modified_stale": ("health",
+        "An old exception in the audit no longer applies.",
+        "Housekeeping, not a problem. A file the audit used to excuse is no longer modified.",
+        "Remove it from KNOWN_MODIFIED in the audit script."),
+    # --- watchers: the things that watch the Pi for you ---
+    "deadman_never": ("watchers",
+        "The dead-man's switch has never run.",
+        "Nothing outside the Pi would notice if it went quiet, which is the one thing it exists to catch.",
+        "On the Pi: sudo systemctl enable --now cooldown-deadman.timer"),
+    "deadman_unconfigured": ("watchers",
+        "The dead-man's switch isn't set up.",
+        "It needs a URL from healthchecks.io before it can tell anyone the Pi has gone quiet.",
+        "Follow the setup steps in deploy/cooldown-deadman.service."),
+    "deadman_failing": ("watchers",
+        "The dead-man's switch can't reach healthchecks.io.",
+        "If this keeps up, healthchecks.io will alert you that the Pi is down. That's the switch working, but the cause needs fixing.",
+        "Check the Pi's internet connection."),
+    "deadman_unreadable": ("watchers",
+        "The dead-man's switch status can't be read.",
+        "Its state is unknown, which is not the same as fine.",
+        "On the Pi: sudo systemctl start cooldown-deadman, then reload this page."),
+    "deadman_stale": ("watchers",
+        "The dead-man's switch has stopped pinging.",
+        "Its timer isn't firing, so healthchecks.io is about to raise an alarm.",
+        "On the Pi: sudo systemctl restart cooldown-deadman.timer"),
+    "alert_never": ("watchers",
+        "The phone alerts have never sent anything.",
+        "If the Pi restarted unexpectedly, nobody would hear about it.",
+        "Check that the ntfy address is set for the app."),
+    "alert_failing": ("watchers",
+        "Phone alerts are failing to send.",
+        "An unexpected restart would go unannounced.",
+        "Check the Pi's internet connection, and that the ntfy address is still right."),
+    "alert_stale": ("watchers",
+        "Phone alerts haven't been proven to work recently.",
+        "A test alert goes out weekly. None has succeeded lately, so the channel might be broken.",
+        "Check the Pi's internet connection. It clears on its own once a test alert succeeds."),
+    "alert_unreadable": ("watchers",
+        "The phone alert status can't be read.",
+        "Its state is unknown, which is not the same as fine.",
+        "Reload this page. If it persists, check the app is running."),
+    # --- features: is the tool actually recording what it should? ---
+    "reflect_silent": ("features",
+        "The “why are you here?” prompt hasn't recorded anything in 3 days.",
+        "You've entered sites several times, but no answers were saved. Either the prompt isn't showing, or it can't be answered.",
+        "Open a gated site and check the prompt appears. If it does, answer it once."),
+    "worth_silent": ("features",
+        "The “was it worth it?” question hasn't been answered in 5 days.",
+        "Not a security issue. The question appears on the screen you land on after a session ends. If you've been skipping it, this is expected.",
+        "Answer it next time it appears. This clears on its own once you do."),
+}
+
+
+def explain_findings(audit):
+    """Group the audit's findings for the page. Unknown ids are shown, never dropped: a
+    finding that can't be explained is still a finding.
+
+    Takes the whole audit record, not just the list, because the list is not the whole
+    truth. An audit file written before findings_list existed carries only a COUNT. The
+    first version of this read an empty list as nothing wrong, so an old file with
+    findings=1 and port 22 open to the LAN rendered as "No security problems" -- the
+    precise shape of failure this project documents more than any other, a report of
+    health that is itself the defect. The old tests caught it before it shipped."""
+    audit = audit or {}
+    findings_list = audit.get("findings_list") or []
+    groups = {k: [] for k in FINDING_CATEGORIES}
+    for f in findings_list:
+        fid = (f or {}).get("id", "")
+        detail = (f or {}).get("detail", "")
+        cat, title, meaning, action = FINDINGS.get(
+            fid, ("health", "An unrecognised check failed.",
+                  "The audit raised something this page has no plain explanation for yet.",
+                  "Read the detail line below."))
+        groups[cat].append({"id": fid, "title": title, "meaning": meaning,
+                            "action": action, "detail": detail})
+    # Whatever the count says and the list does not explain. Filed under security on
+    # purpose: an unknown finding is treated as serious until it can be read.
+    gap = (audit.get("findings") or 0) - len(findings_list)
+    if gap > 0:
+        named = []
+        if audit.get("exposed_ports"):
+            named.append(f"open to the LAN: {audit['exposed_ports']}")
+        if audit.get("tampered_files"):
+            named.append(f"{audit['tampered_files']} modified system file(s)")
+        groups["security"].append({
+            "id": "unlisted",
+            "title": f"{gap} problem{'' if gap == 1 else 's'} this page can't describe yet.",
+            "meaning": "The security check found something, but recorded it before this page "
+                       "learned to explain findings, or from a check with no description.",
+            "action": "On the Pi: sudo journalctl -t cooldown-audit shows the details. The next "
+                      "hourly check will fill them in here.",
+            "detail": "; ".join(named)})
+    return groups
+
+
+
+def plain_error(raw):
+    """'budget_handler: ReadTimeout' -> something a person can read. The exception name
+    is kept at the end for whoever is debugging, but it leads with what happened."""
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    where, _, kind = raw.partition(":")
+    kind = (kind or where).strip()
+    k = kind.lower()
+    if "timeout" in k:
+        what = "a request took too long and was given up on"
+    elif "connection" in k or "refused" in k:
+        what = "one part of the Pi couldn't reach another"
+    elif "decode" in k or "json" in k:
+        what = "a reply came back garbled"
+    else:
+        what = "something unexpected went wrong"
+    place = {"budget_handler": "while the proxy was asking the app for something",
+             "tls_clienthello": "while checking which site a connection was for",
+             "response": "while the proxy was processing a page",
+             "request": "while the proxy was handling a request"}.get(where.strip(), "")
+    return f"{what}{' ' + place if place else ''} ({kind})"
+
+
+app.jinja_env.filters["plain_error"] = plain_error
 
 # --- is the alert channel still there? -------------------------------------------------
 #
@@ -4361,16 +4670,40 @@ def _when(ts, now=None):
 
 
 def _short_ago(secs):
-    """'3 min ago' / '2 h ago' / '4 days ago'. Answers "is this figure current?" at a
-    glance, which is the actual question behind "does it check every day?"."""
+    """'just now' / '10 minutes ago' / '2 hours ago' / '4 days ago'. Answers "is this
+    figure current?" at a glance.
+
+    Spelled out rather than '10 min' / '2 h', because the owner asked for a page they could
+    read without translating it. The one place that bypassed this helper entirely printed
+    "3444m ago" for 2.4 days. There was briefly a second helper doing the same job; there
+    is now one, used everywhere, and registered as the `ago` template filter."""
+    if secs is None:
+        return "at an unknown time"
     secs = max(0, int(secs))
     if secs < 90:
         return "just now"
     if secs < 5400:
-        return f"{secs // 60} min ago"
+        m = secs // 60
+        return f"{m} minute{'' if m == 1 else 's'} ago"
     if secs < 172800:
-        return f"{secs // 3600} h ago"
+        h = secs // 3600
+        return f"{h} hour{'' if h == 1 else 's'} ago"
     return f"{secs // 86400} days ago"
+
+
+def _span(days):
+    """A remaining lifetime in the largest unit that reads naturally: 3595 days is
+    '9 years', 126 is '4 months'. The old page printed 'CA valid 3595d'."""
+    days = max(0, int(days or 0))
+    if days >= 730:
+        return f"{days // 365} years"
+    if days >= 60:
+        return f"{days // 30} months"
+    return f"{days} day{'' if days == 1 else 's'}"
+
+
+app.jinja_env.filters["ago"] = _short_ago
+app.jinja_env.filters["span"] = _span
 
 
 def _updates(now=None):
@@ -4441,6 +4774,15 @@ def _audit(now=None):
     checked = float(d.get("checked", 0))
     return {"fresh": (now - checked) < AUDIT_STALE_AFTER,
             "findings": int(d.get("findings", 0)),
+            # The individual findings, so the page can say what each one is instead of
+            # printing a count. This reader rebuilds the record field by field, and the
+            # first version of the plain-language page forgot to add this line: the audit
+            # wrote the list, the page never received it, and every finding fell back to
+            # "a problem this page can't describe yet". The tests passed anyway, because
+            # they replaced this function with a fake that already had the list -- testing
+            # the template and skipping the one layer that was broken.
+            "findings_list": [f for f in (d.get("findings_list") or [])
+                              if isinstance(f, dict) and f.get("id")],
             "ca_mtime": d.get("ca_mtime") or None,
             "ssh_keys": int(d.get("ssh_keys", 0)),
             "shell_accounts": d.get("shell_accounts", ""),
@@ -4731,7 +5073,7 @@ HEALTH_PAGE = """
         <rect class="port dark" x="8" y="150" width="12" height="34" rx="2"/>
         <text class="lbl" x="14" y="145">SD</text>
       </svg>
-      <div class="caption">Ethernet glows green when the link is up · SoC tints with temperature</div>
+      <div class="caption">Ethernet glows green when it's connected · the chip changes colour as it warms up</div>
     </div>
 
     <div class="grid">
@@ -4748,12 +5090,12 @@ HEALTH_PAGE = """
         <div class="cpukey" id="cpuKey">
           {% for c in d.cpu.per_core %}<span><i style="background:{{ cpu_colors[loop.index0 % cpu_colors|length] }}"></i><b>{{ c|round|int }}%</b></span>{% endfor %}
         </div>
-        <div class="msub">load <span id="cpuLoad">{{ '%.2f'|format(d.cpu.load[0]) }}</span> · {{ d.cpu.cores }} cores · last {{ card_min }} min <span class="more">detail &rsaquo;</span></div>
+        <div class="msub">load <span id="cpuLoad">{{ '%.2f'|format(d.cpu.load[0]) }}</span> · fine under {{ d.cpu.cores }}, one per core · last {{ card_min }} min <span class="more">detail &rsaquo;</span></div>
       </a>
       <div class="metric {{ tclass }}" id="tempCard">
         <div class="mtop"><span class="mk">Temp</span><span class="mv" id="temp">{% if d.temp_c is not none %}{{ d.temp_c }}&deg;C{% else %}&mdash;{% endif %}</span></div>
         <svg class="spark" viewBox="0 0 100 32" preserveAspectRatio="none"><polyline id="tempLine" points="{{ spark_points }}"/></svg>
-        <div class="msub">throttling <span id="throt">{{ 'none' if d.power.ok else 'ACTIVE' }}</span> &middot; limit 80&deg;C</div>
+        <div class="msub">slowed down by heat: <span id="throt">{{ 'no' if d.power.ok else 'YES' }}</span> &middot; that starts at 80&deg;C</div>
       </div>
       <div class="metric {{ mcard }}" id="memCard">
         <div class="mtop"><span class="mk">Memory</span><span class="mv" id="memPct">{{ d.mem.pct }}%</span></div>
@@ -4803,22 +5145,33 @@ HEALTH_PAGE = """
         <tr><td>{{ pr.name }}</td><td>{{ pr.mb }} MB</td><td>{{ pr.pct }}%</td></tr>
         {% endfor %}
       </table>
-      <div class="phint">Biggest by memory. 172 processes exist; all but a handful are kernel
-        threads doing nothing.</div>
+      <div class="phint">The biggest programs by memory. The Pi runs many more than this, but
+        almost all of them are the system itself sitting idle.</div>
       <table class="plist">
-        <tr><th>Listening</th><th>Reachable from</th></tr>
+        <tr><th>Waiting for connections</th><th>Who can reach it</th></tr>
         {% for pt in d.ports %}
-        <tr><td>{{ pt.port }}{% if pt.what %} · {{ pt.what }}{% endif %}</td>
-            <td class="{{ 'wide' if pt.rank == 0 and pt.port not in firewalled else 'dim' if pt.rank == 0 else '' }}">{{ pt.scope }}</td></tr>
+        {#- The class logic is unchanged and is what the tests pin: a wide bind the firewall
+            contains is dim, one it does not is flagged, and an unknown firewall flags
+            everything. Only the words changed. "all interfaces" read as "anyone can reach
+            this" when the truth was usually "only Tailscale can, because of the firewall". -#}
+        <tr><td>{{ pt.port }} · {{ pt.what or 'unrecognised' }}</td>
+            <td class="{{ 'wide' if pt.rank == 0 and pt.port not in firewalled else 'dim' if pt.rank == 0 else '' }}">
+              {%- if pt.rank == 0 -%}
+                {%- if not fw_known %}unknown, the firewall hasn't reported
+                {%- elif pt.port in firewalled %}Tailscale only, via the firewall
+                {%- else %}your whole network{% endif -%}
+              {%- else -%}{{ pt.get('reach') or pt.scope }}{%- endif -%}
+            </td></tr>
         {% endfor %}
       </table>
       {% if not fw_known %}<div class="phint"><span class="upd-bad">Firewall state unknown</span>
         &mdash; the hourly audit has not reported, so nothing below can be called contained.</div>{% endif %}
-      <div class="phint"><b>Wide is not automatically wrong here.</b> mitmproxy binds every
-        interface and cannot be told otherwise in transparent mode, and sshd does the same —
-        both are contained by the interface-scoped firewall rules, which is what F1 actually
-        fixed. What <i>would</i> be worth chasing: the dashboard (5000) going wide, since it is
-        bound narrowly on purpose, or a port here you do not recognise.</div>
+      <div class="phint"><b>"Tailscale only" and "this Pi only" are what you want.</b> A few
+        programs, like the proxy and remote login, can't be told to listen on just one network,
+        so the firewall does it for them instead; that's the "via the firewall" rows, and it's
+        normal. <b>Worth a closer look:</b> anything that says "your whole network", or this
+        dashboard ever becoming reachable more widely than Tailscale. Unrecognised ports that
+        only Tailscale can reach are usually Tailscale's own background service.</div>
     </details>
 
     <!-- System status. Was three centred fine-print paragraphs; the information was
@@ -4831,33 +5184,38 @@ HEALTH_PAGE = """
            you were supposed to do about it. All three are answerable from data the box
            already had -- proxy_last_error has been written since _note_error existed and
            was read by nothing. -->
-      <div class="srow {{ 'bad' if (d.errors.total or d.errors.proxy_since_start) else 'ok' }}">
+      {# Errors, said so a person can act on it. The old row printed "0 ... 0 ... (18
+         lifetime)" and "budget_handler: ReadTimeout, 3444m ago": three numbers with no
+         statement of which one mattered, an exception name, and 2.4 days written as
+         minutes. It now leads with whether anything is wrong, says what the last error
+         actually was, and always ends in what to do -- including "nothing", because that
+         is usually the answer and a warning without one teaches you to ignore warnings. #}
+      {#- Without a since-restart baseline for the proxy, its lifetime errors might all be
+          current, so they are COUNTED rather than dropped. The first version of this row
+          added only the since-restart figure and silently lost the proxy's errors whenever
+          that baseline was missing. -#}
+      {%- set pk = d.errors.get('proxy_base_known') -%}
+      {%- set proxy_now = (d.errors.get('proxy_since_start') or 0) if pk else (d.errors.get('proxy') or 0) -%}
+      {%- set now_n = (d.errors.get('total') or 0) + proxy_now -%}
+      <div class="srow {{ 'bad' if now_n else 'ok' }}">
         <span class="sdot"></span><span class="slabel">Errors</span>
         <span class="sval">
-          {%- if d.errors.total or d.errors.proxy -%}
-          <b>{{ d.errors.total }}</b> in the app since it started
-          {%- if d.errors.proxy %},
-            {%- if d.errors.proxy_base_known %}
-              <b>{{ d.errors.proxy_since_start }}</b> in the proxy since it started
-              {%- if d.errors.proxy > d.errors.proxy_since_start %}
-                ({{ d.errors.proxy }} lifetime){% endif %}
-            {%- else %} <b>{{ d.errors.proxy }}</b> in the proxy (lifetime){% endif %}
-          {%- endif %}
-          {%- else -%}No handled errors{%- endif -%}
+          {%- if now_n -%}<b>{{ now_n }}</b> error{{ '' if now_n == 1 else 's' }}{% if pk %} since the last restart{% endif %}
+          {%- else -%}No errors{% if pk %} since the last restart{% endif %}{%- endif -%}
         </span>
-        {%- if d.errors.last %}<span class="sdet">Last app error: {{ d.errors.last }}</span>{% endif -%}
-        {%- if d.errors.proxy_last %}<span class="sdet">Last proxy error:
-          {{ d.errors.proxy_last }}{% if d.errors.proxy_last_ago is not none %},
-          {{ (d.errors.proxy_last_ago // 60) if d.errors.proxy_last_ago >= 60 else d.errors.proxy_last_ago }}{{
-          'm' if d.errors.proxy_last_ago >= 60 else 's' }} ago{% endif %}</span>{% endif -%}
-        {%- if d.errors.total or d.errors.proxy_since_start %}
-        <span class="sdet">These were <b>caught</b> &mdash; the code degraded instead of crashing, and
-          nothing retries them or clears them. Nothing is scheduled to act on this.
-          A count that is not rising is history; one that climbs while you watch is live.
-          To see them: <code>journalctl -u cooldown-proxy -u cooldown-app --since -1h</code>.
-          <b>Restarts are the usual cause</b>: the proxy calls the app over loopback, so a
-          deploy or an app restart produces a burst of connection errors that mean nothing.</span>
-        {%- endif -%}
+        <span class="sdet">
+          {%- if d.errors.get('proxy_last') %}The last one was {{ d.errors.get('proxy_last_ago') | ago }}:
+            {{ d.errors.proxy_last | plain_error }}.
+          {%- elif d.errors.last %}The last one: {{ d.errors.last | plain_error }}.{% endif %}
+          {% if now_n -%}
+          <b>What to do:</b> watch the number for a minute. If it keeps climbing, something is
+          broken right now, so check the app and proxy are running. If it stays put, these
+          were handled without crashing anything and there's nothing to do. A restart or
+          deploy always causes a short burst of these, and they mean nothing.
+          {%- elif pk and d.errors.get('proxy') -%}
+          {{ d.errors.proxy }} over the proxy's whole life, every one handled. <b>Nothing to do.</b>
+          {%- else -%}<b>Nothing to do.</b>{%- endif -%}
+        </span>
       </div>
 
       <!-- Patch state, and crucially HOW it gets applied. Previously answerable only by
@@ -4883,51 +5241,72 @@ HEALTH_PAGE = """
         </span>
         <span class="sdet">
           {%- if ujam -%}
-          {% if u.get('stuck_jobs', 0) %}{{ u.stuck_jobs }} timer{{ '' if u.stuck_jobs == 1 else 's' }} fired without executing. {% endif %}Counts here are not to be trusted.
+          {% if u.get('stuck_jobs', 0) %}{{ u.stuck_jobs }} scheduled job{{ '' if u.stuck_jobs == 1 else 's' }} started but never finished. {% endif %}So the numbers above can't be trusted right now.
           {%- elif not u.fresh -%}
-          The hourly check has not reported{% if u.checked_ago %} for {{ (u.checked_ago // 3600) }}h{% endif %}.
+          The hourly update check hasn't reported{% if u.checked_ago %} in {{ (u.checked_ago // 3600) }} hours{% endif %}, so this may be out of date.
           {%- else -%}
           {% if u.pending %}Installs automatically{% if u.next_install %} {{ u.next_install }}{% endif %}{%
-            if u.auto_reboot and u.reboot_required %}, reboots {{ u.auto_reboot }}{%
-            elif u.auto_reboot %}; reboots {{ u.auto_reboot }} only if a kernel lands{% endif %}.
+            if u.auto_reboot and u.reboot_required %}, and will restart at {{ u.auto_reboot }} to finish{%
+            elif u.auto_reboot %}, and restarts at {{ u.auto_reboot }} only if an update needs it{% endif %}.
           {% else %}Checked {{ u.checked_human }}. Next install{% if u.next_install %} {{ u.next_install }}{% endif %}.{% endif %}
-          {%- if u.packages %} {{ u.packages|join(', ') }}{%
+          {%- if u.packages %} Waiting: {{ u.packages|join(', ') }}{%
             if u.pkg_total > u.packages|length %} and {{ u.pkg_total - u.packages|length }} more{% endif %}.{% endif -%}
-          {%- if u.last_result and u.last_result != 'success' %} Last run: {{ u.last_result }}.{% endif -%}
+          {%- if u.last_result and u.last_result != 'success' %} The last update attempt didn't succeed ({{ u.last_result }}).{% endif -%}
           {%- endif -%}
         </span>
       </div>
 
-      <!-- Weekly security invariants. Reports, never repairs. -->
+      {# Security, and everything else the hourly audit checks. The old row said
+         "1 audit finding" under Security and "Details: journalctl -t cooldown-audit", so the
+         owner had to open a terminal to learn what their own dashboard was warning about --
+         and the finding was a missing "was it worth it?" answer, which is not a security
+         matter at all. Findings now arrive with an id; FINDINGS turns each into what is
+         wrong, why it matters and what to do, and only the security ones sit under this
+         heading. The rest get their own rows, amber rather than red where that is honest.
+         Commit hashes are gone from the page (they are in ?fmt=json for anyone reviewing):
+         "mixed(2): b85e710 2e17679" told a reader nothing. #}
+      {%- macro finding(f) -%}
+        <span class="fnd"><span class="fnd-t">{{ f.title }}</span> {{ f.meaning }}
+          <b>What to do:</b> {{ f.action }}
+          {%- if f.detail %}<span class="fnd-d">{{ f.detail }}</span>{% endif %}</span>
+      {%- endmacro -%}
+      <style>
+        .fnd{display:block;margin:6px 0 10px}
+        .fnd-t{display:block;color:var(--fg);font-weight:600}
+        .fnd-d{display:block;margin-top:3px;font-family:ui-monospace,monospace;font-size:10.5px;opacity:.7}
+      </style>
       {% set a = d.audit %}
-      <div class="srow {{ 'bad' if (not a.fresh or a.findings) else 'ok' }}">
+      <div class="srow {{ 'bad' if (not a.fresh or fx.security) else 'ok' }}">
         <span class="sdot"></span><span class="slabel">Security</span>
         <span class="sval">
-          {%- if not a.fresh -%}
-          Security audit has not run{% if a.checked_ago %} for {{ (a.checked_ago // 86400) }} days{% endif %}
-          {%- elif a.findings -%}
-          {{ a.findings }} audit finding{{ '' if a.findings == 1 else 's' }}
-          {%- if a.exposed_ports %} &mdash; open to the LAN: {{ a.exposed_ports }}{% endif -%}
-          {%- if a.tampered_files %} &mdash; {{ a.tampered_files }} modified packaged file(s){% endif -%}
-          {%- else -%}
-          Security invariants hold &mdash; CA untouched, {{ a.ssh_keys }} SSH key{{ '' if a.ssh_keys == 1 else 's' }}, no exposed ports
-          {%- endif -%}
+          {%- if not a.fresh -%}The security check hasn't run{% if a.get('checked_ago') %} in
+            {{ a.get('checked_ago') // 86400 }} days{% endif %}
+          {%- elif fx.security -%}<b>{{ fx.security | length }}</b> security
+            problem{{ '' if fx.security | length == 1 else 's' }}
+          {%- else -%}No security problems{%- endif -%}
         </span>
         <span class="sdet">
-          {%- if a.findings %}Details: journalctl -t cooldown-audit
-          {%- else -%}
-          Checked {{ a.get('checked_human', 'unknown') }}{%
-            if a.get('ca_days', 0) %} &middot; CA valid {{ a.ca_days }}d{% endif %}{%
-            if a.get('ts_days', -1) > 0 %} &middot; tailnet key {{ a.ts_days }}d{% endif %}
+          {%- if not a.fresh -%}It normally runs every hour. <b>What to do:</b> on the Pi,
+            <code>sudo systemctl start cooldown-audit-quick</code>.
+          {%- elif fx.security -%}{% for f in fx.security %}{{ finding(f) }}{% endfor %}
+          {%- else -%}Checked {{ a.get('checked_ago') | ago }}. Your master key is untouched
+            {%- if a.get('ca_constrained') %} and restricted to your sites{% endif %}, and the firewall
+            is on.{% if a.get('manifest_files') and not a.get('deploy_drift') %} The Pi is
+            running exactly the code you deployed.{% endif %}
+            {%- if a.get('ca_days', 0) > 0 %} The key is good for another
+            {{ a.get('ca_days') | span }}{% if a.get('ts_days', -1) > 0 %}, and your Tailscale
+            login for another {{ a.get('ts_days') | span }}{% endif %}.{% endif %}
           {%- endif -%}
-          {%- if a.get('manifest_files', 0) %} &middot; running
-            <code>{{ a.deployed_rev }}</code>{% if a.deploy_drift %},
-            <b>{{ a.deploy_drift }} file(s) changed since deploy</b>{% else %},
-            {{ a.manifest_files }} file(s) reconciled{% endif %}
-            {%- if not a.ca_constrained %} &middot; <b>CA UNCONSTRAINED</b>{% endif %}
-          {%- else %} &middot; <b>no deploy manifest &mdash; cannot tell what is running</b>{% endif -%}
         </span>
       </div>
+      {% for cat in ('health', 'watchers', 'features') %}{% if fx[cat] %}
+      <div class="srow {{ 'warn' if cat == 'features' else 'bad' }}">
+        <span class="sdot"></span><span class="slabel">{{ fx_labels[cat] }}</span>
+        <span class="sval"><b>{{ fx[cat] | length }}</b> thing{{ '' if fx[cat] | length == 1
+          else 's' }} to look at</span>
+        <span class="sdet">{% for f in fx[cat] %}{{ finding(f) }}{% endfor %}</span>
+      </div>
+      {% endif %}{% endfor %}
       <!-- Where the curfew thinks you are. Rendered only when it is NOT the box's own
            clock, so at home this row does not exist and cannot become wallpaper. -->
       {# The heartbeat. The one row here that shows while HEALTHY, which breaks this
@@ -5019,13 +5398,15 @@ HEALTH_PAGE = """
         <span class="sdot"></span><span class="slabel">Backup</span>
         <span class="sval">
           {%- if a.get('backup_restores', -1) == 0 -%}restore FAILED
-          {%- elif a.get('backup_age', -1) >= 0 -%}{{ a.backup_age }}d old
+          {%- elif a.get('backup_age', -1) == 0 -%}made today
+          {%- elif a.get('backup_age', -1) == 1 -%}made yesterday
+          {%- elif a.get('backup_age', -1) > 1 -%}{{ a.backup_age }} days old
           {%- else -%}unknown{%- endif -%}
         </span>
         <span class="sdet">
-          {%- if a.get('backup_restores', -1) == 1 %}restore verified{% if a.get('full_ago') %} {{ a.full_ago }}{% endif %} against a scratch database
-          {%- elif a.get('backup_restores', -1) == 0 %}the newest backup did not restore &mdash; journalctl -t cooldown-audit
-          {%- else %}restore not yet verified this week{% endif -%}
+          {%- if a.get('backup_restores', -1) == 1 %}Tested {% if a.get('full_ago') %}{{ a.full_ago }}{% else %}recently{% endif %}: it really does bring your data back, not just exist.
+          {%- elif a.get('backup_restores', -1) == 0 %}The newest backup exists but wouldn't bring your data back. <b>What to do:</b> check the backup job's log on the Pi, and fix it before you need it.
+          {%- else %}Not tested yet this week. A weekly check makes sure it can actually be restored.{% endif -%}
         </span>
       </div>
       {% endif %}
@@ -5095,7 +5476,7 @@ HEALTH_PAGE = """
             var tc=$("tempCard"); if(tc) tc.className="metric "+tclass(d.temp_c);
         }
         var line=$("tempLine"); if(line && d.temp_hist) line.setAttribute("points", spark(d.temp_hist));
-        set("throt", d.power && d.power.ok ? "none" : "ACTIVE");
+        set("throt", d.power && d.power.ok ? "no" : "YES");
         set("memPct", d.mem.pct+"%"); width("memBar", d.mem.pct);
         set("memText", d.mem.used_mb+" / "+d.mem.total_mb+" MB");
         var ram=$("ram"); if(ram) ram.setAttribute("class","chip "+pclass(d.mem.pct));
@@ -5139,6 +5520,9 @@ def health():
     return render_page(HEALTH_PAGE,
         d=d, boot_alert=boot_alert, boot_history=_try(boot_history, []),
         tz=_try(tz_state, {}) or {},
+        fx=_try(lambda: explain_findings(d.get("audit")),
+                {k: [] for k in FINDING_CATEGORIES}),
+        fx_labels=FINDING_CATEGORIES,
         dm=(_dm := _try(deadman_trace, None)),
         dm_svg=_try(lambda: deadman_svg(_dm), "") if _dm else "",
         alert=_try(alert_state, {}) or {},

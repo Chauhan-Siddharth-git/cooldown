@@ -444,16 +444,17 @@ def test_health_page_says_so_when_nothing_has_broken(rdb, client, monkeypatch):
     # counter with no TTL that nothing resets, so it was a lifetime total being labelled
     # as a boot-relative one. The page now says "since it started" for each side and
     # shows the lifetime figure separately.
-    assert "No handled errors" in html
+    assert "No errors" in html
 
 
 def test_health_page_surfaces_app_and_proxy_errors(rdb, client, monkeypatch):
     html = _health_html(client, monkeypatch,
                         {"total": 3, "proxy": 2, "top": [], "last_ago": 5,
                          "last": "_power: FileNotFoundError: vcgencmd"})
-    assert "in the app" in html and "in the proxy" in html
-    assert "in the proxy" in html
-    assert "vcgencmd" in html
+    # 3 app + 2 proxy. With no since-restart baseline the proxy's are counted, not
+    # dropped -- the first rewrite of this row lost them.
+    assert "5</b> errors" in html, "app and proxy errors must both be counted"
+    assert "vcgencmd" in html, "the last error must still be named"
 
 
 # ---------- 11. the enforcement dead-man's switch ----------
@@ -633,7 +634,7 @@ def test_health_reports_a_dead_heartbeat(rdb, client, monkeypatch):
     assert st["passive_min"] > st["hb_min"]          # and shows the numbers it judged on
     html = _health_html(client, monkeypatch,
                         {"total": 0, "proxy": 0, "top": [], "last": "", "last_ago": None})
-    assert "No handled errors" in html               # fixture forces enforcement ok
+    assert "No errors" in html               # fixture forces enforcement ok
 
 
 # ---------- 12. the post-session check-in ----------
@@ -901,7 +902,7 @@ def test_comparison_says_it_is_too_early_on_day_one(rdb, client):
     rdb.set(f"shadow_usage:{day}:reddit", 1200)
     rdb.set("shadow_started", f"{now - 3600:.0f}")   # one hour old
     assert budget.shadow_comparison()["settled"] is False
-    assert "too early to draw conclusions" in client.get("/stats").get_data(as_text=True)
+    assert "too few to read anything into yet" in client.get("/stats").get_data(as_text=True)
 
 
 # ---------- 15. you can always get back to the gate ----------
@@ -1740,7 +1741,7 @@ def test_health_page_reports_a_jammed_boot_above_everything_else(client, monkeyp
                               "reboot_required": False, "boot_ok": False, "stuck_jobs": 2,
                               "last_result": "success", "last_run_ago": 60, "checked_ago": 60})
     assert "Boot never completed" in html
-    assert "2 timers fired without executing" in html
+    assert "2 scheduled jobs started but never finished" in html
     assert "Fully patched" not in html
 
 
@@ -1750,7 +1751,7 @@ def test_health_page_reports_stuck_jobs_even_when_boot_looks_fine(client, monkey
                              {"fresh": True, "pending": 0, "security": 0,
                               "reboot_required": False, "boot_ok": True, "stuck_jobs": 1,
                               "last_result": "success", "last_run_ago": 60, "checked_ago": 60})
-    assert "1 timer fired without executing" in html
+    assert "1 scheduled job started but never finished" in html
 
 
 # ---------- the weekly security audit ----------
@@ -1803,28 +1804,30 @@ def test_health_page_names_the_exposed_port(client, monkeypatch):
     html = _audit_html(client, monkeypatch,
                        {"fresh": True, "findings": 1, "ssh_keys": 1, "exposed_ports": "22",
                         "tampered_files": 0, "journal_persistent": True, "checked_ago": 3600})
-    assert "1 audit finding" in html and "open to the LAN: 22" in html
+    # Old-format audit: a count, no findings_list. It must not read as all-clear.
+    assert "open to the LAN: 22" in html, "the port must be named, not just counted"
+    assert "No security problems" not in html, "an exposed port rendered as all-clear"
 
 
 def test_health_page_says_when_the_audit_is_missing(client, monkeypatch):
     html = _audit_html(client, monkeypatch,
                        {"fresh": False, "findings": None, "exposed_ports": "",
                         "journal_persistent": True, "checked_ago": 20 * 86400})
-    assert "Security audit has not run" in html
-    assert "Security invariants hold" not in html
+    assert "The security check hasn't run" in html
+    assert "No security problems" not in html
 
 
 def test_health_page_confirms_a_clean_audit(client, monkeypatch):
     html = _audit_html(client, monkeypatch,
                        {"fresh": True, "findings": 0, "ssh_keys": 1, "exposed_ports": "",
                         "tampered_files": 0, "journal_persistent": True, "checked_ago": 3600})
-    assert "Security invariants hold" in html
+    assert "No security problems" in html
 
 
 def test_short_ago_reads_like_a_human_wrote_it():
     assert budget._short_ago(30) == "just now"
-    assert budget._short_ago(600) == "10 min ago"
-    assert budget._short_ago(7200) == "2 h ago"
+    assert budget._short_ago(600) == "10 minutes ago"
+    assert budget._short_ago(7200) == "2 hours ago"
     assert budget._short_ago(3 * 86400) == "3 days ago"
     assert budget._short_ago(-5) == "just now"      # clock skew must not print a negative
 
@@ -1862,7 +1865,7 @@ def test_audit_surfaces_the_expiries_that_would_lock_you_out(tmp_path, monkeypat
     monkeypatch.setattr(budget, "AUDIT_STATE", str(f))
     a = budget._audit()
     assert a["ts_days"] == 126 and a["ca_days"] == 3595 and a["backup_age"] == 0
-    assert a["checked_human"] == "5 min ago"
+    assert a["checked_human"] == "5 minutes ago"
 
 
 def test_health_page_shows_the_cheap_tier_recency(client, monkeypatch):
@@ -1871,8 +1874,9 @@ def test_health_page_shows_the_cheap_tier_recency(client, monkeypatch):
                         "tampered_files": 0, "journal_persistent": True, "checked_ago": 300,
                         "checked_human": "5 min ago", "ca_days": 3595, "ts_days": 126,
                         "backup_age": 0, "mode": "quick"})
-    assert "Checked 5 min ago" in html
-    assert "tailnet key 126d" in html and "CA valid 3595d" in html
+    assert "Checked 5 minutes ago" in html
+    # Both key lifetimes survive the rewrite, in words rather than "3595d".
+    assert "9 years" in html and "4 months" in html
 
 
 # ---------- every line of copy, not just today's ----------
@@ -1938,9 +1942,9 @@ def test_health_page_distinguishes_verified_from_never_checked(client, monkeypat
             "checked_human": "5 min ago", "ca_days": 3595, "ts_days": 126,
             "backup_age": 0, "mode": "full"}
     ok = _audit_html(client, monkeypatch, dict(base, backup_restores=1))
-    assert "restore verified" in ok
+    assert "really does bring your data back" in ok
     unknown = _audit_html(client, monkeypatch, dict(base, backup_restores=-1))
-    assert "restore verified" not in unknown and "restore FAILED" not in unknown
+    assert "really does bring your data back" not in unknown and "restore FAILED" not in unknown
     bad = _audit_html(client, monkeypatch, dict(base, backup_restores=0))
     assert "restore FAILED" in bad
 
@@ -1957,7 +1961,7 @@ def test_health_page_says_how_pending_updates_will_be_installed(client, monkeypa
          "next_install": "tonight at 3:27 am", "auto_reboot": "04:00",
          "last_result": "success", "last_run_ago": 60, "checked_ago": 300})
     assert "Installs automatically tonight at 3:27 am" in html
-    assert "reboots 04:00" in html
+    assert "04:00" in html and "only if an update needs it" in html
     assert "libdrm2, libgbm1" in html and "and 4 more" in html
 
 
