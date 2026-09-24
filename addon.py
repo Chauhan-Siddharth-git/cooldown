@@ -712,7 +712,7 @@ def _is_cross_origin(flow):
 # ignore_connection and the traffic passes through unread -- no decryption attempted,
 # which matters: this host is only decrypted in order to be broken, and outside the
 # window there is no reason to look at it. Inside the window it lets both mechanisms run.
-BLOCKED_HOSTS = ["zombsroyale.io"]
+BLOCKED_HOSTS = ["zombsroyale.io", "4chan.org", "4channel.org", "4cdn.org"]
 
 # A diagnostic, not a control. Passthrough connections log only an IP -- the proxy never
 # learns their hostname because it never intercepts them -- so "does the app actually talk

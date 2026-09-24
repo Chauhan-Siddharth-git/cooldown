@@ -629,3 +629,34 @@ def test_the_time_warning_does_not_cover_the_top_of_the_page():
     # control, and a literal glyph mojibakes on any of them that is not UTF-8.
     body = js[js.index("var WARN_AT"):js.index("function hideWd()")]
     assert all(ord(c) < 128 for c in body), "literal non-ASCII in the injected script"
+
+
+def test_the_two_blocklists_are_the_same_list():
+    """A blocked host has to be in BOTH lists, and nothing checked that they agreed.
+
+    gen_allow_hosts.BLOCKED puts a host into --allow-hosts, so mitmproxy intercepts it.
+    addon.BLOCKED_HOSTS is what request() checks before returning the 403. Each half is
+    useless without the other, and each way of drifting fails differently:
+
+      only in BLOCKED        intercepted, but request() does not recognise it and FORWARDS
+                             it -- the F40 failure again, for any app that accepts the cert
+      only in BLOCKED_HOSTS  never intercepted at all, so it passes straight through
+
+    Found while adding 4chan, which is the moment a mismatch would have been introduced.
+    """
+    import importlib.util, os
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec = importlib.util.spec_from_file_location("g", os.path.join(here, "deploy", "gen_allow_hosts.py"))
+    g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)
+    assert set(addon.BLOCKED_HOSTS) == set(g.BLOCKED), (
+        f"only in the addon: {sorted(set(addon.BLOCKED_HOSTS) - set(g.BLOCKED))}; "
+        f"only in the generator: {sorted(set(g.BLOCKED) - set(addon.BLOCKED_HOSTS))}")
+
+
+def test_4chan_is_blocked_across_its_domains():
+    """Boards, the SFW alias domain, and the image CDN. Blocking only the first leaves
+    images and the alias loading."""
+    for h in ("4chan.org", "boards.4chan.org", "4channel.org", "i.4cdn.org", "s.4cdn.org"):
+        assert addon.blocked_now(h), h
+    for h in ("not4chan.org", "4chan.org.evil.com"):
+        assert not addon.blocked_now(h), h

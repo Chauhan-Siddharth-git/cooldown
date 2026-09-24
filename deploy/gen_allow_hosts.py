@@ -41,7 +41,7 @@ EXTRA = ["mitm.it"]
 #
 # The time window lives in addon.py: outside blocked hours the addon sets
 # ignore_connection on the ClientHello and the traffic passes through untouched.
-BLOCKED = ["zombsroyale.io"]
+BLOCKED = ["zombsroyale.io", "4chan.org", "4channel.org", "4cdn.org"]
 
 
 def domains():
