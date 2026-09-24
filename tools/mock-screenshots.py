@@ -58,11 +58,17 @@ HEALTH = {
                 "checked_human": "8 min ago", "next_install": "tonight at 3:14 am",
                 "auto_reboot": "04:00", "last_result": "success",
                 "last_run_ago": 61200, "checked_ago": 480},
-    "audit": {"fresh": True, "findings": 0, "ssh_keys": 1, "shell_accounts": "pi root",
+    # Shape copied from the real /health?fmt=json on the box. One mild finding on
+    # purpose: a README shot with zero findings shows an empty green box, and the point
+    # of the section is the "what it means / what to do" layout.
+    "audit": {"fresh": True, "findings": 1, "ssh_keys": 1, "shell_accounts": "pi root",
               "exposed_ports": "", "tampered_files": 0, "journal_persistent": True,
-              "checked_human": "34 min ago", "ca_days": 3596, "ts_days": 128,
+              "checked_human": "34 minutes ago", "ca_days": 3596, "ts_days": 128,
               "backup_age": 0, "backup_restores": 1, "full_ago": "2 days ago",
-              "mode": "full", "checked_ago": 2040},
+              "mode": "full", "checked_ago": 2040,
+              "fw_policy": "DROP", "fw_contained": [22, 8080, 8081],
+              "findings_list": [{"id": "worth_silent",
+                                 "detail": "no worth verdict in 5 days across 9 cooldowns"}]},
     # name/mb/pct, copied from _top_processes(). Written as mem_mb/cpu first, which
     # rendered an empty table -- the third mock shape guessed wrong rather than read.
     "procs": [{"name": "mitmdump", "mb": 96, "pct": 3.2},
@@ -71,13 +77,19 @@ HEALTH = {
               {"name": "systemd-journal", "mb": 26, "pct": 0.3},
               {"name": "redis-server", "mb": 12, "pct": 0.2}],
     "proc_total": 168,
-    # Field names taken from _listening_ports(), not guessed: port/scope/rank/what.
-    # An earlier version used "addr" and the panel silently rendered nothing.
-    "ports": [{"port": 22, "what": "ssh", "scope": "all interfaces", "rank": 0},
-              {"port": 8080, "what": "proxy · transparent", "scope": "all interfaces", "rank": 0},
-              {"port": 8081, "what": "proxy · regular", "scope": "all interfaces", "rank": 0},
-              {"port": 5000, "what": "dashboard", "scope": FAKE_BOX, "rank": 1},
-              {"port": 6379, "what": "redis", "scope": "localhost", "rank": 2}],
+    # Field names and labels taken from _listening_ports(), not guessed:
+    # port/scope/rank/reach/what. An earlier version used "addr" and the panel silently
+    # rendered nothing; a later one lacked "reach" and fell back to the old jargon.
+    "ports": [{"port": 22, "what": "remote login (SSH)", "scope": "all interfaces",
+               "rank": 0, "reach": ""},
+              {"port": 8080, "what": "the proxy, for exit-node devices",
+               "scope": "all interfaces", "rank": 0, "reach": ""},
+              {"port": 8081, "what": "the proxy, for browsers set to use it",
+               "scope": "all interfaces", "rank": 0, "reach": ""},
+              {"port": 5000, "what": "this dashboard", "scope": FAKE_BOX, "rank": 1,
+               "reach": "Tailscale only"},
+              {"port": 6379, "what": "the database", "scope": "loopback only", "rank": 2,
+               "reach": "this Pi only"}],
 }
 
 def _dev(name, os_, kind, ip, online, down, up, seen=0):
@@ -115,6 +127,9 @@ def seed():
 def main():
     seed()
     budget.collect_health = lambda *a, **k: dict(HEALTH)
+    # The page also reads the audit file directly (firewall state for the ports table).
+    # Without this, a laptop with no audit file renders "Firewall state unknown".
+    budget._audit = lambda *a, **k: dict(HEALTH["audit"])
     if hasattr(budget, "collect_devices"):
         budget.collect_devices = lambda *a, **k: dict(DEVICES)
     # Pin the rotating copy so a screenshot is reproducible rather than whatever the
