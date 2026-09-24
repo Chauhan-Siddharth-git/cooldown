@@ -42,7 +42,7 @@ proxy, certificate, exit node, DNS — in plain English, with no assumed backgro
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/screenshots/countdown.png" alt="The cooldown countdown page"><br><sub><b>The cooldown.</b> When a session's up, a calm countdown — not a wall — with a free Study escape hatch.</sub></td>
+    <td width="50%"><img src="docs/screenshots/countdown.png" alt="The cooldown countdown page"><br><sub><b>The cooldown.</b> When a session's up, a calm countdown, not a wall.</sub></td>
     <td width="50%"><img src="docs/screenshots/reflection.png" alt="Pre-entry reflection prompt"><br><sub><b>A pause before you dive in.</b> Name why you're reaching for it and get a better option — Continue is always one tap away.</sub></td>
   </tr>
   <tr>
@@ -72,9 +72,6 @@ of blocking, it:
 - **Does surgery, not just blocking.** On YouTube it strips Shorts, the home feed,
   and autoplay while leaving Search and Subscriptions — so the tool removes the
   slot machine without removing the utility.
-- **Has an optional Study mode:** a free, always-open escape hatch locked to a course
-  playlist you allow-list. Ships **off**; add a playlist ID to `STUDY_PLAYLISTS` in
-  `app.py` *and* `addon.py` to enable it.
 - **Winds down at night:** a soft bedtime curfew (with a small, independent night
   buffer) instead of a hard shutoff.
 - **Is yours.** No subscription, no account, no telemetry. All state is local.
@@ -203,10 +200,16 @@ Walkthrough and warnings: **[DOCKER-PHONE.md](DOCKER-PHONE.md)**.
 ## Configure
 
 The knobs live at the top of `app.py` — budgets, cooldown length, refill rate,
-night-curfew hours, the gated `SITES` map, and `STUDY_PLAYLISTS`. Adding a site
-touches **three** places: `SITES` in `app.py`, `SITES` in `addon.py`, and the
-`--allow-hosts` regex in `deploy/cooldown-proxy.service` (the TLS-decrypt allowlist —
-miss it and the site is tunneled un-gated).
+night-curfew hours, and the gated `SITES` map. Adding a site touches **four** places:
+
+1. `SITES` in `app.py`
+2. `SITES` in `addon.py`
+3. the `--allow-hosts` regex in `deploy/cooldown-proxy.service`, regenerated with
+   `python3 deploy/gen_allow_hosts.py` — miss it and the site is tunneled un-gated
+4. **the certificate itself.** The CA only vouches for the sites it was built with, so a
+   new site needs `./rotate-ca.sh` and the new certificate re-trusted on every device.
+   Skip this and the site doesn't fail loudly — it just shows a certificate warning, with
+   nothing else to tell you why. Batch new sites together so you only re-trust once.
 
 ### Facebook (the MITM-hostile one)
 
@@ -253,7 +256,7 @@ state. Run before touching the budget constants.
 matching (`evil-reddit.com` and `reddit.com.attacker.io` must **not** match — a substring
 check there would silently gate *and decrypt* the wrong domain), which Facebook hosts get
 decrypted (bare `facebook.com` must not — Messenger pins its cert), CSP amendment and the
-buffer-vs-stream choice, the request gate (block / study lock / pass-through / cross-site
+buffer-vs-stream choice, the request gate (block / pass-through / cross-site
 POST rejection), and what gets injected into a page. Each of those was verified by
 mutation testing — breaking the behaviour makes the suite fail.
 

@@ -32,7 +32,10 @@ usually need checking against both.
 - **Reading the local clock** → `local_policy()` if it decides *bedtime* (an hour-of-day
   compared against `NIGHT_START_HOUR`/`NIGHT_END_HOUR`), `local_acct()` if it becomes a
   *date key* (`usage:`/`entries:`/`reflect:`/`worth:{day}`, and `reset_day`). Never bare
-  `time.localtime()`. The two zones differ while you are travelling, and they differ on
+  `time.localtime()` — and never `time.strftime(fmt)` with no time argument either, which
+  reads the same local clock without saying so. The 2026-09-16 migration grepped for
+  `localtime(` in `app.py` alone, and so missed the heartbeat's `usage:` writer, the
+  `entries:` writer and all of `addon.py`; see PLAN.md, Known gaps. The two zones differ while you are travelling, and they differ on
   purpose: the curfew follows your body within hours of landing, the books follow one
   clean transition later, inside `daily_reset()`. Move the books early and you mint
   budget — `reset_day()` keys off the local hour and `catch_up_reset()` answers a
@@ -166,7 +169,8 @@ Read this part first, then **read the code before reading `SECURITY-CASESTUDY.md
    file) must still hash the same, the CA must carry name constraints, every `ExecStart`
    must be executable, every unit declaring `[Install]` must be enabled, every active
    timer must have a next elapse, and `-P INPUT DROP` must hold on both families.
-   `/health` shows the deployed revision. Six findings were "correct in the repo, absent
+   `/health?fmt=json` carries the deployed revision (the page itself stopped showing commit
+   hashes on 2026-09-24 — they told the owner nothing). Six findings were "correct in the repo, absent
    or stale on the machine" (F11, F21, F22, F26, F27, F29) and each was found by hand,
    once. If you are reviewing, `deployed_rev` is the first thing to read: a review of code
    the box is not running is a review of nothing.
