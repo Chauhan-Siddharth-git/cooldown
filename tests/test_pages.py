@@ -293,6 +293,22 @@ def test_active_peer_reads_as_online():
     assert dev["kind"] == "computer"
 
 
+def test_kindle_does_not_take_the_laptop_slot(client, monkeypatch):
+    """A Kindle reports OS "linux". Classified by OS alone it was a computer, and with the
+    laptop asleep it won the laptop node on the board (online first, then alphabetical)."""
+    st = {"Self": {"HostName": "pi", "TailscaleIPs": ["100.64.0.5"]},
+          "Peer": {"a": {"HostName": "kindle", "OS": "linux", "Online": True,
+                         "TailscaleIPs": ["100.64.0.20"]},
+                   "b": {"HostName": "work-laptop", "OS": "linux", "Online": False,
+                         "TailscaleIPs": ["100.64.0.12"]}}}
+    monkeypatch.setattr(budget, "_ts_status", lambda: st)
+    kinds = {d["name"]: d["kind"] for d in budget.collect_devices()["devices"]}
+    assert kinds == {"kindle": "reader", "work-laptop": "computer"}
+    html = client.get("/devices").data.decode()
+    laptop_label = html.split('id="dev-laptop"')[1].split("</g>")[0]
+    assert "work-laptop" in laptop_label and "kindle" not in laptop_label
+    assert "kindle" in html                  # still listed, as a card
+
 # ---------- tamper-evidence: an unexplained reboot ----------
 
 def test_boot_watch_is_quiet_on_first_run(rdb):

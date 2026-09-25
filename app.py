@@ -5644,8 +5644,18 @@ def _dev_name(p):
     dns = (p.get("DNSName") or "").split(".")[0]
     return dns or (p.get("TailscaleIPs") or ["device"])[0]
 
-def _dev_kind(os_):
-    return "phone" if (os_ or "").lower() in ("ios", "android", "ipados") else "computer"
+# E-readers report their OS as plain "linux", so by OS alone a Kindle is a computer --
+# and it took the laptop's slot on the board whenever the laptop was asleep, or whenever
+# both were offline, since "kindle" sorts before most laptop names. The hostname is the
+# only signal Tailscale gives, so match on it.
+_READER_NAMES = ("kindle", "kobo", "remarkable", "boox", "pocketbook")
+
+def _dev_kind(os_, name=""):
+    if (os_ or "").lower() in ("ios", "android", "ipados"):
+        return "phone"
+    if any(w in (name or "").lower() for w in _READER_NAMES):
+        return "reader"
+    return "computer"
 
 def _fmt_bytes(n):
     if n is None:
@@ -5685,7 +5695,7 @@ def _device(p):
     # connected too, else it shows the nonsensical "offline, but downloading".
     online = bool(p.get("Online") or p.get("Active"))
     return {
-        "name": _dev_name(p), "os": p.get("OS", "?"), "kind": _dev_kind(p.get("OS")),
+        "name": _dev_name(p), "os": p.get("OS", "?"), "kind": _dev_kind(p.get("OS"), _dev_name(p)),
         "ip": ip, "online": online,
         "direct": bool(p.get("CurAddr")), "relay": p.get("Relay", ""),
         "down_bytes": tx, "up_bytes": rx, "down_bps": down_bps, "up_bps": up_bps,
@@ -5812,6 +5822,7 @@ DEVICES_PAGE = """
         <div class="dhead">
           <svg class="dico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
             {% if x.kind == 'phone' %}<rect x="7" y="2" width="10" height="20" rx="2.5"/><line x1="10" y1="18.5" x2="14" y2="18.5"/>
+            {% elif x.kind == 'reader' %}<rect x="5" y="2" width="14" height="20" rx="2"/><line x1="8.5" y1="7" x2="15.5" y2="7"/><line x1="8.5" y1="10.5" x2="15.5" y2="10.5"/><line x1="8.5" y1="14" x2="13" y2="14"/>
             {% else %}<rect x="3" y="4" width="18" height="12" rx="1.5"/><line x1="1" y1="20" x2="23" y2="20"/>{% endif %}
           </svg>
           <div><div class="dname">{{ x.name }}</div><div class="dos">{{ x.os }}</div></div>
