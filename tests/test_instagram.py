@@ -1,7 +1,7 @@
 """Instagram: the feed is budgeted, DMs and your own profile are free.
 
 Instagram is an SPA, so the split lives in two places that must agree on every path --
-addon.instagram_path_is_free() in the proxy and the same list substituted into the injected
+addon.path_is_free() in the proxy and the same list substituted into the injected
 script. Half of what follows exists to make that agreement a tested fact: the JS is run in
 node against the Python classifier, because two implementations of one rule drift, and the
 failure here is not a wrong answer but a reload loop.
@@ -189,21 +189,21 @@ def test_instagram_is_appended_so_no_existing_chart_colour_moves():
 
 @pytest.mark.parametrize("path", FREE_PATHS)
 def test_free_paths(path):
-    assert addon.instagram_path_is_free(path), path
+    assert addon.path_is_free('instagram', path), path
 
 
 @pytest.mark.parametrize("path", BUDGETED_PATHS)
 def test_budgeted_paths(path):
-    assert not addon.instagram_path_is_free(path), path
+    assert not addon.path_is_free('instagram', path), path
 
 
 def test_an_empty_handle_frees_no_profile(monkeypatch):
     monkeypatch.setattr(addon, "INSTAGRAM_SELF", "")
-    assert addon.instagram_free_segments() == ["direct", "accounts"]
-    assert not addon.instagram_path_is_free("/")
-    assert not addon.instagram_path_is_free("//")
-    assert not addon.instagram_path_is_free("/someoneelse/")
-    assert addon.instagram_path_is_free("/direct/")      # the fixed list is unaffected
+    assert addon.instagram_free_segments() == ("direct", "accounts")
+    assert not addon.path_is_free('instagram', "/")
+    assert not addon.path_is_free('instagram', "//")
+    assert not addon.path_is_free('instagram', "/someoneelse/")
+    assert addon.path_is_free('instagram', "/direct/")      # the fixed list is unaffected
 
 
 @pytest.mark.parametrize("bad", ["../direct", "a/b", "my handle", "x" * 31, "a;b", "<script>",
@@ -212,21 +212,21 @@ def test_a_malformed_handle_frees_nothing_and_cannot_reach_the_script(monkeypatc
     """The handle is substituted into JavaScript, so it is validated against Instagram's
     own alphabet rather than trusted to be a word."""
     monkeypatch.setattr(addon, "INSTAGRAM_SELF", bad)
-    assert addon.instagram_free_segments() == ["direct", "accounts"], bad
+    assert addon.instagram_free_segments() == ("direct", "accounts"), bad
 
 
 @pytest.mark.parametrize("raw", ["Mine", "@mine", "/mine/", " mine "])
 def test_the_handle_is_normalised(monkeypatch, raw):
     monkeypatch.setattr(addon, "INSTAGRAM_SELF", raw)
-    assert addon.instagram_path_is_free("/mine/followers/")
-    assert not addon.instagram_path_is_free("/minex/")
+    assert addon.path_is_free('instagram', "/mine/followers/")
+    assert not addon.path_is_free('instagram', "/minex/")
 
 
 def test_the_handle_comes_from_the_environment_and_the_unit_sets_it():
     """addon.py is byte-identical across the two repos; only the unit differs."""
     code = ("import sys; sys.path.insert(0, %r); import addon; "
-            "print(addon.instagram_path_is_free('/Zed.Zed/followers/'), "
-            "addon.instagram_path_is_free('/zed.zedx/'))" % ROOT)
+            "print(addon.path_is_free('instagram', '/Zed.Zed/followers/'), "
+            "addon.path_is_free('instagram', '/zed.zedx/'))" % ROOT)
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                          env={**os.environ, "INSTAGRAM_SELF": "zed.zed"}).stdout.split()
     assert out == ["True", "False"]
@@ -250,15 +250,65 @@ def test_no_session_free_navigation_passes(rdb, monkeypatch):
         assert run_request(mkflow(path)) is None, path
 
 
-def test_no_session_subrequests_pass_so_dms_keep_working(rdb, monkeypatch):
-    """Today's 503 for a sub-request would break every DM. The feed's own API calls pass
-    as well -- that is the design, and it is the injected script that closes the
-    window (next section)."""
+def test_no_session_subrequests_from_a_free_page_pass_so_dms_keep_working(rdb, monkeypatch):
+    """Today's 503 for a sub-request would break every DM. A sub-request is judged by the
+    page that made it, so ANY call from a DM page passes -- its own path says nothing."""
     stub_gate(monkeypatch)
     for path in ("/api/v1/direct_v2/inbox/", "/graphql/query", "/api/v1/feed/timeline/"):
         f = mkflow(path, ctype="application/json", nav=False,
                    headers={"Referer": "https://www.instagram.com/direct/inbox/"})
         assert run_request(f) is None, path
+
+
+@pytest.mark.parametrize("referer", [
+    "https://www.instagram.com/",                 # the feed itself
+    "https://www.instagram.com/explore/",
+    "https://www.instagram.com//direct/",         # empty first segment: budgeted
+    "https://evil.example/direct/",               # not ours: falls back to its own path
+    None,                                         # no Referer at all: closed, not open
+])
+def test_no_session_feed_subrequests_get_503_like_every_other_site(rdb, monkeypatch, referer):
+    """The review's first finding. Letting every sub-request through left the feed gated by
+    the injected script alone, and a service worker serving a cached shell for / never
+    reaches request() as a navigation -- its graphql calls would have loaded the feed with
+    no session and no gate. Refusing them is what the proxy did for every other site."""
+    stub_gate(monkeypatch)
+    f = mkflow("/graphql/query", ctype="application/json", nav=False,
+               headers={"Referer": referer} if referer else None)
+    resp = run_request(f)
+    assert resp is not None and resp.status_code == 503, referer
+
+
+def test_free_navigations_in_a_live_session_do_not_mark_browsing(rdb):
+    """/health's "browsing" flag means pages are loading while the heartbeat SHOULD be
+    running. On a free path it deliberately is not, so marking it would read as
+    "browsing, nothing charged" -- the pattern that card exists to flag."""
+    rdb.set("active_token:instagram", "tok")
+    rdb.set("session:tok", "active")
+    for path in ("/direct/inbox/", f"/{HANDLE}/", "/accounts/activity/"):
+        assert run_request(mkflow(path)) is None
+    assert rdb.get("last_active_nav") is None
+    run_request(mkflow("/"))                              # control: the feed does mark it
+    assert rdb.get("last_active_nav") is not None
+
+
+def test_the_regular_profile_still_reaches_the_dms_but_not_the_feed(rdb):
+    """"DMs are free" holds on every profile. The flat block still covers the rest."""
+    ua = {"User-Agent": "Mozilla/5.0 regular-profile"}
+    assert run_request(mkflow("/direct/inbox/", headers=ua)) is None
+    dm_api = mkflow("/api/v1/direct_v2/inbox/", ctype="application/json", nav=False,
+                    headers={**ua, "Referer": "https://www.instagram.com/direct/inbox/"})
+    assert run_request(dm_api) is None
+    resp = run_request(mkflow("/", headers=ua))
+    assert resp is not None and b"Blocked" in resp.content
+
+
+def test_no_other_site_is_budgeted_by_path():
+    others = [s for s in addon.SITES if s != "instagram"]
+    assert len(others) >= 5, "SITES parsed to almost nothing; the loop below would be vacuous"
+    for site in others:
+        assert addon.free_segments(site) is None, site
+        assert not addon.path_is_free(site, "/direct/"), site
 
 
 def test_a_live_session_passes_everything(rdb):
@@ -386,20 +436,23 @@ NODE = shutil.which("node")
 HARNESS = r"""
 const vm = require('vm');
 const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
-const calls = [], timers = [], winHandlers = {};
+const calls = [], timers = [], winHandlers = {}, appended = [];
 let reloads = 0;
 const el = () => ({ style: {}, classList: { add() {}, remove() {} }, setAttribute() {},
-                    appendChild() {}, remove() {} });
+                    appendChild(c) { appended.push(c); }, remove() {} });
 const location = { pathname: input.start, reload() { reloads++; } };
 const document = { visibilityState: 'visible', addEventListener() {}, createElement: el,
                    getElementById: () => null, head: el(), documentElement: el() };
+// Lets the fetch().then() chain settle, so a ping's answer (the deadline) is in place
+// before the next step -- the 1s ticker reads it.
+const settle = () => new Promise(r => setImmediate(r));
 const history = { pushState() {}, replaceState() {} };
 const sandbox = {
   location, document, history, Date, Intl, encodeURIComponent, JSON, Math,
   fetch(url) {
     calls.push(url);
     return Promise.resolve({ status: input.status || 200,
-                             json: () => Promise.resolve({ remaining: 300 }) });
+                             json: () => Promise.resolve({ remaining: input.remaining || 300 }) });
   },
   setInterval(fn, ms) { timers.push({ fn, ms }); return timers.length; },
   navigator: {},
@@ -408,21 +461,25 @@ sandbox.window = sandbox;
 sandbox.addEventListener = (t, fn) => { (winHandlers[t] = winHandlers[t] || []).push(fn); };
 vm.createContext(sandbox);
 vm.runInContext(input.script, sandbox);
-const out = [calls.length];
-for (const step of input.steps) {
-  if (step.op === 'push') { location.pathname = step.path; history.pushState({}, '', step.path); }
-  if (step.op === 'replace') { location.pathname = step.path; history.replaceState({}, '', step.path); }
-  if (step.op === 'set') location.pathname = step.path;
-  if (step.op === 'pop') { location.pathname = step.path; (winHandlers.popstate || []).forEach(f => f()); }
-  if (step.op === 'tick10') timers.filter(t => t.ms === 10000).forEach(t => t.fn());
-  if (step.op === 'tick1') timers.filter(t => t.ms === 1000).forEach(t => t.fn());
-  if (step.op === 'hidden') document.visibilityState = 'hidden';
-  if (step.op === 'visible') document.visibilityState = 'visible';
-  out.push(calls.length);
-}
-Promise.resolve().then(() => Promise.resolve()).then(() => Promise.resolve()).then(() => {
-  console.log(JSON.stringify({ counts: out, calls, reloads }));
-});
+(async () => {
+  const out = [calls.length];
+  await settle();
+  for (const step of input.steps) {
+    if (step.op === 'push') { location.pathname = step.path; history.pushState({}, '', step.path); }
+    if (step.op === 'replace') { location.pathname = step.path; history.replaceState({}, '', step.path); }
+    if (step.op === 'set') location.pathname = step.path;
+    if (step.op === 'pop') { location.pathname = step.path; (winHandlers.popstate || []).forEach(f => f()); }
+    if (step.op === 'tick10') timers.filter(t => t.ms === 10000).forEach(t => t.fn());
+    if (step.op === 'tick1') timers.filter(t => t.ms === 1000).forEach(t => t.fn());
+    if (step.op === 'hidden') document.visibilityState = 'hidden';
+    if (step.op === 'visible') document.visibilityState = 'visible';
+    out.push(calls.length);
+    await settle();
+  }
+  const pill = appended.find(e => e.id === 'bp-timepill');
+  console.log(JSON.stringify({ counts: out, calls, reloads,
+    pill: pill ? { display: pill.style.display || '', text: pill.textContent || '' } : null }));
+})();
 """
 
 
@@ -436,11 +493,11 @@ def _script_for(site="instagram", host="www.instagram.com"):
     return hb[0]
 
 
-def run_js(start, steps=(), status=200, script=None):
+def run_js(start, steps=(), status=200, script=None, remaining=300):
     if NODE is None:
         pytest.skip("needs node")
     payload = json.dumps({"script": script or _script_for(), "start": start,
-                          "steps": list(steps), "status": status})
+                          "steps": list(steps), "status": status, "remaining": remaining})
     p = subprocess.run([NODE, "-e", HARNESS], input=payload, capture_output=True,
                        text=True, timeout=30)
     assert p.returncode == 0, p.stderr
@@ -461,7 +518,7 @@ def test_the_script_and_the_proxy_agree_on_every_path(rdb, path):
     and the feed is free. Either direction is a bug, so both are asserted per path."""
     got = run_js(path.split("?")[0] or "/", script=_script_for())
     pinged = got["counts"][0] > 0
-    assert pinged is (not addon.instagram_path_is_free(path)), path
+    assert pinged is (not addon.path_is_free('instagram', path)), path
 
 
 def test_a_free_page_never_pings_not_on_the_interval_either(rdb):
@@ -507,6 +564,21 @@ def test_moving_between_free_paths_or_between_budgeted_ones_adds_no_ping(rdb):
 def test_leaving_the_feed_for_dms_stops_the_pings(rdb):
     got = run_js("/", [{"op": "push", "path": "/direct/inbox/"}, {"op": "tick10"}])
     assert got["counts"] == [1, 1, 1]
+
+
+def test_the_last_minute_warning_shows_on_the_feed(rdb):
+    """Control for the next test: with 45 s left the pill is up on a budgeted page."""
+    got = run_js("/", [{"op": "tick1"}], remaining=45)
+    assert got["pill"] and got["pill"]["display"] == "block", got["pill"]
+    assert got["pill"]["text"].startswith("45s") and "Instagram" in got["pill"]["text"]
+
+
+def test_the_last_minute_warning_does_not_follow_you_into_the_dms(rdb):
+    """Nothing is charged on a free path, so nothing may count down there -- a red ring
+    running to zero over a DM thread reads as the DMs spending budget."""
+    got = run_js("/", [{"op": "tick1"}, {"op": "push", "path": "/direct/inbox/"},
+                       {"op": "tick1"}], remaining=45)
+    assert got["pill"]["display"] == "none", got["pill"]
 
 
 def test_a_hidden_tab_does_not_ping_on_entering_the_feed(rdb):

@@ -1,5 +1,6 @@
 from mitmproxy import http
 from urllib.parse import urlsplit, parse_qs, quote
+import functools
 import json
 import re
 import secrets
@@ -33,8 +34,10 @@ SITES = {
     "news":    {"match": NEWS_DOMAINS},
     # Instagram WEB only, and only the page host: bare instagram.com would also name
     # i./edge-chat./graph., which the CA must not vouch for (RFC 5280 constraints cover
-    # subdomains). Budgeted by PATH, not by host -- see instagram_path_is_free().
-    "instagram": {"match": ["www.instagram.com"]},
+    # subdomains). Budgeted by PATH, not by host -- see free_segments(). stream_non_html:
+    # buffer ONLY the HTML we inject into, as for Facebook -- Meta's graphql streams its
+    # responses, and stream = False on those hangs the page.
+    "instagram": {"match": ["www.instagram.com"], "stream_non_html": True},
 }
 
 # Hosts that belong to a gated site but only serve static assets / media. We let
@@ -173,6 +176,10 @@ HEARTBEAT_SCRIPT = """
   // Local 1s ticker: the red last-minute warning takes the top slot; otherwise the
   // wind-down ribbon shows whenever the last ping said we're in wind-down.
   setInterval(function () {
+    // Nothing is being charged on a free path, so nothing counts down there. Without this
+    // the last-minute frame followed you from the feed into a DM thread and ran to zero
+    // over it, which reads as the DMs spending budget.
+    if (isFree()) { hideWarn(); hideWd(); return; }
     var warn = false;
     if (deadline !== null) {
       var secs = Math.round((deadline - Date.now()) / 1000);
@@ -183,14 +190,14 @@ HEARTBEAT_SCRIPT = """
   }, 1000);
 
   // Instagram only (null everywhere else, so every path there is budgeted): the
-  // first-path-segments that are free of budget. Substituted from instagram_free_segments()
-  // at injection time so this and the proxy's own classifier read ONE list. They must agree
+  // first-path-segments that are free of budget. Substituted from free_segments() at
+  // injection time so this and the proxy's own classifier read ONE list. They must agree
   // on every path: a page this thinks is budgeted but the proxy serves for free would ping,
   // get a 403 and reload, forever.
   var FREE = __FREE__;
   function isFree() {
     if (!FREE) return false;
-    // Same rule as instagram_path_is_free(): the FIRST segment, exactly, case-folded.
+    // Same rule as path_is_free(): the FIRST segment, exactly, case-folded.
     // "//direct" has an empty first segment and is therefore budgeted, as in Python.
     var seg = location.pathname.split("/")[1];
     return typeof seg === "string" && seg !== "" && FREE.indexOf(seg.toLowerCase()) !== -1;
@@ -479,15 +486,6 @@ OVERLAY_SITES = {
     },
 }
 
-# Gated sites whose non-HTML responses must STREAM rather than be buffered: their API
-# traffic is long-lived or streamed (Instagram's graphql), and buffering it hangs the page.
-STREAM_NON_HTML = ("instagram",)
-
-# Gated sites that get the injection on every HTML page, session or not. Instagram's free
-# paths carry no session, and a page first loaded on /direct/ with no guard would make the
-# SPA hop to Home free: the script is what notices it and asks for the gate.
-INJECT_WITHOUT_SESSION = ("instagram",)
-
 def host_matches(host, patterns):
     """True if `host` is one of `patterns` or a subdomain of one. The single place
     host matching is defined, so no caller can quietly reintroduce a substring test."""
@@ -515,7 +513,7 @@ def site_for_host(host):
 # yes, feed no": tapping Home from a DM thread is a pushState the proxy never sees. The
 # split is by PATH, in two cooperating halves -- request() gates budgeted navigations, and
 # the injected script (HEARTBEAT_SCRIPT, FREE) skips pings on free paths and pings at once
-# on entering a budgeted one. Both read instagram_free_segments(), so they cannot drift.
+# on entering a budgeted one. Both read free_segments(), so they cannot drift.
 #
 # An ALLOW-LIST of free first path segments, the Facebook overlay's model: whatever
 # Instagram adds later is budgeted by default, which is the direction to fail.
@@ -527,26 +525,52 @@ INSTAGRAM_SELF = os.environ.get("INSTAGRAM_SELF", "")
 _HANDLE_RE = re.compile(r"[a-z0-9._]{1,30}")     # Instagram's own handle alphabet
 
 
+@functools.lru_cache(maxsize=8)
+def _instagram_free(handle):
+    own = handle.strip().strip("/").lstrip("@").lower()
+    return INSTAGRAM_FREE_BASE + ((own,) if _HANDLE_RE.fullmatch(own) else ())
+
+
 def instagram_free_segments():
-    """First path segments that cost no budget: DMs, /accounts, and your own profile."""
-    own = INSTAGRAM_SELF.strip().strip("/").lstrip("@").lower()
-    return list(INSTAGRAM_FREE_BASE) + ([own] if _HANDLE_RE.fullmatch(own) else [])
+    """First path segments that cost no budget: DMs, /accounts, and your own profile.
+
+    Cached on the handle. This runs for every Instagram request, sub-requests included,
+    and the answer changes only when the unit does -- so normalising and regex-checking
+    the same string on the proxy's hot path was work with one possible result.
+    """
+    return _instagram_free(INSTAGRAM_SELF)
 
 
-def instagram_path_is_free(path):
-    """Is this request path free of budget? Segment-exact and case-insensitive on the
-    FIRST segment: /direct/inbox/ is free, /directory/ is not, and /mine/followers/ is
-    free while /minex/ is not (F4's class -- a prefix test where a segment test was meant).
+def free_segments(site):
+    """The first path segments of `site` that cost no budget, or None when every path is
+    budgeted -- which is every site but Instagram.
+
+    The ONE place a hook asks whether a site is budgeted by path: request() lets free
+    traffic past the gate and both meters, response() injects without a session and hands
+    the script this list. Five call sites each naming "instagram" was the shape the next
+    such site would have had to find by hand.
+    """
+    return instagram_free_segments() if site == "instagram" else None
+
+
+def path_is_free(site, path):
+    """Is this request path free of budget on `site`? Segment-exact and case-insensitive
+    on the FIRST segment: /direct/inbox/ is free, /directory/ is not, and /mine/followers/
+    is free while /minex/ is not (F4's class -- a prefix test where a segment test was
+    meant).
 
     Deliberately not urlsplit(): "//direct/x" parses as host "direct" with path "/x", and
     "//evil/direct" as path "/direct" -- both would be classified by something other than
     what the browser sent. The first segment of "//direct" is empty, hence budgeted.
     """
+    segs = free_segments(site)
+    if not segs:
+        return False
     p = (path or "").split("?", 1)[0].split("#", 1)[0]
     if not p.startswith("/"):
         return False
     seg = p.split("/")[1].lower()
-    return seg != "" and seg in instagram_free_segments()
+    return seg != "" and seg in segs
 
 
 def _is_navigation(flow):
@@ -554,23 +578,27 @@ def _is_navigation(flow):
             or flow.request.headers.get("Sec-Fetch-Dest", "") == "document")
 
 
-def instagram_request_is_free(flow):
-    """Does this request belong to a free part of Instagram? A navigation is judged by its
-    own path; a sub-request (API, graphql) carries no meaning in its own path, so it takes
-    its Referer's -- the page that made it. Used by the shadow meter, so half an hour in
-    DMs is not passive usage with no heartbeat to match (a false dead-man warning).
+def request_is_free(site, flow):
+    """Does this request belong to a free part of `site`? A navigation is judged by its own
+    path; a sub-request (API, graphql) carries no meaning in its own path, so it takes its
+    Referer's -- the page that made it. That is what lets the DMs' API calls through with
+    no session while the feed's 503 exactly as every other site's do.
 
-    No usable Referer (absent, or not Instagram) falls back to the request's own path,
-    which for an API call is budgeted, i.e. counted: a missing header must not hide a
-    measurement.
+    No usable Referer (absent, or not this site) falls back to the request's own path,
+    which for an API call is budgeted. That is the closed direction for both consumers: the
+    gate refuses it, and the shadow meter counts it -- a missing header must neither open
+    the feed nor hide a measurement. If DMs ever break at zero budget, look here first:
+    it means the browser stopped sending a same-origin Referer.
     """
+    if free_segments(site) is None:
+        return False
     if not _is_navigation(flow):
         ref = flow.request.headers.get("Referer", "")
         if ref:
             parts = urlsplit(ref)
-            if host_matches(parts.hostname or "", SITES["instagram"]["match"]):
-                return instagram_path_is_free(parts.path or "/")
-    return instagram_path_is_free(flow.request.path)
+            if host_matches(parts.hostname or "", SITES[site]["match"]):
+                return path_is_free(site, parts.path or "/")
+    return path_is_free(site, flow.request.path)
 
 
 # The switch compares the two meters against each other rather than guessing from page
@@ -705,7 +733,13 @@ def _shadow_flush(site, st):
         r.expire(k, 100 * 86400)
         # Hourly too — the heartbeat records the same way, and only hour-aligned buckets
         # let the two be compared over the exact window both were running.
-        hk = f"shadow_hour:{st['day']}:{time.strftime('%H')}:{site}"
+        # The hour comes from the same accrual time as st['day'], never a bare
+        # strftime('%H'): that read the wall clock, so the midnight flush banked
+        # yesterday's last seconds under hour 00 of yesterday's date, and any caller
+        # passing its own `now` got a key that matched neither clock. Still the Pi's
+        # zone (time.localtime), as _meter_totals reads it -- see PLAN.md, Known gaps.
+        hk = (f"shadow_hour:{st['day']}:"
+              f"{time.strftime('%H', time.localtime(st['last']))}:{site}")
         r.incrbyfloat(hk, st["pending"])
         r.expire(hk, 14 * 86400)
         r.setnx("shadow_started", f"{time.time():.0f}")
@@ -1110,7 +1144,7 @@ class BudgetAddon:
         if site:
             # Instagram: like Facebook below, buffer ONLY the HTML document we inject into.
             # Meta's graphql streams its responses; stream = False on those hangs the page.
-            if site in STREAM_NON_HTML and \
+            if SITES[site].get("stream_non_html") and \
                "text/html" not in flow.response.headers.get("content-type", ""):
                 flow.response.stream = True
                 return
@@ -1265,14 +1299,24 @@ class BudgetAddon:
         if not site:
             return
 
+        # Free paths (Instagram's DMs, your own profile, /accounts) pass before anything
+        # that meters or gates them, and that ordering is the whole design:
+        #   · no gate, session or not -- DMs work at zero budget, and login is never gated;
+        #   · no shadow note -- the heartbeat does not charge them, so passive use with no
+        #     heartbeat to match is exactly what enforcement_looks_dead() alarms on;
+        #   · no navigation mark -- /health would read "browsing, nothing charged";
+        #   · no regular-profile block -- "DMs are free" holds on every profile.
+        # Sub-requests are judged by the page that made them (request_is_free), so the
+        # FEED's API calls still get the 503 below with no session. That is what holds the
+        # gate when the injected script does not run -- a service worker serving a cached
+        # shell, say -- rather than leaving it to the script alone.
+        if request_is_free(site, flow):
+            return
+
         # SHADOW METER (experiment, started 2026-08-03 — see shadow_note). Purely
         # observational: it never reads or writes budget state, and removing the two
         # lines below removes the feature entirely.
-        # Instagram's free paths (DMs, own profile) are skipped: the heartbeat does not
-        # charge them, so counting them here would read as passive use with no heartbeat
-        # to match -- the exact shape enforcement_looks_dead() raises an alarm for.
-        if not (site == "instagram" and instagram_request_is_free(flow)):
-            shadow_note(site, time.time())
+        shadow_note(site, time.time())
 
         user_agent = flow.request.headers.get("User-Agent", "")
         is_regular_profile = "regular-profile" in user_agent
@@ -1329,18 +1373,6 @@ class BudgetAddon:
             if is_navigation:
                 _try_redis(lambda: _note_navigation(time.time()))
             return
-
-        # Instagram, no session. Only the FEED is budgeted, so this is the one site where
-        # "no session" does not mean "gate everything":
-        #   · a sub-request passes. DMs run on API/graphql calls that carry no marker of
-        #     being DMs, and today's 503 would break them. The feed's own calls pass too;
-        #     what stops the feed is the injected script, which pings on entering a
-        #     budgeted path, takes the 403 and reloads into the gate below. No new endpoint.
-        #   · a free-path navigation passes (DMs, own profile, /accounts -- never gate login).
-        #   · a budgeted navigation falls through and gets the gate, as on every site.
-        if site == "instagram":
-            if not is_navigation or instagram_path_is_free(path):
-                return
 
         # No session (no budget, cooldown, or idled out). Serve the budget/cooldown
         # page IN PLACE at the current real URL, rather than redirecting to a /budget
@@ -1433,13 +1465,16 @@ class BudgetAddon:
             # already produces for "no session", and request() has by then both failed
             # closed and logged. A second log line per response would only add noise.
             mode = _try_redis(lambda: session_mode(site))
-            if mode is None and site not in INJECT_WITHOUT_SESSION:
+            # A site budgeted by path is injected on every page, session or not: its free
+            # pages carry no session, and one first loaded on /direct/ with no guard would
+            # make the SPA hop to Home free. The script is what notices that hop.
+            segs = free_segments(site)
+            if mode is None and segs is None:
                 return
             injection = HEARTBEAT_SCRIPT.replace("__SITE__", site)
-            # The free-path list is Instagram's alone; null leaves every path budgeted.
+            # null, not [], leaves every path budgeted.
             injection = injection.replace(
-                "__FREE__",
-                json.dumps(instagram_free_segments()) if site == "instagram" else "null")
+                "__FREE__", json.dumps(list(segs)) if segs is not None else "null")
             # Prepended, not appended, and outside the nonce rewrite below: it must be
             # the first thing in the injection and must not depend on scripts running.
             if _try_redis(enforcement_looks_dead, False):

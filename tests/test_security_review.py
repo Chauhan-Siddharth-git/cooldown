@@ -842,6 +842,20 @@ def test_shadow_banks_yesterday_before_rolling_over(rdb):
     assert abs(float(rdb.get(f"shadow_usage:{yday}:reddit") or 0) - 5.0) < 0.01
 
 
+def test_shadow_hour_is_the_hour_the_time_was_spent_not_the_wall_clock(rdb):
+    """CLAUDE.md: never time.strftime(fmt) with no time argument. The hourly key read the
+    wall clock while its date came from `now`, so a caller with any other clock -- every
+    test that fixes one -- wrote an hour the reader never looks in. The Instagram control
+    test passed only between 16:00 and 17:59. The clock here is 03:00, an hour the suite
+    is essentially never run at, so the old code cannot pass by coincidence."""
+    addon._SHADOW.clear()
+    t = time.mktime((2026, 6, 15, 3, 0, 0, 0, 0, -1))
+    for i in range(4):
+        addon.shadow_note("reddit", t + i * 5)
+    addon._shadow_flush("reddit", addon._SHADOW["reddit"])
+    assert rdb.keys("shadow_hour:*") == ["shadow_hour:2026-06-15:03:reddit"]
+
+
 def test_shadow_writes_are_batched_not_per_request(rdb, monkeypatch):
     """This runs on the proxy's hot path. A Redis round-trip per request is exactly the
     kind of cost that starved the worker pool in F12."""
