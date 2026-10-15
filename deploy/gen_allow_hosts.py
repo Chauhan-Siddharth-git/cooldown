@@ -20,7 +20,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from news_domains import NEWS_DOMAINS
 
 # Stable core matches — keep in sync with addon.py SITES (these rarely change).
-CORE = ["reddit.com", "youtube.com", "open.spotify.com", "puzzmo.com"]
+CORE = ["reddit.com", "youtube.com", "open.spotify.com", "puzzmo.com", "www.instagram.com"]
+# www.instagram.com is deliberately the WEB-PAGE host only, for the reason DECLUTTER below
+# gives for Facebook, and here the reason is structural: an RFC 5280 DNS constraint covers
+# every subdomain of the name it permits, so permitting bare instagram.com would let this
+# CA vouch for i., edge-chat. and graph.instagram.com as well. DM realtime
+# (edge-chat.instagram.com) and media (*.cdninstagram.com, *.fbcdn.net) stay tunneled.
 # Overlay-inject hosts, web-page hosts ONLY (not bare facebook.com): Messenger's realtime
 # hosts (edge-chat/graph/gateway.facebook.com) pin their cert, so decrypting them breaks
 # the Messenger app. Those stay tunneled — we only need the HTML doc to inject the overlay.
@@ -102,7 +107,7 @@ def name_constraints():
       is the one that matters and it is untouched -- a stolen key still cannot produce a
       certificate for your bank.
 
-    Emitted as a config SECTION rather than one long value: there are ~96 domains and a
+    Emitted as a config SECTION rather than one long value: there are ~97 domains and a
     single line is both unreadable and close to openssl's comfort with long values.
     """
     out = ["nameConstraints=critical,@cooldown_nc", "", "[cooldown_nc]"]

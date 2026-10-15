@@ -299,6 +299,19 @@ SITES = {
         "emoji": "📰",
         "group": "main",
     },
+    # LAST on purpose: chart colours are assigned by position in this dict, so inserting
+    # a site above News would repaint News in history. Append, don't insert.
+    # Instagram web (www.instagram.com only). The budget covers the FEED; DMs, your own
+    # profile and /accounts/ are free, and that split lives in addon.py's path classifier
+    # (see PLAN.md, Instagram). Same pool as everything else, so total scroll time does
+    # not grow by having another place to scroll.
+    "instagram": {
+        "home": "https://www.instagram.com/",
+        "budget_seconds": 7 * 60,
+        "label": "Instagram",
+        "emoji": "📷",
+        "group": "main",
+    },
 }
 DEFAULT_SITE = "reddit"
 
@@ -308,7 +321,8 @@ DEFAULT_SITE = "reddit"
 #
 # SIX IS THE CEILING this surface supports. A seventh hue was tried and fails: the best
 # candidate lands 13.5 ΔE from the teal against a floor of 15, meaning full-colour readers
-# could not reliably tell those two series apart. So do not just append one — validate it,
+# could not reliably tell those two series apart. All six are in use since Instagram
+# (2026-10-15), so the next site has no colour to take. So do not just append one — validate it,
 # or the chart quietly starts lying about which site is which.
 #
 # The previous version had five colours for five sites and picked with `i % len(...)`, so

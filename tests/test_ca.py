@@ -57,13 +57,20 @@ def _verify(ca_dir, host, extra_san=None):
 
 # Hosts the box gates, so the CA must be able to vouch for them or browsing breaks.
 IN_SCOPE = ["www.reddit.com", "reddit.com", "www.youtube.com", "open.spotify.com",
-            "www.cnn.com", "bbc.co.uk", "www.bbc.co.uk", "m.facebook.com", "mitm.it"]
+            "www.cnn.com", "bbc.co.uk", "www.bbc.co.uk", "m.facebook.com", "mitm.it",
+            "www.instagram.com"]
 
 # Hosts it does not gate. A stolen key must be useless against every one of these.
-# The last two are F4's shapes: a substring test would have matched them, and the DNS
-# constraint semantics reject them for the same reason host_matches() does.
+# evil-reddit.com and reddit.com.attacker.io are F4's shapes: a substring test would have
+# matched them, and the DNS constraint semantics reject them for the same reason
+# host_matches() does.
 OUT_OF_SCOPE = ["mybank.example", "accounts.google.com", "login.microsoftonline.com",
-                "github.com", "evil-reddit.com", "reddit.com.attacker.io"]
+                "github.com", "evil-reddit.com", "reddit.com.attacker.io",
+                # Instagram is permitted as www. ONLY: a DNS constraint covers every
+                # subdomain of what it permits, so permitting the bare name would let a
+                # stolen key vouch for the API and DM-realtime hosts as well.
+                "instagram.com", "i.instagram.com", "edge-chat.instagram.com",
+                "graph.instagram.com"]
 
 
 @pytest.mark.parametrize("host", IN_SCOPE)
