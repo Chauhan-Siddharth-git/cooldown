@@ -15,6 +15,7 @@ import redis
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import app as budget  # noqa: E402
+import addon  # noqa: E402
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -64,9 +65,11 @@ def rdb(monkeypatch):
     # every test running in the next five seconds on that zone, which surfaced as a flat
     # 4-hour offset in the phase and stats suites. Bust it at both ends.
     budget._tz_bust()
+    addon._zones_bust()            # addon.py keeps its own copy of the same cache
     yield r
     r.flushdb()
     budget._tz_bust()
+    addon._zones_bust()
 
 
 @pytest.fixture()

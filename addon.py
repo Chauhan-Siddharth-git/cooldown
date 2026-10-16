@@ -1,5 +1,7 @@
 from mitmproxy import http
 from urllib.parse import urlsplit, parse_qs, quote
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import functools
 import json
 import re
@@ -347,6 +349,80 @@ ytd-watch-next-secondary-results-renderer { display: none !important; }
 </script>
 """
 
+# Instagram's home feed, cut back to the people you follow. Anchored on the TEXT a reader
+# sees, not on classes: Instagram's class names are generated and change every build,
+# while "Suggested for you" and "You're all caught up" are what this feature is about.
+# Three things go -- suggested posts inside the feed, the suggested-accounts and Reels
+# shelves between posts, and everything after the "caught up" marker, which is where
+# Instagram turns the end of your friends' posts into an endless feed of strangers'. In
+# its place, one line saying that is the end. Home feed only (the rest is budgeted or
+# free as a whole), English UI only: other languages pass through unchanged.
+INSTAGRAM_DECLUTTER = """
+<script>
+(function () {
+  "use strict";
+  if (window.__cdIgDeclutter) return; window.__cdIgDeclutter = true;
+  var SHELF = /^(suggested for you|suggested posts|suggested reels|reels)$/i;
+  var CAUGHT_UP = /^you(?:'|\\u2019)(?:re all|ve completely) caught up$/i;
+  function hide(node) {
+    if (!node || node.getAttribute("data-cd-hidden")) return;
+    node.setAttribute("data-cd-hidden", "1");
+    node.style.setProperty("display", "none", "important");
+  }
+  // What to hide for a label: the post it sits in, else the feed-level block holding it --
+  // the first ancestor with a post among its siblings.
+  function unitFor(el) {
+    var a = el.closest("article");
+    if (a) return a;
+    for (var n = el, i = 0; i < 14 && n.parentElement; i++, n = n.parentElement) {
+      for (var c = n.parentElement.firstElementChild; c; c = c.nextElementSibling) {
+        if (c !== n && (c.tagName === "ARTICLE" || c.querySelector("article"))) return n;
+      }
+    }
+    return null;
+  }
+  function pass() {
+    if (location.pathname !== "/") return;
+    var root = document.querySelector("main") || document.body;
+    if (!root) return;
+    var marker = null, list = root.querySelectorAll("span, h2, h3, h4, div[role='heading']");
+    for (var i = 0; i < list.length; i++) {
+      var el = list[i], txt = (el.textContent || "").trim();
+      if (!txt || txt.length > 40 || el.children.length > 1) continue;
+      if (!marker && CAUGHT_UP.test(txt)) marker = el;
+      else if (SHELF.test(txt)) hide(unitFor(el));
+    }
+    if (!marker) return;
+    var posts = root.querySelectorAll("article");
+    for (var j = 0; j < posts.length; j++) {
+      if (marker.compareDocumentPosition(posts[j]) & Node.DOCUMENT_POSITION_FOLLOWING) hide(posts[j]);
+    }
+    if (!document.getElementById("cd-ig-end")) {
+      var block = unitFor(marker) || marker, d = document.createElement("div");
+      d.id = "cd-ig-end";
+      d.textContent = "That's everything from the people you follow.";
+      d.style.cssText = "padding:28px 16px 96px;text-align:center;color:#8e8e8e;" +
+        "font:600 14px -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif";
+      if (block.parentNode) block.parentNode.insertBefore(d, block.nextSibling);
+    }
+  }
+  var queued = false;
+  function soon() {
+    if (queued) return;
+    queued = true;
+    setTimeout(function () { queued = false; pass(); }, 250);
+  }
+  new MutationObserver(soon).observe(document.documentElement, { childList: true, subtree: true });
+  ["pushState", "replaceState"].forEach(function (fn) {
+    var o = history[fn];
+    history[fn] = function () { var r = o.apply(this, arguments); soon(); return r; };
+  });
+  window.addEventListener("popstate", soon);
+  soon();
+})();
+</script>
+"""
+
 FACEBOOK_OVERLAY = """
 <script>
 (function () {
@@ -620,6 +696,51 @@ def _try_redis(fn, default=None):
         return default
 
 
+# The clocks app.py calls local_acct() and local_policy(), for this process. The two
+# cannot share code -- mitmdump loads this file alone -- so they share the KEYS instead:
+# tz_accounting and tz_policy, the same BUDGET_HOME_TZ default, the same fallback to the
+# box's own clock when nothing is set. A day key written here and read there has to name
+# the same day, and before 2026-10-16 every key this file wrote used the box's clock
+# while app.py's readers used yours (PLAN.md, Known gaps). Cached like app.py's, behind
+# one MGET: _shadow_day() runs on every request to a gated host.
+HOME_TZ = os.environ.get("BUDGET_HOME_TZ", "")
+_ZONES = {"at": -1e9, "acct": "", "policy": ""}
+_ZONES_TTL = 5.0                    # app.py's TTL: an adoption lands within seconds
+
+
+def _zones_bust():
+    _ZONES["at"] = -1e9
+
+
+def _zones():
+    mono = time.monotonic()
+    if mono - _ZONES["at"] > _ZONES_TTL:
+        vals = _try_redis(lambda: r.mget("tz_accounting", "tz_policy")) or [None, None]
+        _ZONES["acct"] = vals[0] or HOME_TZ
+        _ZONES["policy"] = vals[1] or HOME_TZ
+        _ZONES["at"] = mono
+    return _ZONES
+
+
+def _lt(tzname, now):
+    if not tzname:
+        return time.localtime(now)       # nothing configured: the box's own clock
+    try:
+        return datetime.fromtimestamp(now, ZoneInfo(tzname)).timetuple()
+    except Exception:
+        return time.localtime(now)       # an unknown zone degrades, never raises
+
+
+def local_acct(now):
+    """Wall clock the books are kept in -- for anything that becomes a date key."""
+    return _lt(_zones()["acct"], now)
+
+
+def local_policy(now):
+    """Wall clock where you are -- for anything that compares an hour of the day."""
+    return _lt(_zones()["policy"], now)
+
+
 def _note_navigation(now):
     """Record this page load. Informational only now — the switch no longer reads it.
 
@@ -639,7 +760,7 @@ def _meter_totals(now, hours=ENFORCEMENT_WINDOW_HOURS):
     """
     keys_h, keys_s = [], []
     for i in range(hours):
-        t = time.localtime(now - i * 3600)
+        t = local_acct(now - i * 3600)
         day, hour = time.strftime("%Y-%m-%d", t), time.strftime("%H", t)
         for site in SITES:
             keys_h.append(f"usage_hour:{day}:{hour}:{site}")
@@ -727,7 +848,7 @@ _SHADOW = {}                 # site -> {"last": epoch, "pending": secs, "day": "
 
 
 def _shadow_day(now):
-    return time.strftime("%Y-%m-%d", time.localtime(now))
+    return time.strftime("%Y-%m-%d", local_acct(now))
 
 
 def _shadow_flush(site, st):
@@ -740,10 +861,10 @@ def _shadow_flush(site, st):
         # The hour comes from the same accrual time as st['day'], never a bare
         # strftime('%H'): that read the wall clock, so the midnight flush banked
         # yesterday's last seconds under hour 00 of yesterday's date, and any caller
-        # passing its own `now` got a key that matched neither clock. Still the Pi's
-        # zone (time.localtime), as _meter_totals reads it -- see PLAN.md, Known gaps.
+        # passing its own `now` got a key that matched neither clock. In the accounting
+        # zone, as _meter_totals reads it and as app.py writes usage_hour.
         hk = (f"shadow_hour:{st['day']}:"
-              f"{time.strftime('%H', time.localtime(st['last']))}:{site}")
+              f"{time.strftime('%H', local_acct(st['last']))}:{site}")
         r.incrbyfloat(hk, st["pending"])
         r.expire(hk, 14 * 86400)
     if _try_redis(write, "failed") != "failed":
@@ -906,7 +1027,7 @@ def blocked_now(host, now=None):
     """Is this host inside its blocked window right now?"""
     if not host_matches(host, BLOCKED_HOSTS):
         return False
-    h = time.localtime(now if now is not None else time.time()).tm_hour
+    h = local_policy(now if now is not None else time.time()).tm_hour
     if BLOCK_FROM_HOUR <= BLOCK_TO_HOUR:
         return BLOCK_FROM_HOUR <= h < BLOCK_TO_HOUR
     return h >= BLOCK_FROM_HOUR or h < BLOCK_TO_HOUR      # windows that wrap midnight
@@ -944,7 +1065,7 @@ BUDGET_ENDPOINTS = frozenset(("", "/feed") + STATE_CHANGING)
 # replaces the header checks that could never quite cover window.open. Listed here only
 # so an old bookmark gets a redirect instead of a bare 404.
 MOVED_TO_BOX = ("/", "/stats", "/health", "/devices", "/digest", "/wrapped", "/cpu",
-                "/remaining", "/boot-ack")
+                "/remaining", "/boot-ack", "/play")
 
 
 def _forwarded_headers(flow):
@@ -953,6 +1074,31 @@ def _forwarded_headers(flow):
     deliberately dropped so nothing from the page can influence the internal call."""
     ct = flow.request.headers.get("Content-Type")
     return {"Content-Type": ct} if ct else {}
+
+
+# --- who is actually routing through this box ----------------------------------------
+# Tailscale knows whether your phone is ONLINE; only this process knows whether its
+# traffic is coming THROUGH here. The gap between the two is the largest hole in the
+# design (PLAN.md, Known gaps): deselect the exit node and every gate is gone, silently.
+# app.py's check_bypass() compares them. client_connected fires for every connection,
+# including the ones --allow-hosts passes through unread, so this sees all of it. It
+# keeps the latest time per address in memory and writes at most once a minute, because
+# this is the proxy's hottest path (F12).
+CLIENT_SEEN_FLUSH = 60.0
+_CLIENT_SEEN = {}                    # client address -> epoch of its latest connection
+_CLIENT_SEEN_AT = [0.0]              # when that map was last written
+
+
+def note_client(addr, now):
+    if not addr:
+        return
+    if addr.startswith("::ffff:"):
+        addr = addr[7:]                  # IPv4-mapped: the tailnet address app.py knows
+    _CLIENT_SEEN[addr] = now
+    if now - _CLIENT_SEEN_AT[0] >= CLIENT_SEEN_FLUSH:
+        snap = {a: f"{t:.0f}" for a, t in _CLIENT_SEEN.items()}
+        if _try_redis(lambda: r.hset("client_last_seen", mapping=snap), "failed") != "failed":
+            _CLIENT_SEEN_AT[0] = now
 
 
 class BudgetAddon:
@@ -998,6 +1144,13 @@ class BudgetAddon:
         except Exception as e:
             # Never let a decoration on the policy break the proxy for everything else.
             _note_error("tls_clienthello", e)
+
+    def client_connected(self, client):
+        """Record that a device's traffic reached the box -- see note_client()."""
+        try:
+            note_client((client.peername or ("",))[0], time.time())
+        except Exception as e:
+            _note_error("client_connected", e)
 
     def running(self):
         """Mark where this proxy's error count started.
@@ -1489,6 +1642,8 @@ class BudgetAddon:
                 injection += SW_KILL
             if site == "youtube":
                 injection += YOUTUBE_DECLUTTER
+            if site == "instagram":
+                injection += INSTAGRAM_DECLUTTER
         # Carry the nonce we added to the page's CSP, so the browser will run these
         # scripts under the site's own (still-enforced) policy. No nonce means either the
         # page had no CSP or its policy already allowed inline scripts — either way the

@@ -269,10 +269,23 @@ Things to know:
   injection.
 - **Bookmark `instagram.com/direct/inbox/`.** `instagram.com` itself is the feed, so it's
   gated — and if you're already logged in, `/accounts/login/` redirects there too.
+- **The feed ends where the people you follow end.** Suggested posts, the suggestion and
+  Reels shelves, and everything after "You're all caught up" are hidden, with one line
+  saying that's everything. It matches the visible (English) labels, not Instagram's
+  generated class names.
 - More than 30 s away from the feed (reading a DM thread, say) lets the session idle out,
   so going back to Home shows the gate again — one tap on Enter if budget is left.
 - Adding it needed a CA rotation and a re-trust on every device, like any new site — see
   [CA-TRUST.md](CA-TRUST.md).
+
+### Locked out? One round of Tetris
+
+When the gate won't let you in — cooldown, night, or a spent budget — it offers one
+3-minute round of Tetris on the box (`/play`). Every round is the same length and ends
+in a wind-down rather than a buzzer: something that ends, in place of something that
+doesn't. Touch controls for the phone (tap rotate, drag move, flick down to slam, flick
+up to hold), nothing saved, and a deliberately silly line about how much time you've
+won back this month, measured in Shreks.
 
 ## Tests
 
@@ -325,10 +338,13 @@ Works, and runs daily on the author's setup — but it's a personal project, not
 polished product:
 
 - **Browser-only** (native apps pin certs).
-- **The YouTube declutter tracks YouTube's markup** and will need updates when they
-  change it.
+- **The YouTube and Instagram declutters track those sites' markup and wording**, and
+  will need updates when they change them.
 - **The bypass is intentional** — turning the VPN off routes around the gate. Soft
-  friction, by design.
+  friction, by design. Deselecting the exit node is at least *noticed*: if your phone
+  stays on Tailscale for 90 waking minutes with nothing coming through the box, your
+  alert channel asks whether the exit node is off. Turning Tailscale off entirely can't
+  be told apart from no signal, so it stays silent.
 - The `--allow-hosts` allowlist and a few config values are duplicated across
   files (see above); consolidating them is a good first contribution.
 - **The firewall is an allowlist over a default-ACCEPT policy** — it protects the ports

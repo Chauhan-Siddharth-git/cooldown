@@ -35,7 +35,7 @@ usually need checking against both.
   `time.localtime()` — and never `time.strftime(fmt)` with no time argument either, which
   reads the same local clock without saying so. The 2026-09-16 migration grepped for
   `localtime(` in `app.py` alone, and so missed the heartbeat's `usage:` writer, the
-  `entries:` writer and all of `addon.py`; see PLAN.md, Known gaps. The two zones differ while you are travelling, and they differ on
+  `entries:` writer and all of `addon.py` (fixed 2026-10-16: every writer now uses the accounting zone, and `addon.py` reads `tz_accounting`/`tz_policy` itself). The two zones differ while you are travelling, and they differ on
   purpose: the curfew follows your body within hours of landing, the books follow one
   clean transition later, inside `daily_reset()`. Move the books early and you mint
   budget — `reset_day()` keys off the local hour and `catch_up_reset()` answers a

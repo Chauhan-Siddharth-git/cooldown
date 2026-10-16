@@ -1,5 +1,5 @@
 from flask import Flask, abort, g, has_request_context, jsonify, redirect, request
-from markupsafe import Markup
+from markupsafe import Markup, escape
 from urllib.parse import urlparse
 from collections import Counter, deque
 from datetime import date, datetime, timedelta, timezone
@@ -838,6 +838,9 @@ BUDGET_PAGE = """
         button:active{transform:scale(.985)}
         .enter{background:var(--go);color:#06120b}
         .blocked{background:#1c2028;color:var(--muted);cursor:default}
+        .play{display:block;margin-top:10px;padding:13px;border-radius:12px;text-align:center;
+            border:1px solid var(--line);color:var(--fg);font-size:14.5px;font-weight:600;
+            text-decoration:none}
         .hint{font-size:12px;color:#5f6773;margin-top:2px}
         .foot{display:block;margin-top:18px;font-size:12px;color:#5f6773;text-decoration:none}
         .foots{display:flex;gap:18px;justify-content:center;align-items:center;margin-top:18px}
@@ -945,6 +948,11 @@ BUDGET_PAGE = """
             {% elif button_text %}
             <button class="blocked" disabled>{{ button_text }}</button>
             {% endif %}
+            {#- Locked out -- cooldown, night or a spent budget -- is the moment a feed
+                would have kept going. Offer something that ends instead: one round, the
+                same length every time. Absolute, to the box, like the other dashboard
+                links: the page does not exist on this origin. -#}
+            {% if not can_enter and mon %}<a class="play" href="{{ mon }}/play?min=3&from={{ site }}">Play one 3-minute round of Tetris instead</a>{% endif %}
         </div>
         <!-- Absolute links to the BOX, not relative ones onto the gated site: the
              dashboard deliberately no longer exists on this origin. -->
@@ -2331,7 +2339,7 @@ def enter():
     # Carried through the session so the "was that worth it?" answer can be attributed
     # to the reason you gave for starting. Without the join, both halves are just tallies.
     r.setex(f"session_trigger:{pool(site)}", 6 * 3600, trigger or "-")
-    day = time.strftime("%Y-%m-%d")
+    day = time.strftime("%Y-%m-%d", local_acct())
     r.incr(f"entries:{day}")          # drives "skip the prompt on your first session"
     r.expire(f"entries:{day}", 7 * 86400)
 
@@ -2402,7 +2410,11 @@ def heartbeat():
             # by resets/cooldowns (it's history, not budget state); self-prunes after
             # ~100 days. last_charge doubles as a liveness marker for /stats — if it
             # goes stale for days, the heartbeat pipeline probably broke (fails open).
-            day = time.strftime("%Y-%m-%d")
+            # The accounting zone, as every READER of these keys uses. A bare strftime
+            # here stamped them on the box's clock while /stats looked them up in yours,
+            # so a trip west filed late-evening use under tomorrow (PLAN.md, Known gaps).
+            lt = local_acct(now)
+            day = time.strftime("%Y-%m-%d", lt)
             r.incrbyfloat(f"usage:{day}:{site}", gap)
             r.expire(f"usage:{day}:{site}", HISTORY_TTL)
             # Same figure bucketed by hour, because the dead-man's switch compares it
@@ -2410,7 +2422,7 @@ def heartbeat():
             # Daily totals cannot be aligned with a window that starts mid-day — the
             # first comparison divided 15 hours of heartbeat by three hours of passive
             # and produced 0.22x, which meant nothing at all.
-            hour_key = f"usage_hour:{day}:{time.strftime('%H')}:{site}"
+            hour_key = f"usage_hour:{day}:{time.strftime('%H', lt)}:{site}"
             r.incrbyfloat(hour_key, gap)
             r.expire(hour_key, 14 * 86400)
             r.set("last_charge", now)
@@ -2917,6 +2929,51 @@ def announce_wrapped(now=None):
     send_alert("Your year in review is ready. Open the dashboard on the box: it's there "
                "for a week, then it locks until next year.")
     return True
+
+
+# One fixed-length round of Tetris, offered by the gate once you are locked out. A copy of
+# ~/Desktop/pomodoro/tetris.html with touch controls (play/tetris.html): every round the
+# same length, ending in a wind-down rather than a buzzer -- the opposite of a feed.
+# Box origin only (addon.MOVED_TO_BOX), GET, no state. Read per request, so deploying a
+# new copy needs no restart.
+PLAY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "play", "tetris.html")
+SHREK_MIN = 90                    # Shrek (2001): the unit this page measures time in
+BASELINE_MIN_PER_DAY = 62.6       # the pre-registered baseline median (PLAN.md readout)
+
+
+def reclaimed_this_month(now=None):
+    """Minutes under the old baseline across this month's finished days.
+
+    Today is left out: at 9am it is not a day of restraint, just an early one. A day the
+    box was down reads as zero use and so as a full day won back -- fine for a joke,
+    which is all this number is for.
+    """
+    now = now if now is not None else time.time()
+    days = local_acct(now).tm_mday              # the 1st through today
+    sites = list(SITES)
+    vals = _mget_floats(_day_keys("usage", days, now, sites))
+    n = len(sites)
+    per_day = [sum(vals[i * n:(i + 1) * n]) / 60 for i in range(days)][:-1]
+    return sum(max(0.0, BASELINE_MIN_PER_DAY - used) for used in per_day)
+
+
+@app.route('/play')
+def play():
+    try:
+        with open(PLAY_FILE, encoding="utf-8") as fh:
+            html = fh.read()
+    except OSError:
+        abort(404)
+    mins = _try(reclaimed_this_month, 0.0) or 0.0
+    line = (f"This month you've won back about {mins / 60:.1f}h, enough to watch Shrek "
+            f"{mins / SHREK_MIN:.1f} times." if mins >= 30 else
+            "Not much Shrek-time won back this month yet.")
+    tags = f'<meta name="cd-line" content="{escape(line)}">'
+    site = request.args.get("from", "")
+    if site in SITES:
+        tags += (f'<meta name="cd-back" content="{escape(SITES[site]["home"])}">'
+                 f'<meta name="cd-back-label" content="{escape(SITES[site]["label"])}">')
+    return html.replace("</head>", tags + "</head>", 1)
 
 
 @app.route('/wrapped')
@@ -5723,6 +5780,60 @@ def collect_devices():
             "self": {"name": _dev_name(self_), "ip": (self_.get("TailscaleIPs") or [""])[0]},
             "devices": devices}
 
+# --- is the phone actually going through the box? --------------------------------------
+# The largest hole in the design, and PLAN.md has said so since July: deselect the exit
+# node and every gate is gone, with nothing to say so. Tailscale knows whether the phone
+# is ONLINE; addon.py records when its traffic last came THROUGH here
+# (client_last_seen). Online through 90 minutes of waking time with nothing through the
+# box means the exit node is off -- the phone made 255,741 proxied connections in the
+# ten days to 2026-10-16, about a thousand an hour, idle hours included.
+#
+# It asks; it does not enforce. One push per lapse, phrased as a question, reset when
+# traffic comes back. A phone that is simply OFFLINE says nothing: no signal, a flight
+# and a flat battery all look like that, and a detector that cries wolf gets turned off.
+# No device name or address in the text, for the reason send_alert() gives.
+BYPASS_AFTER = 90 * 60
+
+
+def check_bypass(now=None):
+    """Push once if a phone is on Tailscale but its traffic has stopped reaching the
+    box. Returns how many pushes were sent."""
+    now = now if now is not None else time.time()
+    if phase(now) == "night":
+        return 0                         # an idle phone at 3am is not a bypass
+    st = _try(_ts_status)
+    if not st:
+        return 0
+    seen = _try(lambda: r.hgetall("client_last_seen"), {}) or {}
+    # A phone never seen at all counts from when this started looking, so one whose exit
+    # node was already off at deploy time is not silently exempt forever.
+    watch = float(_try(lambda: r.get("bypass_watch_since")) or 0)
+    if not watch:
+        watch = now
+        _try(lambda: r.set("bypass_watch_since", f"{now:.0f}"))
+    sent = 0
+    for p in st.get("Peer", {}).values():
+        if _dev_kind(p.get("OS"), _dev_name(p)) != "phone":
+            continue
+        ip = (p.get("TailscaleIPs") or [""])[0]
+        if not ip or not (p.get("Online") or p.get("Active")):
+            continue
+        last = float(seen.get(ip) or 0) or watch
+        key = f"bypass_alerted:{ip}"
+        if now - last < BYPASS_AFTER:
+            _try(lambda: r.delete(key))      # flowing again: the next lapse is a new one
+            continue
+        if _try(lambda: r.set(key, f"{last:.0f}", nx=True, ex=7 * 86400)):
+            send_alert("Your phone hasn't used the box since "
+                       f"{time.strftime('%H:%M', local_policy(last))} but is still on "
+                       "Tailscale. Exit node off?")
+            sent += 1
+    return sent
+
+
+# Registered here because add_job resolves the name now (see sample_acct's note).
+scheduler.add_job(check_bypass, 'interval', minutes=10, max_instances=1, coalesce=True)
+
 DEVICES_PAGE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -6031,7 +6142,7 @@ if __name__ == '__main__':
             return
         days = sorted(k.split(":")[1] for k in r.scan_iter(match="usage:*", count=500)
                       if len(k.split(":")) == 3 and k.split(":")[1][:2] == "20")
-        r.set("first_run", days[0] if days else time.strftime("%Y-%m-%d"))
+        r.set("first_run", days[0] if days else time.strftime("%Y-%m-%d", local_acct()))
         print(f"[THEME] first run recorded as {r.get('first_run')}")
     _try(_seed_first_run)
 
