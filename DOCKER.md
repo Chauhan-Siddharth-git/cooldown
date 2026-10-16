@@ -151,8 +151,9 @@ Without a trusted CA the gated HTTPS sites show a certificate error instead of t
 gate — that's the tell that step 4 isn't done.
 
 **5. Try it.** Visit `reddit.com`. You should get the **Countdown** gate instead of
-the feed. Everything except the gated sites (Reddit, YouTube, Spotify web, Puzzmo)
-tunnels straight through untouched.
+the feed. Everything except the gated sites (Reddit, YouTube, Spotify web, Puzzmo,
+Instagram web, the news list, and Facebook's web pages) tunnels straight through
+untouched.
 
 ### Verifying from the command line
 

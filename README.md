@@ -242,6 +242,38 @@ userscript — **[`extras/facebook-feed-overlay.user.js`](extras/facebook-feed-o
 (removes the feed + Reels) — for Violentmonkey / Tampermonkey. Use *one* feed approach at
 a time.
 
+### Instagram (the feed is budgeted, the DMs are not)
+
+Instagram is gated by **path**, not by host. The home feed, search/Explore, Reels, posts,
+stories and **other people's profiles** draw from the shared budget; **DMs (`/direct/`),
+your own profile and `/accounts/` (login, settings, follow requests) are free — at any
+budget, on every profile.** It's an allow-list, so anything Instagram adds later is
+budgeted by default.
+
+Instagram is a single-page app, so tapping Home from a DM thread never reaches the proxy as
+a page load. The injected script notices the hop and pings at once; with no session that
+ping gets a 403 and the page reloads into the gate. The proxy doesn't rely on the script
+alone: with no session, the feed's own API calls are refused — each is judged by the page
+that made it — so the feed can't load even if the script never runs.
+
+Things to know:
+- **Set your handle** in the proxy unit: `Environment=INSTAGRAM_SELF=yourhandle`
+  (lowercase, no `@`; for Docker, add it to the service's `environment:`). Empty fails
+  closed — your own profile is then budgeted like anyone else's.
+- **Only `www.instagram.com` is decrypted**, never bare `instagram.com`: a name constraint
+  covers every subdomain, so permitting the bare name would let the CA vouch for the API
+  (`i.`), DM realtime (`edge-chat.`) and `graph.` hosts too. Those, and all media, tunnel
+  through untouched.
+- **One-time site-data clear per device** (iOS: Settings → Apps → Safari → Advanced →
+  Website Data), so Instagram's cached service worker stops serving pages past the
+  injection.
+- **Bookmark `instagram.com/direct/inbox/`.** `instagram.com` itself is the feed, so it's
+  gated — and if you're already logged in, `/accounts/login/` redirects there too.
+- More than 30 s away from the feed (reading a DM thread, say) lets the session idle out,
+  so going back to Home shows the gate again — one tap on Enter if budget is left.
+- Adding it needed a CA rotation and a re-trust on every device, like any new site — see
+  [CA-TRUST.md](CA-TRUST.md).
+
 ## Tests
 
 ```

@@ -95,6 +95,8 @@ The units in `deploy/` run the three processes as the `pi` user from
 - `cooldown-app.service` — Flask (`app.py`)
 - `cooldown-proxy.service` — mitmproxy (`addon.py`). Its `--allow-hosts` regex is the
   **TLS-decrypt allowlist**; every gated host must appear here.
+  If you gate Instagram, set `Environment=INSTAGRAM_SELF=` to your handle so your own
+  profile is free (see the README's Instagram section); empty budgets it.
 - `cooldown-redirect.service` — runs the iptables script on boot.
 
 ```bash

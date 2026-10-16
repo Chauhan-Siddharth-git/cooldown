@@ -50,10 +50,17 @@ How much traffic depends entirely on one thing, and this section used to get it 
 **Originally the capability really was total** — bank, email, messages, everything — and
 this page said so in those words. That stopped being true when the key was rebuilt with
 *name constraints* (F26): a list, baked into the certificate itself, of the only domains it
-is permitted to vouch for. There are 96, and they are the sites the gate covers. A stolen
+is permitted to vouch for. There are 97, and they are the sites the gate covers. A stolen
 key cannot produce a usable certificate for your bank, because your bank is not on the
 list and the list is not editable without the signature falling apart. Email and URI
 identities are excluded outright, so it cannot be used to forge signed mail either.
+
+Two of those names cover more than a feed, and deserve saying out loud. Facebook's web
+pages and `www.instagram.com` are decrypted for injection, which means a stolen key
+reaches **your login to both, and any messages you read in a browser** — Instagram's
+DMs load through that host. It is the web host only: Instagram's DM realtime connection
+(`edge-chat.`), its API host (`i.`) and every photo and video live on names the key may
+not vouch for, and the box passes them through unread.
 
 **But that protection lives in the client, not in the key**, and a client that does not
 check the list does not benefit from it. This is not hypothetical here. In September 2026
@@ -65,7 +72,7 @@ while investigating something else.
 So the honest version is three sentences rather than one:
 
 - Through a **browser**, or anything using the operating system's own TLS, a stolen key
-  reaches the 96 listed sites and nothing else.
+  reaches the 97 listed sites and nothing else.
 - Through an **app that skips certificate checks**, it reaches whatever that app talks to,
   and no constraint on the key changes that.
 - Bare **IP addresses** are unconstrained, which is a deliberate accepted risk recorded in
@@ -83,7 +90,7 @@ most: **what is different about your life afterwards.**
 
 | | Without Cooldown | With Cooldown |
 |---|---|---|
-| **Who can read your browsing** | You and the websites. Nobody in between — not your internet provider, not the café wifi. | The same, **plus** anyone who gets the master key off your box — for the 96 listed sites, and for anything reached by an app that skips certificate checks. |
+| **Who can read your browsing** | You and the websites. Nobody in between — not your internet provider, not the café wifi. | The same, **plus** anyone who gets the master key off your box — for the 97 listed sites, and for anything reached by an app that skips certificate checks. |
 | **If someone breaks into your home wifi** | They see scrambled noise. Modern encryption holds. | Same — **unless** they also get the key. Then the listed sites are plain text to them; your bank and mail are not, because the key may not vouch for them. |
 | **If hardware is physically stolen** | Stealing your router gets someone almost nothing. | The Pi's memory card holds a working key to your traffic, and it isn't encrypted. Whoever holds the card holds the key — for years. |
 | **Code sitting in the path of your traffic** | Your operating system and browser. Written by large teams, patched constantly, attacked and fixed by thousands of people. | All of that, **plus roughly 3,700 lines written by one person in their spare time.** |
@@ -128,8 +135,8 @@ anything you could: read what's on screen, read the cookie that keeps you logged
 in forms, click buttons, make requests **as you**. Browsers and websites spend enormous
 effort making sure only the site's own code runs on the site's own pages.
 
-**What Cooldown does.** It puts its own JavaScript on Reddit, YouTube, Spotify, Facebook
-and about ninety news sites. That's the timer — it's how "foreground time only" works.
+**What Cooldown does.** It puts its own JavaScript on Reddit, YouTube, Spotify, Facebook,
+Instagram and about ninety news sites. That's the timer — it's how "foreground time only" works.
 
 There's no way to soften this: **Cooldown does the exact thing XSS defences exist to
 prevent.** It is a benign version, written by you, running on your own devices — but the
