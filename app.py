@@ -1,8 +1,8 @@
-from flask import Flask, jsonify, redirect, request
+from flask import Flask, abort, g, has_request_context, jsonify, redirect, request
 from markupsafe import Markup
 from urllib.parse import urlparse
 from collections import Counter, deque
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, available_timezones
 import os
 import subprocess
@@ -602,10 +602,20 @@ THEMES = {
 BIRTHDAY = os.environ.get("COOLDOWN_BIRTHDAY", "")      # "MM-DD", box-local, never in git
 PERSONAL_THEMES = {"birthday", "anniversary"}           # date-driven, never picked at random
 
+def _first_run():
+    """The day the box first ran, read once per request. The theme asks on every page and
+    the year-in-review check asks again; two reads of a value set once in the box's life
+    was a round-trip per dashboard page for nothing."""
+    if not has_request_context():
+        return _try(lambda: r.get("first_run"))
+    if "first_run" not in g:
+        g.first_run = _try(lambda: r.get("first_run"))
+    return g.first_run
+
 def _anniversary_md():
     """MM-DD the box first ran. Backfilled from the oldest usage day so an existing
     install gets its real anniversary rather than the day this feature shipped."""
-    v = _try(lambda: r.get("first_run"))
+    v = _first_run()
     return v[5:] if v and len(v) == 10 else None
 
 def _personal_theme(t):
@@ -1422,7 +1432,7 @@ def render_page(source, **context):
     # the context processors — ui_tok, feed_tok and mon — and the pages would render with
     # empty tokens and no dashboard links.
     app.update_template_context(context)
-    return tpl.render(context)
+    return _with_wrapped_popup(tpl.render(context), context)
 
 def resolve_site(s):
     return s if s in SITES else DEFAULT_SITE
@@ -2566,7 +2576,7 @@ DIGEST_PAGE = """
         {% endif %}
     </div>
 
-    <a class="back" href="/wrapped{{ qs }}">Your year, in review &rarr;</a>
+    {% if wrapped_open %}<a class="back" href="/wrapped{{ qs }}">Your year, in review &rarr;</a>{% endif %}
     <a class="back" href="/stats{{ qs }}">Full usage stats &rarr;</a>
     <a class="back" href="/health{{ qs }}">Pi health</a>
     {% if back_url %}<a class="back home" href="{{ back_url }}">&larr; Back to {{ back_label }}</a>{% endif %}
@@ -2789,14 +2799,132 @@ def personal_note(now=None):
     if name == "birthday":
         return "Happy birthday. Spend today somewhere that isn't a feed."
     if name == "anniversary":
-        first = _try(lambda: r.get("first_run")) or ""
+        first = _first_run() or ""
         yrs = max(1, local_acct(now).tm_year - int(first[:4] or 0)) if first[:4].isdigit() else 1
         return (f"{yrs} year{'' if yrs == 1 else 's'} since you set this box up. "
                 f"Whatever it has saved you, it saved quietly.")
     return ""
 
+# The year in review is a surprise, not a page. Reachable any time, it was something you
+# could open a month into the first year, which spends the one thing it has: the reveal.
+# So it opens on the anniversary of first_run, stays open a week, and is otherwise a
+# plain 404 -- not "locked", not "come back on 6 July", because a page that announces
+# its date is a countdown, not a surprise. It surfaces two ways: a push the morning it
+# opens (announce_wrapped), and a popup over the first dashboard page you load.
+#
+# Box origin only, like the anniversary greeting. The gate is readable by any script on
+# the gated site, and this is a year of behavioural history.
+WRAPPED_OPEN_DAYS = 7
+WRAPPED_POPUP_PATHS = frozenset(("/stats", "/health", "/devices", "/digest"))
+
+
+def wrapped_window(now=None):
+    """(n, start) for the year in review open right now, or None.
+
+    `n` is which anniversary it is, 1 for the first. The setup day itself is not an
+    anniversary, so nothing opens during the first year. A 29 February setup has its
+    anniversary on the 28th in common years rather than skipping them, and a window
+    that opens in late December runs on into January.
+    """
+    now = now if now is not None else time.time()
+    first = _first_run() or ""
+    try:
+        fy, fm, fd = (int(x) for x in first.split("-"))
+    except ValueError:
+        return None                       # no setup date: nothing to celebrate yet
+    t = local_acct(now)
+    today = date(t.tm_year, t.tm_mon, t.tm_mday)
+    for y in (today.year, today.year - 1):
+        if y <= fy:
+            continue
+        try:
+            start = date(y, fm, fd)
+        except ValueError:
+            if (fm, fd) != (2, 29):
+                return None               # not a real date: closed, never a crash
+            start = date(y, 2, 28)        # 29 Feb in a common year
+        if start <= today < start + timedelta(days=WRAPPED_OPEN_DAYS):
+            return y - fy, start
+    return None
+
+
+def _wrapped_key(kind, window):
+    return f"wrapped_{kind}:{window[1].isoformat()}"     # one per anniversary
+
+
+WRAPPED_POPUP = """
+<div class="cd-yr" role="dialog" aria-modal="true" aria-labelledby="cd-yr-t">
+  <div class="cd-yr-card">
+    <div class="cd-yr-k">{{ 'One year' if yr_n == 1 else yr_n ~ ' years' }}</div>
+    <div class="cd-yr-t" id="cd-yr-t">Your year in review is here.</div>
+    <div class="cd-yr-p">It's open for this week only, then it locks again until next year.</div>
+    <a class="cd-yr-go" href="/wrapped{{ qs }}">Open it</a>
+    <button type="button" class="cd-yr-later" onclick="this.closest('.cd-yr').remove()">Later</button>
+  </div>
+</div>
+<style>
+  .cd-yr{position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;
+    justify-content:center;padding:16px;background:rgba(0,0,0,.62)}
+  .cd-yr-card{width:100%;max-width:380px;background:var(--card,#14171d);color:var(--fg,#f4f6f8);
+    border:1px solid var(--line,#232732);border-radius:18px;padding:26px 22px;text-align:center;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    box-shadow:0 18px 60px rgba(0,0,0,.5)}
+  .cd-yr-k{font-size:11.5px;font-weight:700;letter-spacing:.15em;text-transform:uppercase;
+    color:var(--muted,#8b93a0)}
+  .cd-yr-t{font-size:22px;font-weight:700;letter-spacing:-.3px;margin:10px 0 8px}
+  .cd-yr-p{font-size:13.5px;line-height:1.55;color:var(--muted,#8b93a0);margin-bottom:20px}
+  .cd-yr-go{display:block;padding:12px;border-radius:12px;background:var(--accent,#3987e5);
+    color:#fff;font-weight:600;font-size:14.5px;text-decoration:none}
+  .cd-yr-later{margin-top:10px;background:none;border:0;color:var(--faint,#5f6773);
+    font:inherit;font-size:13px;padding:8px;cursor:pointer}
+</style>
+"""
+
+
+def _with_wrapped_popup(html, context):
+    """Put the year-in-review popup over a dashboard page while it is open and unseen.
+
+    Keyed on the request PATH, not the template: those four paths are in
+    addon.MOVED_TO_BOX, so the proxy never serves them on a gated origin, and the gate
+    (/budget) is absent by construction. Opening /wrapped marks it seen, so the popup
+    stops; the digest keeps a link for the rest of the week.
+    """
+    if not has_request_context() or request.path not in WRAPPED_POPUP_PATHS:
+        return html
+    w = _try(wrapped_window)
+    if not w or _try(lambda: r.get(_wrapped_key("seen", w))):
+        return html
+    tpl = _TEMPLATE_CACHE.get(WRAPPED_POPUP)
+    if tpl is None:
+        tpl = _TEMPLATE_CACHE[WRAPPED_POPUP] = app.jinja_env.from_string(WRAPPED_POPUP)
+    return html.replace("</body>", tpl.render({**context, "yr_n": w[0]}) + "</body>", 1)
+
+
+def announce_wrapped(now=None):
+    """Push, once per anniversary, that the year in review has opened.
+
+    Runs from daily_reset, so a box that was off at 07:00 still announces -- from
+    catch_up_reset() at startup, or the next morning -- while the week is open. SET NX
+    before sending, so a second reset that day cannot send twice. No link and no
+    address in the text, for the reason send_alert() gives.
+    """
+    w = wrapped_window(now)
+    if not w:
+        return False
+    if not r.set(_wrapped_key("announced", w), f"{time.time():.0f}", nx=True,
+                 ex=400 * 86400):
+        return False
+    send_alert("Your year in review is ready. Open the dashboard on the box: it's there "
+               "for a week, then it locks until next year.")
+    return True
+
+
 @app.route('/wrapped')
 def wrapped():
+    w = _try(wrapped_window)
+    if not w:
+        abort(404)       # the same answer as a page that never existed -- on purpose
+    _try(lambda: r.set(_wrapped_key("seen", w), f"{time.time():.0f}", ex=400 * 86400))
     return render_page(WRAPPED_PAGE, d=wrapped_data(),
                        personal_note=_try(personal_note, ""))
 
@@ -2862,7 +2990,7 @@ def digest():
         "worst_trigger": worst["label"] if worst else "",
         "worst_pct": worst["pct"] if worst else 0,
     }
-    return render_page(DIGEST_PAGE, d=d)
+    return render_page(DIGEST_PAGE, d=d, wrapped_open=bool(_try(wrapped_window)))
 
 CPU_PAGE = """
 <!DOCTYPE html>
@@ -3180,6 +3308,7 @@ def daily_reset(now=None):
         print(f"[TZ] accounting zone {prev or 'box clock'} -> {policy_tz()}", flush=True)
     r.set("last_reset", reset_day(now))
     print("[RESET] Daily budget reset complete")
+    _try(lambda: announce_wrapped(now))   # a no-op on all but one morning a year
 
 def sample_history():
     """Fill the CPU and temperature history on a fixed cadence.

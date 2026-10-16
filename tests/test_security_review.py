@@ -976,7 +976,15 @@ def test_history_survives_long_enough_for_a_year_in_review(rdb):
         assert rdb.ttl(key) > 365 * 86400, key
 
 
+def _open_wrapped(rdb):
+    """Make today the box's first anniversary, so the year in review is open."""
+    t = budget.local_acct(time.time())
+    day = min(t.tm_mday, 28) if t.tm_mon == 2 else t.tm_mday   # 29 Feb has no last year
+    rdb.set("first_run", f"{t.tm_year - 1}-{t.tm_mon:02d}-{day:02d}")
+
+
 def test_wrapped_is_honest_when_there_is_no_data(rdb, client):
+    _open_wrapped(rdb)
     html = client.get("/wrapped").get_data(as_text=True)
     assert "No usage recorded yet" in html
     assert client.get("/wrapped").status_code == 200
@@ -991,6 +999,7 @@ def test_wrapped_reports_the_trend_that_answers_did_it_work(rdb, client):
     assert d["any"] and d["days"] == 120
     assert d["trend_pct"] < 0, d              # recent days lighter than early ones
     assert d["enough"] is True
+    _open_wrapped(rdb)
     assert "Did it work?" in client.get("/wrapped").get_data(as_text=True)
 
 
@@ -1000,6 +1009,7 @@ def test_wrapped_admits_when_the_sample_is_too_small(rdb, client):
         k = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
         rdb.set(f"usage:{k}:reddit", 600)
     assert budget.wrapped_data()["enough"] is False
+    _open_wrapped(rdb)
     assert "treat this as a hint" in client.get("/wrapped").get_data(as_text=True)
 
 
@@ -1216,6 +1226,8 @@ def test_theme_override_and_off(rdb, client):
 
 @pytest.mark.parametrize("page", ["/stats", "/health", "/devices", "/digest", "/wrapped"])
 def test_every_page_carries_the_theme_hook(rdb, client, page):
+    if page == "/wrapped":
+        _open_wrapped(rdb)                  # otherwise a 404, by design
     assert 'id="cd-theme"' in client.get(page).get_data(as_text=True)
 
 
@@ -1531,6 +1543,7 @@ def test_the_greeting_lives_only_on_the_box_origin(rdb, client, monkeypatch):
                         lambda now=None, override=None: ("birthday", budget.THEMES["birthday"]))
     gate = client.get("/budget?site=reddit").get_data(as_text=True)
     assert "birthday" not in gate.lower(), "the gate names the occasion"
+    _open_wrapped(rdb)
     assert "Happy birthday" in client.get("/wrapped").get_data(as_text=True)
     assert "/wrapped" in addon.MOVED_TO_BOX          # unreachable from a gated site
 
@@ -1603,6 +1616,9 @@ def test_history_pages_do_not_read_one_key_per_day(rdb, client, page, ceiling):
         pipe.rpush(f"reflect:{d}", f"{now:.0f} tired enter")
         pipe.rpush(f"worth:{d}", f"{now:.0f} tired no")
     pipe.execute()
+    # The window OPEN, so every page pays for the year-in-review checks and /wrapped
+    # renders for real. Closed, /wrapped is a cheap 404 and this would measure nothing.
+    _open_wrapped(rdb)
     n = _count_roundtrips(client, page)
     assert n <= ceiling, f"{page} made {n} round-trips for a year of history"
 
