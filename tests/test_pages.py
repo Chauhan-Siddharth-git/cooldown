@@ -722,19 +722,3 @@ def test_findings_survive_the_real_audit_reader_to_the_page(client, rdb, tmp_pat
     assert "Answer it next time it appears" in html, "the finding did not reach the page"
     assert "can't describe yet" not in html, "fell back to the unexplained-finding message"
     assert "No security problems" in html
-
-
-def test_the_second_clock_card_states_the_real_threshold(client, rdb, monkeypatch):
-    """The card tells the owner the warning fires below 40% of the second clock. That
-    threshold is ENFORCEMENT_RATIO in addon.py, a different process, so the page cannot
-    read it directly -- and a number copied into a template is how "172 processes exist"
-    went stale on the health page. This fails if the two drift apart."""
-    import app as b, addon
-    monkeypatch.setattr(b, "shadow_comparison", lambda *a, **k: {
-        "any": True, "settled": True, "days": 7, "running": "167 compared hours",
-        "rows": [], "hb": 382, "sh": 450, "ratio": 1.18})
-    html = client.get("/stats").data.decode()
-    pct = round(addon.ENFORCEMENT_RATIO * 100)
-    assert f"<b>{pct}%</b>" in html, f"the card no longer states the real {pct}% threshold"
-    assert "the injection could go" not in html, "the stale conclusion is back"
-    assert "give it a few days" not in html.lower()

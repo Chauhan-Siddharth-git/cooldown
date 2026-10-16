@@ -605,7 +605,8 @@ def request_is_free(site, flow):
 # loads. The heartbeat and the passive shadow meter measure the same quantity by
 # independent means; only one of them can be blocked from inside the page, so a large
 # disagreement identifies which. Seven days of paired data put them at 1.03x of each
-# other (see shadow_comparison), so the threshold below sits nowhere near normal noise.
+# other (the readout in the shadow meter's header, below), so the threshold sits nowhere
+# near normal noise.
 ENFORCEMENT_WINDOW_HOURS = 2          # how far back to compare
 ENFORCEMENT_MIN_PASSIVE  = 5 * 60     # need this much observed use before judging at all
 ENFORCEMENT_RATIO        = 0.4        # heartbeat below this share of passive = dead
@@ -692,7 +693,8 @@ ENFORCEMENT_WARNING = (
 
 
 # ---------------------------------------------------------------------------
-# SHADOW METER — an experiment, running in parallel with the injected heartbeat.
+# SHADOW METER — the dead-man's switch's second clock. It began on 2026-08-03 as an
+# experiment asking whether passive measurement could replace the injected heartbeat.
 #
 # The heartbeat is the only reason foreign JavaScript runs on Reddit, YouTube and the
 # rest, and that injection is the single largest item in this project's threat model
@@ -707,12 +709,16 @@ ENFORCEMENT_WARNING = (
 # accrued between consecutive signs using the same gap cap the heartbeat uses, so the two
 # numbers are measured the same way and can be compared directly.
 #
-# Known bias, and the reason this runs in shadow rather than in production: a background
-# tab, an autoplaying video and a prefetching SPA all keep making requests when you are
-# not looking. The heartbeat excludes those by design. So the shadow number should read
-# HIGH, and *how much* higher is exactly what a week of parallel running is for.
+# The answer, 2026-08-10 (7 days, 42 paired hours): passive tracks the heartbeat at
+# 1.03x and never went blind -- not one hour where the heartbeat charged and this saw
+# nothing. It reads high when a background tab or autoplay keeps requesting, and it
+# cannot see visibility at all, so the injection stays (it also draws the countdown).
+# What it is good at is noticing a LARGE disagreement, so enforcement_looks_dead() keeps
+# it as the second clock. The /stats card that showed the two side by side was retired
+# 2026-10-16; the audit's shadow_silent finding now watches that this keeps recording.
+# Removing it blinds the switch -- CLAUDE.md says what has to go with it.
 #
-# Nothing here can affect the budget: it writes only shadow_usage:* keys, and every
+# Nothing here can affect the budget: it writes only shadow_hour:* keys, and every
 # Redis call is wrapped so a measurement can never break the proxy.
 # ---------------------------------------------------------------------------
 SHADOW_MAX_GAP = 30.0        # same cap as the heartbeat: bigger gaps are idle, not use
@@ -728,11 +734,9 @@ def _shadow_flush(site, st):
     if st["pending"] <= 0:
         return
     def write():
-        k = f"shadow_usage:{st['day']}:{site}"
-        r.incrbyfloat(k, st["pending"])
-        r.expire(k, 100 * 86400)
-        # Hourly too — the heartbeat records the same way, and only hour-aligned buckets
-        # let the two be compared over the exact window both were running.
+        # Hourly, as the heartbeat records (usage_hour), because the switch compares the
+        # two over the same clock hours. The daily shadow_usage total and shadow_started
+        # existed only for the retired /stats comparison and are no longer written.
         # The hour comes from the same accrual time as st['day'], never a bare
         # strftime('%H'): that read the wall clock, so the midnight flush banked
         # yesterday's last seconds under hour 00 of yesterday's date, and any caller
@@ -742,7 +746,6 @@ def _shadow_flush(site, st):
               f"{time.strftime('%H', time.localtime(st['last']))}:{site}")
         r.incrbyfloat(hk, st["pending"])
         r.expire(hk, 14 * 86400)
-        r.setnx("shadow_started", f"{time.time():.0f}")
     if _try_redis(write, "failed") != "failed":
         st["pending"] = 0.0
 
@@ -1313,9 +1316,9 @@ class BudgetAddon:
         if request_is_free(site, flow):
             return
 
-        # SHADOW METER (experiment, started 2026-08-03 — see shadow_note). Purely
-        # observational: it never reads or writes budget state, and removing the two
-        # lines below removes the feature entirely.
+        # SHADOW METER — the dead-man's switch's second clock (see shadow_note).
+        # Observational: it never reads or writes budget state. Removing this line blinds
+        # enforcement_looks_dead(); CLAUDE.md says what has to go with it.
         shadow_note(site, time.time())
 
         user_agent = flow.request.headers.get("User-Agent", "")

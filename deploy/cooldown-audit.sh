@@ -341,6 +341,23 @@ cooldowns5="$(sum_llen cooldown_events 5)"; worth5="$(sum_llen worth 5)"
 [ "$cooldowns5" -lt 3 ] || [ "$worth5" -gt 0 ] || \
     note worth_silent "no worth verdict in 5 days across $cooldowns5 cooldowns -- the question is not reaching a screen you land on"
 
+# The dead-man's switch's second clock. The switch warns when the heartbeat falls far
+# behind the passive meter, so a passive meter that has STOPPED reads as "nothing to
+# compare" -- silence, not health. The /stats card that showed the two side by side was
+# where you would have noticed; it was retired 2026-10-16 and this check replaced it.
+# Both hourly keys are stamped on the box's own clock (PLAN.md, Known gaps), so they are
+# looked up with the box's date, not dkey's accounting zone. The heartbeat side sums the
+# integer part of its float seconds; the passive side COUNTS buckets instead, because a
+# bucket is only ever written when there is time to bank, and summing integer parts
+# would read a sub-second total as zero -- the very silence this looks for, invented.
+# 15 charged minutes with no passive bucket is not noise: the 2026-08-10 readout never
+# found an hour where the heartbeat charged and passive did not.
+sum_hours() { local t=0 i k v; for i in $(seq 0 $(( $2 - 1 ))); do for k in $(redis-cli --raw --scan --pattern "$1:$(date -d "$i days ago" +%F):*" 2>/dev/null); do v="$(redis-cli --raw GET "$k" 2>/dev/null)"; t=$(( t + $(_num "${v%%.*}") )); done; done; echo "$t"; }
+count_hours() { local t=0 i; for i in $(seq 0 $(( $2 - 1 ))); do t=$(( t + $(redis-cli --raw --scan --pattern "$1:$(date -d "$i days ago" +%F):*" 2>/dev/null | wc -l) )); done; echo "$t"; }
+hb3="$(sum_hours usage_hour 3)"; sh3="$(count_hours shadow_hour 3)"
+[ "$hb3" -lt 900 ] || [ "$sh3" -gt 0 ] || \
+    note shadow_silent "the passive meter wrote no hourly bucket in 3 days while the heartbeat charged $(( hb3 / 60 )) min -- the dead-man's switch has no second clock"
+
 # --- does the RUNNING BOX match what the repo claims? ------------------------------
 # The category this file was missing. Every check above asks "is the box in a safe
 # state"; these ask "is the box the thing we think we deployed". That is a different

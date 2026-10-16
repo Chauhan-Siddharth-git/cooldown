@@ -1299,15 +1299,6 @@ STATS_PAGE = """
         .why-bar i.w-hi{background:var(--s1)}
         .worth-foot{margin-top:12px;font-size:12.5px;color:var(--muted);line-height:1.5}
         .worth-foot b{color:var(--fg)}
-        .sh-lede{font-size:12.5px;color:var(--muted);line-height:1.55;margin:0 0 14px}
-        .sh-tbl{width:100%;border-collapse:collapse;font-size:13px}
-        .sh-tbl th{color:var(--faint);font-weight:600;border-bottom:1px solid var(--line);
-            padding:5px 6px;text-align:right;font-size:11.5px}
-        .sh-tbl td{padding:6px;text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
-        .sh-tbl th:first-child,.sh-tbl td:first-child{text-align:left}
-        .sh-tbl tr.sh-tot td{color:var(--fg);font-weight:600;border-top:1px solid var(--line)}
-        .sh-note{font-size:12px;color:var(--faint);line-height:1.55;margin-top:12px}
-        .sh-note b{color:var(--muted)}
     </style>
 </head>
 <body>
@@ -1399,45 +1390,6 @@ STATS_PAGE = """
         <div class="cd-sub">No cooldowns logged yet. Once you hit the full-bucket wall a few times, the clustering pattern shows up here.</div>
         {% endif %}
     </div>
-
-    {% if shadow.any %}
-    <div class="card">
-        {#- This card used to present a finished experiment as a live one. It asked whether
-            the two meters agreed closely enough that "the injection could go", and printed
-            "too early to draw conclusions, give it a few days". The experiment ended on
-            2026-08-10 with the opposite answer, and the "give it a few days" was a loop bug
-            returning zero hours since that same week. It now says what was decided, and what
-            the passive meter is for today. -#}
-        <h2>The second clock</h2>
-        <div class="sh-lede">Your time is counted by a small timer the box adds to these sites.
-            A second clock runs alongside it, counting the same time a different way: by
-            watching the traffic the sites send on their own, without adding anything to the
-            page. <b>Its job is to notice if the first clock ever stops working.</b> If the
-            sites keep loading but the timer stops counting, the two clocks disagree, and the
-            box warns you.</div>
-        <table class="sh-tbl">
-            <tr><th>Site</th><th>Timer</th><th>Second clock</th><th>&times;</th></tr>
-            {% for row in shadow.rows %}
-            <tr><td>{{ row.label }}</td><td>{{ row.hb }}m</td><td>{{ row.sh }}m</td>
-                <td>{% if row.ratio %}{{ row.ratio }}&times;{% else %}&mdash;{% endif %}</td></tr>
-            {% endfor %}
-            <tr class="sh-tot"><td>All</td><td>{{ shadow.hb }}m</td><td>{{ shadow.sh }}m</td>
-                <td>{% if shadow.ratio %}{{ shadow.ratio }}&times;{% else %}&mdash;{% endif %}</td></tr>
-        </table>
-        <div class="sh-note">
-            {%- if not shadow.settled %}Only {{ shadow.running }} so far, which is too few to read anything into yet.
-            {%- else %}Over the last {{ shadow.days }} day{{ '' if shadow.days == 1 else 's' }}.
-            {%- endif %}
-            <b>The two won't match exactly, and aren't meant to.</b> The second clock counts a
-            little high when a tab plays in the background, and a little low while you read a
-            page without scrolling, because nothing is loading then. What matters is that they
-            stay in the same ballpark. The warning only fires if the timer drops below
-            <b>40%</b> of the second clock, which would mean it had stopped working.
-            <br><br>Why keep the timer at all, if a second clock exists? This was tested in August,
-            and the answer was yes. The second clock can't tell whether you're actually looking at
-            the page, and the timer is also what draws the countdown and the one-minute warning.</div>
-    </div>
-    {% endif %}
 
     <div class="live {{ 'stale' if stale else '' }}">{{ live_line }}</div>
     <a class="back" href="/digest{{ qs }}">This week, in one screen &rarr;</a>
@@ -2443,10 +2395,11 @@ def heartbeat():
             day = time.strftime("%Y-%m-%d")
             r.incrbyfloat(f"usage:{day}:{site}", gap)
             r.expire(f"usage:{day}:{site}", HISTORY_TTL)
-            # Same figure bucketed by hour, purely so the shadow-meter experiment can
-            # compare like with like. Daily totals cannot be aligned with a meter that
-            # started at 15:49 — the first comparison divided 15 hours of heartbeat by
-            # three hours of passive and produced 0.22x, which meant nothing at all.
+            # Same figure bucketed by hour, because the dead-man's switch compares it
+            # against the passive meter's shadow_hour hour by hour (_meter_totals).
+            # Daily totals cannot be aligned with a window that starts mid-day — the
+            # first comparison divided 15 hours of heartbeat by three hours of passive
+            # and produced 0.22x, which meant nothing at all.
             hour_key = f"usage_hour:{day}:{time.strftime('%H')}:{site}"
             r.incrbyfloat(hour_key, gap)
             r.expire(hour_key, 14 * 86400)
@@ -3168,8 +3121,7 @@ def stats():
 
     why = reflection_summary()
     worth = worth_summary()
-    shadow = shadow_comparison()
-    return render_page(STATS_PAGE, why=why, worth=worth, series=series, shadow=shadow,
+    return render_page(STATS_PAGE, why=why, worth=worth, series=series,
         days=days, today_min=today_min, week_avg=week_avg,
         trend=trend, trend_cls=trend_cls, live_line=live_line, stale=stale, cd=cd)
 
@@ -3195,99 +3147,6 @@ def catch_up_reset(now=None):
         daily_reset(now)
         return True
     return False
-
-def shadow_comparison(days=7, now=None):
-    """Heartbeat minutes vs passively-observed minutes, per site, over `days`.
-
-    An experiment (started 2026-08-03). The heartbeat is the only reason injected
-    JavaScript runs on gated sites, and that injection is the biggest single item in this
-    project's threat model. addon.py now also measures the same thing passively, by
-    watching the requests those sites make on their own. If the two numbers track each
-    other, the injection could eventually go; if they don't, this says by how much.
-
-    RESULT, 2026-08-10 (7 days, 332 heartbeat minutes over 42 paired hours). Both
-    predictions were wrong. Passive tracks the heartbeat at 1.03x overall — reddit 1.05x,
-    youtube 1.01x — with daily ratios between 0.96x and 1.08x.
-
-    The prediction that passive would UNDERCOUNT (client-side feeds mean reading generates
-    no traffic) is specifically dead: across those 42 hours there were ZERO in which the
-    heartbeat charged time and passive saw nothing. The error is one-directional and
-    small — passive counted 6.1 minutes across 4 hours where the heartbeat charged
-    nothing, all YouTube, most likely background audio. It never goes blind; when wrong it
-    over-counts, which fails toward charging you rather than gifting you time.
-
-    Checked for circularity before believing it: a 3% agreement between two supposedly
-    independent meters is more easily explained by one watching the other's traffic. It is
-    not. The /budget/* handler returns before shadow_note() is reached, verified by
-    sending a heartbeat POST through request() and confirming the shadow buffer stays
-    empty.
-
-    TWO THINGS THIS DOES NOT SETTLE.
-
-    Passive cannot observe visibility, and never will — that fact lives in the browser.
-    It agrees with the heartbeat because sites throttle themselves when hidden, which is
-    third-party behaviour nobody here controls. If YouTube changes how a backgrounded tab
-    polls, passive starts over-counting and nothing announces it.
-
-    The injection does two jobs. It measures time AND draws the countdown, the wind-down
-    bar and the last-minute warning. Passive replaces the measuring only; removing the
-    script removes the on-page UI with it. That is a product decision, not a measurement
-    one.
-
-    Sample is thin: 5.5 hours of real use, and per-hour ratios spread 0.72x-1.28x even
-    though daily aggregates hold within 8%.
-    """
-    now = now if now is not None else time.time()
-    started = _try(lambda: r.get("shadow_started"))
-    if not started:
-        return {"rows": [], "hb": 0, "sh": 0, "ratio": None, "days": 0,
-                "any": False, "settled": False, "running": ""}
-    since = float(started)
-
-    # Compare only whole hours during which BOTH meters were running. Day-granular keys
-    # cannot express "the meter started at 15:49", and the first attempt at this divided
-    # 15 hours of heartbeat by 3 hours of passive and reported 0.22x — an artefact that
-    # looked exactly like a real finding. Start at the hour AFTER the meter came up, so
-    # neither side gets credit for a partial hour.
-    first = ((int(since) // 3600) + 1) * 3600
-    # Start at whichever is LATER: the first whole hour of the meter, or the start of the
-    # window. The loop used to start at `first` and stop at the first hour older than the
-    # window -- but `first` IS the oldest hour, so once the meter was more than `days`
-    # old the very first check failed and the loop exited having collected nothing. That
-    # happened around 2026-08-10, a week after the meter started, and from then on this
-    # returned zero hours while the page said "too early to draw conclusions, give it a
-    # few days" -- a permanent failure dressed as a temporary one, for six weeks.
-    window_start = ((int(now - days * 86400) // 3600) + 1) * 3600
-    hours_list = []
-    t = max(first, window_start)
-    while t < now - 3600:
-        hours_list.append(t)
-        t += 3600
-    hours_list = hours_list[-days * 24:]
-
-    stamps = [(time.strftime("%Y-%m-%d", local_acct(t)),
-               time.strftime("%H", local_acct(t))) for t in hours_list]
-    sites = list(SITES)
-    hb_all = _mget_floats([f"usage_hour:{d}:{h}:{s}" for s in sites for d, h in stamps])
-    sh_all = _mget_floats([f"shadow_hour:{d}:{h}:{s}" for s in sites for d, h in stamps])
-    n = len(stamps)
-    rows, hb_tot, sh_tot = [], 0.0, 0.0
-    for idx, site in enumerate(sites):
-        hb = sum(hb_all[idx * n:(idx + 1) * n])
-        sh = sum(sh_all[idx * n:(idx + 1) * n])
-        hb_tot += hb
-        sh_tot += sh
-        if hb >= 60 or sh >= 60:
-            rows.append({"label": SITES[site]["label"],
-                         "hb": int(hb // 60), "sh": int(sh // 60),
-                         "ratio": round(sh / hb, 2) if hb >= 300 else None})
-    rows.sort(key=lambda x: -max(x["hb"], x["sh"]))
-    hours = len(hours_list)          # whole hours where both meters were running
-    return {"rows": rows, "hb": int(hb_tot // 60), "sh": int(sh_tot // 60),
-            "ratio": round(sh_tot / hb_tot, 2) if hb_tot >= 300 else None,
-            "days": max(1, hours // 24), "any": True,
-            "settled": hours >= 12,          # under half a day the ratio is noise
-            "running": f"{hours} compared hour{'' if hours == 1 else 's'}"}
 
 def daily_reset(now=None):
     pools = set()
@@ -4198,6 +4057,13 @@ FINDINGS = {
         "The phone alert status can't be read.",
         "Its state is unknown, which is not the same as fine.",
         "Reload this page. If it persists, check the app is running."),
+    "shadow_silent": ("watchers",
+        "The second clock has stopped counting.",
+        "Time was charged on gated sites, but the passive meter -- the clock that notices "
+        "if the timer ever stops -- recorded nothing. Until it does, a broken timer "
+        "would go unnoticed.",
+        "Use a gated site for a minute. If this has not cleared by the next hourly "
+        "check, look at the proxy's log for errors."),
     # --- features: is the tool actually recording what it should? ---
     "reflect_silent": ("features",
         "The “why are you here?” prompt hasn't recorded anything in 3 days.",

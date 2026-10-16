@@ -770,6 +770,12 @@ def test_a_healthy_box_reports_zero_handled_errors(rdb, monkeypatch):
 
 # ---------- 14. the shadow meter (experiment, 2026-08-03) ----------
 
+def _shadow_total(rdb, day, site="reddit"):
+    """Seconds the passive meter banked for `site` on `day`, summed over its hourly
+    buckets -- the only form it is stored in since the daily total was retired."""
+    return sum(float(rdb.get(k)) for k in rdb.keys(f"shadow_hour:{day}:*:{site}"))
+
+
 def test_shadow_accrues_time_between_signs_of_life(rdb):
     addon._SHADOW.clear()
     t = time.time()
@@ -777,7 +783,7 @@ def test_shadow_accrues_time_between_signs_of_life(rdb):
         addon.shadow_note("reddit", t + i * 5)
     addon._shadow_flush("reddit", addon._SHADOW["reddit"])
     day = time.strftime("%Y-%m-%d", time.localtime(t))
-    assert abs(float(rdb.get(f"shadow_usage:{day}:reddit")) - 25.0) < 0.01
+    assert abs(_shadow_total(rdb, day) - 25.0) < 0.01
 
 
 def test_shadow_ignores_gaps_that_mean_you_left(rdb):
@@ -794,7 +800,7 @@ def test_shadow_ignores_gaps_that_mean_you_left(rdb):
     addon.shadow_note("reddit", t + 10 + 3600)
     addon._shadow_flush("reddit", addon._SHADOW["reddit"])
     day = time.strftime("%Y-%m-%d", time.localtime(t))
-    assert abs(float(rdb.get(f"shadow_usage:{day}:reddit")) - 10.0) < 0.01
+    assert abs(_shadow_total(rdb, day) - 10.0) < 0.01
 
 
 def test_shadow_never_touches_budget_state(rdb):
@@ -807,9 +813,8 @@ def test_shadow_never_touches_budget_state(rdb):
     for i in range(40):
         addon.shadow_note("reddit", t + i)
         addon.shadow_note("youtube", t + i)
-    # The property is "shadow-namespaced only", not one specific key — it also writes
-    # shadow_started. Anything outside that namespace would make this a change, not an
-    # experiment.
+    # The property is "shadow-namespaced only", not one specific key. Anything outside
+    # that namespace would make this a change, not a measurement.
     after = {k: rdb.get(k) for k in rdb.keys("*") if not k.startswith("shadow")}
     assert after == before, "shadow mode wrote outside its own namespace"
     assert float(rdb.get("spent:main")) == 123
@@ -839,7 +844,7 @@ def test_shadow_banks_yesterday_before_rolling_over(rdb):
     addon.shadow_note("reddit", t)             # new day -> flush the old one first
     addon._shadow_flush("reddit", addon._SHADOW["reddit"])
     yday = time.strftime("%Y-%m-%d", time.localtime(yesterday))
-    assert abs(float(rdb.get(f"shadow_usage:{yday}:reddit") or 0) - 5.0) < 0.01
+    assert abs(_shadow_total(rdb, yday) - 5.0) < 0.01
 
 
 def test_shadow_hour_is_the_hour_the_time_was_spent_not_the_wall_clock(rdb):
@@ -866,57 +871,23 @@ def test_shadow_writes_are_batched_not_per_request(rdb, monkeypatch):
     t = time.time()
     for i in range(100):                        # 100 requests, 1s apart = 99s of time
         addon.shadow_note("reddit", t + i)
-    # Two writes per flush now (daily + hourly bucket), so ~20 for 100 requests. The
-    # property under test is "batched, not per-request", not an exact count.
-    assert len(calls) <= 25, f"{len(calls)} redis writes for 100 requests"
+    # One write per flush (the hourly bucket), so ~10 for 100 requests. The property
+    # under test is "batched, not per-request", not an exact count.
+    assert len(calls) <= 15, f"{len(calls)} redis writes for 100 requests"
 
 
-def test_stats_hides_the_comparison_until_the_meter_has_run(rdb, client):
-    assert "measuring the same time two ways" not in client.get("/stats").get_data(as_text=True)
-
-
-def _seed_hours(rdb, now, n, hb, sh, site="reddit"):
-    """Fill n whole hours before `now` with hb/sh seconds each."""
-    for i in range(1, n + 1):
-        lt = time.localtime(now - i * 3600)
-        d, h = time.strftime("%Y-%m-%d", lt), time.strftime("%H", lt)
-        if hb: rdb.set(f"usage_hour:{d}:{h}:{site}", hb)
-        if sh: rdb.set(f"shadow_hour:{d}:{h}:{site}", sh)
-
-
-def test_comparison_counts_only_hours_where_both_meters_ran(rdb, client):
-    """Day-granular keys cannot express "the meter started at 15:49". The first attempt
-    divided 15 hours of heartbeat by 3 hours of passive and reported 0.22x — an artefact
-    that looked exactly like a real finding."""
-    now = time.time()
-    # Heartbeat has history stretching back before the meter; passive only overlaps 20h.
-    _seed_hours(rdb, now, 40, hb=300, sh=0)
-    _seed_hours(rdb, now, 20, hb=300, sh=600)
-    rdb.set("shadow_started", f"{now - 21 * 3600:.0f}")
-    c = budget.shadow_comparison()
-    assert c["ratio"] == 2.0, c            # only the overlapping hours, not the 40
-    assert c["settled"] is True
-    assert "2.0&times;" in client.get("/stats").get_data(as_text=True)
-
-
-def test_comparison_ignores_the_partial_hour_the_meter_started_in(rdb):
-    now = time.time()
-    _seed_hours(rdb, now, 3, hb=300, sh=300)
-    rdb.set("shadow_started", f"{now - 3 * 3600:.0f}")
-    c = budget.shadow_comparison()
-    # 3 hours seeded, meter started 3h ago -> only whole hours after that count
-    assert c["hb"] == c["sh"], c
-    assert c["ratio"] == 1.0
-
-
-def test_comparison_says_it_is_too_early_on_day_one(rdb, client):
-    now = time.time()
-    day = time.strftime("%Y-%m-%d", time.localtime(now))
-    rdb.set(f"usage:{day}:reddit", 600)
-    rdb.set(f"shadow_usage:{day}:reddit", 1200)
-    rdb.set("shadow_started", f"{now - 3600:.0f}")   # one hour old
-    assert budget.shadow_comparison()["settled"] is False
-    assert "too few to read anything into yet" in client.get("/stats").get_data(as_text=True)
+def test_the_meter_writes_only_what_the_switch_reads(rdb, client):
+    """The /stats comparison was retired 2026-10-16. The daily shadow_usage total and
+    shadow_started existed only for it; writing them on would be data nothing reads.
+    The hourly bucket is what enforcement_looks_dead() compares, so it must remain."""
+    addon._SHADOW.clear()
+    t = time.mktime((2026, 6, 15, 12, 0, 0, 0, 0, -1))
+    for i in range(4):
+        addon.shadow_note("reddit", t + i * 5)
+    addon._shadow_flush("reddit", addon._SHADOW["reddit"])
+    assert rdb.keys("shadow_hour:*"), "the switch's input is gone"
+    assert not rdb.keys("shadow_usage:*") and rdb.get("shadow_started") is None
+    assert "The second clock" not in client.get("/stats").get_data(as_text=True)
 
 
 # ---------- 15. you can always get back to the gate ----------

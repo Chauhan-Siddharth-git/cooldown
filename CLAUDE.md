@@ -65,7 +65,9 @@ usually need checking against both.
 
 `addon.shadow_note()` measures foreground time a second way — passively, by watching the
 requests gated sites make on their own, with nothing injected. It writes only
-`shadow_usage:*`, never budget state, and `/stats` shows both columns side by side.
+`shadow_hour:*`, never budget state. The `/stats` card that showed both side by side was
+retired on 2026-10-16 along with the daily `shadow_usage:*` total only it read; the
+audit's `shadow_silent` finding now says if the meter stops recording.
 
 **Result after 7 days (332 heartbeat minutes, 42 paired hours): passive tracks the
 heartbeat at 1.03x**, daily 0.96x–1.08x. Both original predictions were wrong. The
