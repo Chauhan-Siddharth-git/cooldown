@@ -56,7 +56,7 @@ def test_a_missing_picture_never_costs_the_gate(rdb, client, day, monkeypatch, t
     monkeypatch.setattr(budget, "SCENE_FILE", str(tmp_path / "nope.js"))
     html = _locked_out(rdb, client, monkeypatch)
     assert 'id="cd-scene' not in html and "CooldownScene" not in html
-    assert "Tetris" in html, "the rest of the locked-out gate still renders"
+    assert '<div class="card ' in html and "<h1" in html, "the rest of the locked-out gate still renders"
 
 
 def test_a_file_that_could_break_out_of_its_script_is_refused(rdb, client, day, monkeypatch, tmp_path):
@@ -108,7 +108,7 @@ def test_nothing_in_it_can_be_read_as_template_syntax():
 
 def test_the_deploy_ships_the_picture():
     sh = open(os.path.join(ROOT, "deploy.sh")).read()
-    assert "scene/cooldown-scene.js play/tetris.html; do" in sh
+    assert "scene/cooldown-scene.js; do" in sh
     assert "$DIR/scene/cooldown-scene.js=scene/cooldown-scene.js" in sh
     assert "$DIR/scene" in sh.split("mkdir -p", 1)[1].split("\n", 1)[0]
 
@@ -117,6 +117,26 @@ def test_the_scene_is_not_a_new_route():
     """Inlined, so there is nothing to classify. If this ever becomes a route it needs a
     place in addon.MOVED_TO_BOX or BUDGET_ENDPOINTS, with a justification."""
     assert not [r for r in budget.app.url_map.iter_rules() if "scene" in r.rule]
+
+
+def test_the_window_sits_inside_the_card_under_the_countdown(rdb, client, day, monkeypatch):
+    """Where the Tetris link used to be: the bottom of the card, not a banner above it."""
+    html = _locked_out(rdb, client, monkeypatch)
+    card = html.index('<div class="card ')
+    scene = html.index('<div id="cd-scene">')
+    foots = html.index('class="foots"')
+    assert card < scene < foots, (card, scene, foots)
+
+
+def test_there_is_no_tetris_any_more(rdb, client, day, monkeypatch):
+    """Retired 2026-10-17: it was hard to play on a phone. The gate offers no game, the box
+    serves none, and the deploy ships none."""
+    html = _locked_out(rdb, client, monkeypatch)
+    assert "Tetris" not in html and "/play" not in html
+    assert client.get("/play?min=3").status_code == 404
+    assert not os.path.exists(os.path.join(ROOT, "play"))
+    sh = open(os.path.join(ROOT, "deploy.sh")).read()
+    assert "tetris" not in sh.lower() and "/play" not in sh
 
 
 # ---------- a real browser ----------
@@ -159,6 +179,26 @@ def _serve_and_dump(html):
     return out.stdout, seen
 
 
+PROBE_TOP = """<script>setTimeout(function(){var c=document.getElementById("cd-scene-c"),o=document.createElement("pre");o.id="probe";
+var r=c.getBoundingClientRect(),k=document.querySelector(".card").getBoundingClientRect(),e=document.scrollingElement;
+o.textContent=JSON.stringify({top:Math.round(r.top),cardBottom:Math.round(k.bottom),scrollH:e.scrollHeight,vh:innerHeight});document.body.appendChild(o);},1500);</script>"""
+
+
+@pytest.mark.skipif(CHROME is None, reason="needs headless Chrome")
+def test_a_page_taller_than_the_screen_starts_at_the_top_and_scrolls(rdb, client, day, monkeypatch):
+    """The first version centred a fixed-height flex body, so content taller than the screen
+    overflowed equally off the TOP and the bottom, and the top (the ad cards) could not be
+    scrolled to. Phone viewports are short enough to hit it; this makes the card taller than
+    any viewport so the test does not depend on the window size Chrome gives it."""
+    import json
+    html = _locked_out(rdb, client, monkeypatch)
+    html = html.replace("</head>", "<style>.card{min-height:2500px}</style></head>").replace("</body>", PROBE_TOP + "</body>")
+    dom, _ = _serve_and_dump(html)
+    probe = json.loads(re.search(r'<pre id="probe">(.*?)</pre>', dom, re.S).group(1))
+    assert probe["top"] >= 0, probe
+    assert probe["scrollH"] >= probe["cardBottom"] > probe["vh"], probe
+
+
 def _paths(seen):
     return {p.split("?")[0] for p in seen}
 
@@ -180,3 +220,19 @@ def test_in_a_real_browser_it_draws_and_asks_for_nothing(rdb, client, day, monke
     monkeypatch.setattr(budget, "SCENE_FILE", str(tmp_path / "none.js"))
     _, baseline = _serve_and_dump(_locked_out(rdb, client, monkeypatch))
     assert _paths(seen) == _paths(baseline), (_paths(seen), _paths(baseline))
+
+
+PROBE_CARD = """<script>setTimeout(function(){var c=document.getElementById("cd-scene-c"),o=document.createElement("pre");o.id="probe";
+var r=c.getBoundingClientRect(),k=document.querySelector(".card"),b=k.getBoundingClientRect();
+o.textContent=JSON.stringify({inCard:!!c.closest(".card"),l:Math.round(r.left-b.left),rr:Math.round(b.right-r.right),t:Math.round(r.top-b.top),bt:Math.round(b.bottom-r.bottom),w:Math.round(r.width)});document.body.appendChild(o);},1500);</script>"""
+
+
+@pytest.mark.skipif(CHROME is None, reason="needs headless Chrome")
+def test_in_a_real_browser_the_window_is_inside_the_card_and_not_clipped(rdb, client, day, monkeypatch):
+    import json
+    html = _locked_out(rdb, client, monkeypatch).replace("</body>", PROBE_CARD + "</body>")
+    dom, _ = _serve_and_dump(html)
+    probe = json.loads(re.search(r'<pre id="probe">(.*?)</pre>', dom, re.S).group(1))
+    assert probe["inCard"], probe
+    assert min(probe["l"], probe["rr"], probe["t"], probe["bt"]) >= 0, probe
+    assert probe["w"] >= 240, "at least one device pixel per art pixel on a 390 px phone"

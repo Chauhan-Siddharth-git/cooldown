@@ -1,5 +1,5 @@
 from flask import Flask, abort, g, has_request_context, jsonify, redirect, request
-from markupsafe import Markup, escape
+from markupsafe import Markup
 from urllib.parse import urlparse
 from collections import Counter, deque
 from datetime import date, datetime, timedelta, timezone
@@ -844,17 +844,14 @@ BUDGET_PAGE = """
         button:active{transform:scale(.985)}
         .enter{background:var(--go);color:#06120b}
         .blocked{background:#1c2028;color:var(--muted);cursor:default}
-        .play{display:block;margin-top:10px;padding:13px;border-radius:12px;text-align:center;
-            border:1px solid var(--line);color:var(--fg);font-size:14.5px;font-weight:600;
-            text-decoration:none}
         .hint{font-size:12px;color:#5f6773;margin-top:2px}
-        /* The lockout window sits above the card. The card stays the only thing with a
-           width of its own; the scene sizes its canvas to a whole multiple of its native
-           pixels, so nothing here may scale it. */
+        /* The lockout window sits inside the card, under the countdown. The card stays the
+           only thing with a width of its own; the scene sizes its canvas to a whole
+           multiple of its native pixels, so nothing here may scale it. */
         .stack{position:relative;z-index:1;width:100%;display:flex;flex-direction:column;
             align-items:center;gap:16px;margin:auto}
-        #cd-scene{width:100%;max-width:760px;display:flex;justify-content:center}
-        #cd-scene canvas{border-radius:14px;box-shadow:0 18px 50px rgba(0,0,0,.5)}
+        #cd-scene{width:100%;margin-top:16px;display:flex;justify-content:center}
+        #cd-scene canvas{border-radius:10px}
         .foot{display:block;margin-top:18px;font-size:12px;color:#5f6773;text-decoration:none}
         .foots{display:flex;gap:18px;justify-content:center;align-items:center;margin-top:18px}
         .infobtn{width:19px;height:19px;padding:0;border-radius:50%;border:1px solid var(--line);
@@ -909,7 +906,6 @@ BUDGET_PAGE = """
 <body>
     <canvas id="bp-bg" aria-hidden="true"></canvas>
     <div class="stack">
-    {% if scene_js %}<div id="cd-scene"><canvas id="cd-scene-c"></canvas></div>{% endif %}
     <div class="card {{ mood }}">
         <div class="kicker"><span class="dot"></span>{% if theme_emoji %}{{ theme_emoji }} {% endif %}{{ overline }}</div>
         {% if countdown %}<div id="cd" class="big" data-secs="{{ countdown }}">·</div>
@@ -956,10 +952,9 @@ BUDGET_PAGE = """
             <button class="blocked" disabled>{{ button_text }}</button>
             {% endif %}
             {#- Locked out -- cooldown, night or a spent budget -- is the moment a feed
-                would have kept going. Offer something that ends instead: one round, the
-                same length every time. Absolute, to the box, like the other dashboard
-                links: the page does not exist on this origin. -#}
-            {% if not can_enter and mon %}<a class="play" href="{{ mon }}/play?min=3&from={{ site }}">Play one 3-minute round of Tetris instead</a>{% endif %}
+                would have kept going. Give the eye something that ends instead: a window
+                to look out of. Empty (no script) when you can enter, or the file is missing. -#}
+            {% if scene_js %}<div id="cd-scene"><canvas id="cd-scene-c"></canvas></div>{% endif %}
         </div>
         <!-- Absolute links to the BOX, not relative ones onto the gated site: the
              dashboard deliberately no longer exists on this origin. -->
@@ -994,9 +989,7 @@ BUDGET_PAGE = """
         // Boston's light, and lookFor() converts Boston's sunset into whatever zone this
         // device is in, so it stays right while you travel. Nothing is sent anywhere.
         var look=S.lookFor(new Date());
-        var scene=S.mount(c,{season:look.season,time:look.time,maxHeight:function(){var k=document.querySelector(".card"),d=devicePixelRatio||1;
-            // Fit above the card when there is room; never below 2x (3x on dense screens), and let the page scroll instead.
-            return Math.max(168*(d>=2?3:2)/d,innerHeight-(k?k.offsetHeight:380)-72);}});
+        var scene=S.mount(c,{season:look.season,time:look.time});
         function sync(){ var n=S.lookFor(new Date()), o=scene.look();
             if(n.season!==o.season||n.time!==o.time) scene.setLook(n); }
         setInterval(sync,600000);
@@ -2209,7 +2202,7 @@ def _safe_next(site, nxt):
 # on the gated site's origin, where anything fetched is one policy away from not arriving.
 # The same property makes it safe to run there: it is same-origin with the gated site, so
 # tests/test_scene.py pins that it never touches the network, storage or cookies.
-# Read per request like /play, so deploying a new copy needs no restart; "" when the file
+# Read per request, so deploying a new copy needs no restart; "" when the file
 # is missing or looks wrong, so a missing picture costs the picture and never the gate.
 SCENE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scene",
                           "cooldown-scene.js")
@@ -2934,51 +2927,6 @@ def announce_wrapped(now=None):
     send_alert("Your year in review is ready. Open the dashboard on the box: it's there "
                "for a week, then it locks until next year.")
     return True
-
-
-# One fixed-length round of Tetris, offered by the gate once you are locked out. A copy of
-# ~/Desktop/pomodoro/tetris.html with touch controls (play/tetris.html): every round the
-# same length, ending in a wind-down rather than a buzzer -- the opposite of a feed.
-# Box origin only (addon.MOVED_TO_BOX), GET, no state. Read per request, so deploying a
-# new copy needs no restart.
-PLAY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "play", "tetris.html")
-SHREK_MIN = 90                    # Shrek (2001): the unit this page measures time in
-BASELINE_MIN_PER_DAY = 62.6       # the pre-registered baseline median (PLAN.md readout)
-
-
-def reclaimed_this_month(now=None):
-    """Minutes under the old baseline across this month's finished days.
-
-    Today is left out: at 9am it is not a day of restraint, just an early one. A day the
-    box was down reads as zero use and so as a full day won back -- fine for a joke,
-    which is all this number is for.
-    """
-    now = now if now is not None else time.time()
-    days = local_acct(now).tm_mday              # the 1st through today
-    sites = list(SITES)
-    vals = _mget_floats(_day_keys("usage", days, now, sites))
-    n = len(sites)
-    per_day = [sum(vals[i * n:(i + 1) * n]) / 60 for i in range(days)][:-1]
-    return sum(max(0.0, BASELINE_MIN_PER_DAY - used) for used in per_day)
-
-
-@app.route('/play')
-def play():
-    try:
-        with open(PLAY_FILE, encoding="utf-8") as fh:
-            html = fh.read()
-    except OSError:
-        abort(404)
-    mins = _try(reclaimed_this_month, 0.0) or 0.0
-    line = (f"This month you've won back about {mins / 60:.1f}h, enough to watch Shrek "
-            f"{mins / SHREK_MIN:.1f} times." if mins >= 30 else
-            "Not much Shrek-time won back this month yet.")
-    tags = f'<meta name="cd-line" content="{escape(line)}">'
-    site = request.args.get("from", "")
-    if site in SITES:
-        tags += (f'<meta name="cd-back" content="{escape(SITES[site]["home"])}">'
-                 f'<meta name="cd-back-label" content="{escape(SITES[site]["label"])}">')
-    return html.replace("</head>", tags + "</head>", 1)
 
 
 @app.route('/wrapped')

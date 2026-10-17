@@ -18,7 +18,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py addon.py news_domains.py docker-entrypoint.sh ./
 COPY deploy/gen_allow_hosts.py deploy/gen_allow_hosts.py
-COPY play/tetris.html play/tetris.html
 COPY scene/cooldown-scene.js scene/cooldown-scene.js
 RUN chmod +x docker-entrypoint.sh \
     && mkdir -p "$MITM_CONFDIR" \

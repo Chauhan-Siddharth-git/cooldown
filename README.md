@@ -278,14 +278,12 @@ Things to know:
 - Adding it needed a CA rotation and a re-trust on every device, like any new site — see
   [CA-TRUST.md](CA-TRUST.md).
 
-### Locked out? One round of Tetris
+### Locked out? A window to look out of
 
-When the gate won't let you in — cooldown, night, or a spent budget — it offers one
-3-minute round of Tetris on the box (`/play`). Every round is the same length and ends
-in a wind-down rather than a buzzer: something that ends, in place of something that
-doesn't. Touch controls for the phone (tap rotate, drag move, flick down to slam, flick
-up to hold), nothing saved, and a deliberately silly line about how much time you've
-won back this month, measured in Shreks.
+When the gate won't let you in — cooldown, night, or a spent budget — the card ends with
+a small pixel-art window: a Red Line car crossing the Longfellow Bridge, with the season
+and the time of day taken from the browser's own clock. It is one script inlined into the
+page, so it makes no requests and stores nothing. Nothing to play, nothing to score.
 
 ## Tests
 
