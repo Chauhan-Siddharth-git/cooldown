@@ -150,7 +150,7 @@ case "${1:-code}" in
     "${SSH[@]}" "mkdir -p $DIR/deploy $DIR/scene"
     for f in app.py addon.py PLAN.md PI-SETUP.md \
              rotate-ca.sh deploy/gen_ca.sh deploy/gen_allow_hosts.py news_domains.py \
-             scene/cooldown-scene.js; do
+             scene/cooldown-scene.js scene/beacon-hill.js; do
         [ -f "$f" ] || continue
         if [ "$(local_md5 "$f")" = "$(remote_md5 "$f")" ]; then
             echo "unchanged  $f"
@@ -176,7 +176,8 @@ case "${1:-code}" in
           "$DIR/rotate-ca.sh=rotate-ca.sh" "$DIR/deploy/gen_ca.sh=deploy/gen_ca.sh" \
           "$DIR/deploy/gen_allow_hosts.py=deploy/gen_allow_hosts.py" \
           "$DIR/news_domains.py=news_domains.py" \
-          "$DIR/scene/cooldown-scene.js=scene/cooldown-scene.js"
+          "$DIR/scene/cooldown-scene.js=scene/cooldown-scene.js" \
+          "$DIR/scene/beacon-hill.js=scene/beacon-hill.js"
     if [ "${#restart[@]}" -gt 0 ]; then
         echo "Restarting: ${restart[*]}"
         "${SSH[@]}" "sudo systemctl restart ${restart[*]} && sleep 2"

@@ -1,11 +1,7 @@
 /* beacon-hill.js: a Beacon Hill lane in pixels: brick rowhouses both sides, gas lamps, cobbles between brick sidewalks.
-Placed and sized from the owner's photos (the dusk one fixes the camera); a lane in that style, not a copy of one street.
-Same interface as cooldown-scene.js, so the gate can mount either:
-const s = CooldownScene.mount(canvas, {season:'winter', time:'night'});
-s.setLook({season:'autumn', time:'dusk'});  s.stop();
-CooldownScene.lookFor(new Date())  ->  {season, time}   (Boston: season by month, dusk around sunset)
-mount options: still (one frame, no movement), maxScale, maxHeight (px or function), container, as there.
-The canvas is 240x168 native and is shown at the largest whole multiple (in device pixels) that fits its parent's width. */
+Placed and sized from the owner's photos (the dusk one fixes the camera): a lane in that style, not a copy of one street.
+The gate shows it on alternate days with cooldown-scene.js, whose interface and 240x168 canvas it shares:
+mount(canvas, {season, time, still, maxScale, maxHeight, container}), setLook, look, stop; lookFor(new Date()) picks the look. */
 (function(G){'use strict';
 const W=240,H=168,N=W*H,SEASONS=['spring','summer','autumn','winter'],TIMES=['day','dusk','night'];
 /* the camera, fitted to the dusk photo: vanishing point (161,102), eye 1.2 m up, house fronts 3.9 m to the left,
@@ -32,27 +28,28 @@ const CROWN=[[0,146,212],[8,152,208],[16,153,200],[24,150,190],[40,153,188],[56,
 const crownAt=y=>{for(let k=1;k<CROWN.length;k++){const[y1,l1,r1]=CROWN[k];if(y<=y1){const[y0,l0,r0]=CROWN[k-1],t=(y-y0)/(y1-y0);return[l0+(l1-l0)*t,r0+(r1-r0)*t];}}return null;};
 
 /* materials: six anchors from cool shadow through daylight (the fourth) to warm lamp-light, each pair split, so eleven steps */
+const R6=t=>t.split(' ').map(h=>'#'+h);
 const MAT='brick mortar granite trim shutter glass door cobble gap walk snow iron leaf bark slate asphalt plant red pink yellow purple pumpkin wreath blue wood'.split(' ');
 const K={};MAT.forEach((n,i)=>K[n]=i+1);
-const RAMP={brick:['#1e1828','#3a2230','#62303a','#a44c3a','#cc663e','#f09c5c'],mortar:['#2c2a38','#4c4450','#77686a','#a89888','#d0b896','#f4d8a8'],
-granite:['#262a3a','#464c5c','#70747e','#a2a29e','#ccc6b6','#f4e4c4'],trim:['#2c2c3c','#55546a','#8e8c98','#e0dcd4','#f6efe0','#fff6e2'],
-shutter:['#0a0c11','#11141a','#191d24','#232830','#30363a','#4c4840'],glass:['#0c1120','#141d32','#1e2b46','#2e405c','#4a6080','#7a90a8'],
-door:['#0a0b10','#121419','#1b1e24','#272b31','#383b40','#5a544c'],cobble:['#1e1e28','#36353e','#5e5a5e','#968e82','#bcb09a','#e8d0a4'],
-gap:['#0f1017','#191920','#26262c','#3c3a3c','#5a524a','#80705a'],walk:['#241b27','#432731','#703c40','#a85650','#cc7462','#f0a67c'],
-snow:['#2e3452','#4c5680','#7c88ac','#b8c2da','#eef0f2','#ffd8a8'],iron:['#07080b','#0e1015','#16191f','#20242a','#30343a','#55504a'],
-bark:['#100e12','#1a171b','#282224','#3a3230','#504440','#6e5c4e'],slate:['#14161f','#1d2029','#282c36','#3a3f4a','#50555e','#726e6a'],
-asphalt:['#15161c','#1f2027','#2c2d34','#44454c','#5c5c60','#7e776a'],plant:['#0e1c16','#173020','#22482a','#336a32','#4e9040','#86c05a'],
-red:['#2c0e16','#4c121c','#7e1a22','#b82a2a','#e2443a','#ff7a5a'],pink:['#2e1a2c','#52283f','#844068','#c46a98','#e494b8','#ffc4d6'],
-yellow:['#2a2412','#4a3e14','#7c6618','#c4a020','#ecc830','#fff07a'],purple:['#1c1428','#2e1c44','#4a2a6c','#6e40a0','#9464c4','#c494e0'],
-pumpkin:['#2a1410','#4c2212','#803814','#c45a1a','#ec8424','#ffb44a'],wreath:['#0b1813','#11251a','#1a3a24','#28562f','#3c723c','#609652'],
-blue:['#0c1026','#141a3a','#1e2858','#2c3c80','#3e529c','#6a7cb8'],wood:['#0d1612','#12201a','#1a3024','#264632','#365c40','#527252']};
-const LEAF={spring:['#152418','#233e26','#3a6230','#5c8e3c','#86b84c','#c0dc78'],summer:['#0e1a14','#183020','#24492a','#3c6e34','#5e9442','#9cc25a'],
-autumn:['#2a1414','#4e2218','#823a1c','#c06424','#e8962e','#fcd060'],winter:RAMP.bark};
+const RAMP={brick:R6('1e1828 3a2230 62303a a44c3a cc663e f09c5c'),mortar:R6('2c2a38 4c4450 77686a a89888 d0b896 f4d8a8'),
+granite:R6('262a3a 464c5c 70747e a2a29e ccc6b6 f4e4c4'),trim:R6('2c2c3c 55546a 8e8c98 e0dcd4 f6efe0 fff6e2'),
+shutter:R6('0a0c11 11141a 191d24 232830 30363a 4c4840'),glass:R6('0c1120 141d32 1e2b46 2e405c 4a6080 7a90a8'),
+door:R6('0a0b10 121419 1b1e24 272b31 383b40 5a544c'),cobble:R6('1e1e28 36353e 5e5a5e 968e82 bcb09a e8d0a4'),
+gap:R6('0f1017 191920 26262c 3c3a3c 5a524a 80705a'),walk:R6('241b27 432731 703c40 a85650 cc7462 f0a67c'),
+snow:R6('2e3452 4c5680 7c88ac b8c2da eef0f2 ffd8a8'),iron:R6('07080b 0e1015 16191f 20242a 30343a 55504a'),
+bark:R6('100e12 1a171b 282224 3a3230 504440 6e5c4e'),slate:R6('14161f 1d2029 282c36 3a3f4a 50555e 726e6a'),
+asphalt:R6('15161c 1f2027 2c2d34 44454c 5c5c60 7e776a'),plant:R6('0e1c16 173020 22482a 336a32 4e9040 86c05a'),
+red:R6('2c0e16 4c121c 7e1a22 b82a2a e2443a ff7a5a'),pink:R6('2e1a2c 52283f 844068 c46a98 e494b8 ffc4d6'),
+yellow:R6('2a2412 4a3e14 7c6618 c4a020 ecc830 fff07a'),purple:R6('1c1428 2e1c44 4a2a6c 6e40a0 9464c4 c494e0'),
+pumpkin:R6('2a1410 4c2212 803814 c45a1a ec8424 ffb44a'),wreath:R6('0b1813 11251a 1a3a24 28562f 3c723c 609652'),
+blue:R6('0c1026 141a3a 1e2858 2c3c80 3e529c 6a7cb8'),wood:R6('0d1612 12201a 1a3024 264632 365c40 527252')};
+const LEAF={spring:R6('152418 233e26 3a6230 5c8e3c 86b84c c0dc78'),summer:R6('0e1a14 183020 24492a 3c6e34 5e9442 9cc25a'),
+autumn:R6('2a1414 4e2218 823a1c c06424 e8962e fcd060'),winter:RAMP.bark};
 const R11=a=>{const p=a.map(rgb),o=[];for(let i=0;i<11;i++)o.push(i&1?mix(p[i>>1],p[(i>>1)+1],.5):p[i>>1]);return o;};
 /* the look: sky (top to bottom; the winter row is snow cloud lit from below), ambient light, lamp strength, haze */
-const SKY={day:[['#8fb3d9','#a3c0df','#b6cde5','#c8d8ea','#d8e2ee'],['#bcc5d0','#c6ced8','#d0d6de','#d9dee4','#e2e6ea']],
-dusk:[['#7d8db4','#97a3c4','#b2b8d0','#cbc9d8','#e0d6d8'],['#5d6a8a','#76809c','#9097ac','#aaacbb','#c2bfc6']],
-night:[['#080b1a','#0b0f22','#0f1429','#141a31','#1a2038'],['#46505e','#525d6a','#606b76','#6f7a82','#7d888e']]};
+const SKY={day:[R6('8fb3d9 a3c0df b6cde5 c8d8ea d8e2ee'),R6('bcc5d0 c6ced8 d0d6de d9dee4 e2e6ea')],
+dusk:[R6('7d8db4 97a3c4 b2b8d0 cbc9d8 e0d6d8'),R6('5d6a8a 76809c 9097ac aaacbb c2bfc6')],
+night:[R6('080b1a 0b0f22 0f1429 141a31 1a2038'),R6('46505e 525d6a 606b76 6f7a82 7d888e')]};
 const AMB={day:.7,dusk:.44,night:.1},LK={day:.08,dusk:.5,night:1},HAZE={day:['#b8c4d0',.3],dusk:['#8a88a8',.4],night:['#101426',.5]};
 const WARM=['#ffd27a','#ffc25e','#f6dfa6','#ffb553'].map(rgb);
 
@@ -207,15 +204,21 @@ Proportions from the near lamp in the dusk photo: the head 31 px from finial to 
 dim in its upper part, the mantle low down. */
 function lamp(X,z,kind,k){k=k||1;const s=F/z,cx=sx(X,z),Y0=kind===2?2.2:2.66,b=Y0+.08*k,g1=Y0+.6*k,mY=Y0+.28*k,top=Y0+.9*k;
 const row=(Ya,Yb,w0,w1,f)=>span(sy(Yb,z),sy(Ya,z),r=>{const Y=E-(r+.5-VY)*z/F,t=(Y-Ya)/(Yb-Ya),w=(w0+(w1-w0)*t)*k*s/2;span(cx-w,cx+w,c=>f(c,r,Y,(c+.5-cx)/Math.max(w,.5)));});
-const iron=v=>(c,r,Y,u)=>put(c,r,K.iron,v+(u<-.3?.12:0),X,Y,z,3);
+/* ironwork faces 5: the light is inside the glass, so neither it nor the halo brightens the frame round it */
+const iron=v=>(c,r,Y,u)=>put(c,r,K.iron,v+(u<-.3?.12:0),X,Y,z,5);
 if(kind===1){row(0,.12,.3,.26,iron(0));row(.12,.9,.22,.15,iron(0));row(.9,2.58,.12,.1,iron(0));row(2.56,2.66,.17,.17,iron(.05));}
-else{const ay=Math.round(sy(top+.05,z)-.5);span(sx(XL,z),cx,c=>put(c,ay,K.iron,.05,X,top+.05,z,3));row(top,top+.05,.04,.04,iron(0));}
+else{const ay=Math.round(sy(top+.05,z)-.5);span(sx(XL,z),cx,c=>put(c,ay,K.iron,.05,X,top+.05,z,5));row(top,top+.05,.04,.04,iron(0));}
 row(Y0,b,.12,.26,iron(0));
 const gc=(day?['#d8cc9e','#fff0b8','#a8a490']:dusk?['#ffc868','#fff2c4','#c89a6a']:['#ffb850','#fff6dc','#d08a48']).map(rgb);
-row(b,g1,.3,.4,(c,r,Y,u)=>{const fr=Math.abs(u)>.86,fl=Math.abs(u)<.3&&Math.abs(Y-mY)<.1*k;
-if(fr)return put(c,r,K.iron,.1,X,Y,z,3);let col=mix(gc[0],gc[1],Math.max(0,.5-Math.abs(Y-mY)/k));if((Y-b)/(g1-b)>.72)col=mix(col,gc[2],.45);
-own(c,r,fl?gc[1]:col,z*.3);if(fl)flames.push([c,r]);});
-row(g1,g1+.04*k,.42,.42,iron(.1));row(g1+.04*k,Y0+.81*k,.44,.08,(c,r,Y,u)=>put(c,r,WI&&Y>g1+.08*k?K.snow:K.iron,WI?.1:u<0?.12:0,X,Y,z,3));
+/* the glass, pixel by pixel: a frame round it, a bar across its upper third, and once it is nine pixels across the corner post
+between the front pane and the narrow side pane seen from up the lane; a small mantle low in the front pane, the glow falling off round it */
+const r0=Math.ceil(sy(g1,z)-.5),r1=Math.floor(sy(b,z)-.5),rows=r1-r0+1,rb=rows>=8?Math.round(r0+rows*.3):-9;
+for(let r=r0;r<=r1;r++){const t=(sy(b,z)-r-.5)/(sy(b,z)-sy(g1,z)),w=(.3+.1*t)*k*s/2,c0=Math.round(cx-w),c1=Math.max(c0,Math.round(cx+w)-1),n=c1-c0+1,
+pc=n>=9?c0+Math.max(2,Math.round(n*.22)):c0,fc=n>=9?(pc+1+c1)/2:(c0+c1)/2,mr=r0+(rows-1)*.62,Y=E-(r+.5-VY)*z/F;
+for(let c=c0;c<=c1;c++){if(n>=5&&(c===c0||c===c1||c===pc||r===rb||(rows>=6&&(r===r0||r===r1)))){put(c,r,K.iron,.08,X,Y,z,5);continue;}
+const d=Math.hypot(c-fc,(r-mr)*.8),core=d<=(n>=9?1.2:.6);let col=mix(gc[0],gc[1],Math.max(0,1-d/(n*.42)));
+if(r<rb)col=mix(col,gc[2],.5);if(c<pc)col=mix(col,gc[2],.4);own(c,r,core?gc[1]:col,z*.3);if(core)flames.push([c,r]);}}
+row(g1,g1+.04*k,.42,.42,iron(.1));row(g1+.04*k,Y0+.81*k,.44,.08,(c,r,Y,u)=>WI&&Y>g1+.08*k?put(c,r,K.snow,.15,X,Y,z,3):put(c,r,K.iron,u<0?.14:0,X,Y,z,5));
 row(Y0+.81*k,top,.05,.05,iron(0));
 if(WI&&kind===1)wreath(X-.09,2.1,z-.05,Math.PI/3,.22,3);
 /* the halo, in screen space: brightest beside the glass */
@@ -279,9 +282,9 @@ if(!M[i]){col=C[i];if(PZ[i])col=mix(col,hc,ha*cl((PZ[i]-12)/50,0,1)*.5);if(GW[i]
 else{const X=PX[i],Y=PY[i],z=PZ[i],n=NR[i];let v=amb*(.78+.22*Math.min(1,Y/9))+V[i]+(alb[M[i]]||0);
 /* the sun, low over the right-hand roofs, reaches only the upper left-hand fronts; over the garden it is the tree that casts the shade */
 if(tan&&n!==2&&Y+(XR-X)*tan>(z>5.2&&z<14?11:topOf(RH,z))+.2)v+=sk;
-for(const[lx,ly,lz,k,r2]of Ls){const dx=lx-X,dy=ly-Y,dz=lz-z,d2=dx*dx+dy*dy+dz*dz,d=Math.sqrt(d2);
+if(n!==5)for(const[lx,ly,lz,k,r2]of Ls){const dx=lx-X,dy=ly-Y,dz=lz-z,d2=dx*dx+dy*dy+dz*dz,d=Math.sqrt(d2);
 const lam=n===0?dy/d:n===1?dx/d:n===2?-dx/d:n===3?-dz/d:.5,w=(lam+.4)/1.4;if(w>0)v+=k*w*Math.exp(-d2/r2);}
-v+=GW[i]*.3;let t=v*10,j=Math.floor(t);if(t-j>dith(c,r))j++;if(day&&M[i]===K.snow&&j>8)j=8;col=RR[M[i]][cl(j,0,10)];
+if(n!==5)v+=GW[i]*.3;let t=v*10,j=Math.floor(t);if(t-j>dith(c,r))j++;if(day&&M[i]===K.snow&&j>8)j=8;col=RR[M[i]][cl(j,0,10)];
 col=mix(col,hc,ha*cl((z-10)/45,0,1));}
 base[i*4]=col[0];base[i*4+1]=col[1];base[i*4+2]=col[2];base[i*4+3]=255;}}
 
