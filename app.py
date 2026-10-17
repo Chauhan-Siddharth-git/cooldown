@@ -983,7 +983,7 @@ BUDGET_PAGE = """
     {% if scene_js %}
     {#- Inlined, not linked: the gate is on the gated site's origin, so a script src is a
         request that site's policy can refuse, and this page has to render offline from
-        the box. The file is ours (scene/*.js, a different one each day), read by scene_js(). -#}
+        the box. The file is ours (scene/*.js, taking turns), read by scene_js(). -#}
     <script>{{ scene_js }}</script>
     {% raw %}<script>
     (function(){
@@ -1765,6 +1765,7 @@ def start_cooldown(p, site, now=None):
     day = time.strftime("%Y-%m-%d", local_acct(now))
     r.rpush(f"cooldown_events:{day}", f"{now:.0f} {site}")
     r.expire(f"cooldown_events:{day}", HISTORY_TTL)
+    _try(lockout_begins)
 
 # The reflection prompt asks *why* you're reaching for the feed. That answer — and
 # whether naming it actually stopped you — is the most interesting thing this system can
@@ -2201,8 +2202,8 @@ def _safe_next(site, nxt):
     return nxt if any(host == d or host.endswith("." + d) for d in domains) else ""
 
 # The lockout window: a pixel-art picture drawn on a canvas by one script, inlined into the
-# gate when you are locked out. Two take turns, a day each: a Red Line car crossing the
-# Longfellow Bridge, and a Beacon Hill lane. Only today's is inlined, so the page carries one.
+# gate when you are locked out. Two take turns, switching with every lockout: a Red Line car
+# crossing the Longfellow Bridge, and a Beacon Hill lane. Only the current one is inlined.
 # Self-contained on purpose -- no requests, no fonts, no images -- because the gate loads
 # on the gated site's origin, where anything fetched is one policy away from not arriving.
 # The same property makes them safe to run there: each is same-origin with the gated site,
@@ -2213,11 +2214,19 @@ SCENE_FILES = tuple(os.path.join(os.path.dirname(os.path.abspath(__file__)), "sc
                     for f in ("cooldown-scene.js", "beacon-hill.js"))
 
 
-def scene_file(now=None):
-    """Today's picture. The day is a date key, so it comes from local_acct(): the pictures
-    turn over with the books, not with bedtime, and alternate across a year's end too."""
-    t = local_acct(now)
-    return SCENE_FILES[date(t.tm_year, t.tm_mon, t.tm_mday).toordinal() % len(SCENE_FILES)]
+# Which picture is up: a count of lockouts, kept where each one begins -- start_cooldown()
+# and the heartbeat's blocked branches -- so the gate, a GET, only ever reads it.
+SCENE_TURN = "scene:turn"
+
+
+def lockout_begins():
+    """A lockout has begun: the next gate shows the other picture. Callers wrap this in
+    _try(), because a picture must never change what enforcement answers."""
+    r.incr(SCENE_TURN)
+
+
+def scene_file():
+    return SCENE_FILES[int(r.get(SCENE_TURN) or 0) % len(SCENE_FILES)]
 
 
 def scene_js():
@@ -2446,6 +2455,7 @@ def heartbeat():
                 if r.incrbyfloat(f"night_spent:{p}", gap) >= NIGHT_BUDGET_SECONDS:
                     r.delete(f"active_token:{site}")
                     r.delete(f"session:{token}")
+                    _try(lockout_begins)
                     return jsonify({"status": "blocked", "remaining": 0}), 403
             else:
                 spent = r.incrbyfloat(f"spent:{p}", gap)
@@ -2463,11 +2473,13 @@ def heartbeat():
                         r.delete(f"session:{token}")
                         log_soft_pause(site, now)
                         maybe_cluster_cooldown(site, now)   # short brake if this site is looping
+                        _try(lockout_begins)
                         return jsonify({"status": "blocked", "remaining": 0}), 403
                 # Wind-down: shrinking cap on the day bucket, no cooldown.
                 elif spent >= effective_cap(site):
                     r.delete(f"active_token:{site}")
                     r.delete(f"session:{token}")
+                    _try(lockout_begins)
                     return jsonify({"status": "blocked", "remaining": 0}), 403
 
     r.set(f"last_heartbeat:{p}", now)
