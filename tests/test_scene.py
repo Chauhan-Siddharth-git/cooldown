@@ -1,13 +1,14 @@
-"""The lockout window: a pixel-art Red Line car on the gate, once you are locked out.
+"""The lockout window: a pixel-art picture on the gate, once you are locked out.
 
-The picture is one script (scene/cooldown-scene.js) inlined into the gate. That script runs
+Two pictures take turns, a day each: a Red Line car (scene/cooldown-scene.js) and a Beacon
+Hill lane (scene/beacon-hill.js). Today's is one script inlined into the gate. That script runs
 on the GATED SITE's origin -- same-origin with Reddit or YouTube -- so the properties worth
 pinning are not about how it looks but about what it can reach: no network, no storage, no
 cookies, no way out of its <script> element, and a size that does not bloat every locked-out
 page. The art itself is checked by eye (pixel-art/ in the pomodoro project); what is checked
 here is that the gate shows it only when it should, survives it going missing, and that in a
 real browser it draws and asks for nothing. The rules about the script hold for every file in
-scene/ (beacon-hill.js, a Beacon Hill lane, is the second), whichever one the gate inlines.
+scene/, whichever day it is.
 """
 import functools
 import glob
@@ -38,6 +39,11 @@ def _js(path=SCENE):
         return fh.read()
 
 
+def _pick(monkeypatch, path):
+    """Make `path` today's picture."""
+    monkeypatch.setattr(budget, "scene_file", lambda now=None: str(path))
+
+
 def _locked_out(rdb, client, monkeypatch):
     monkeypatch.setattr(budget, "monitor_origin", lambda *a: "http://100.64.0.1:5000")
     rdb.set("cooldown:main", time.time() - 100)
@@ -59,7 +65,7 @@ def test_the_gate_has_no_window_while_you_can_enter(rdb, client, day, monkeypatc
 
 
 def test_a_missing_picture_never_costs_the_gate(rdb, client, day, monkeypatch, tmp_path):
-    monkeypatch.setattr(budget, "SCENE_FILE", str(tmp_path / "nope.js"))
+    _pick(monkeypatch, tmp_path / "nope.js")
     html = _locked_out(rdb, client, monkeypatch)
     assert 'id="cd-scene' not in html and "CooldownScene" not in html
     assert '<div class="card ' in html and "<h1" in html, "the rest of the locked-out gate still renders"
@@ -68,7 +74,7 @@ def test_a_missing_picture_never_costs_the_gate(rdb, client, day, monkeypatch, t
 def test_a_file_that_could_break_out_of_its_script_is_refused(rdb, client, day, monkeypatch, tmp_path):
     bad = tmp_path / "bad.js"
     bad.write_text("var x=1;</SCRIPT><script>alert(1)</script>")
-    monkeypatch.setattr(budget, "SCENE_FILE", str(bad))
+    _pick(monkeypatch, bad)
     assert budget.scene_js() == ""
     html = _locked_out(rdb, client, monkeypatch)
     assert "alert(1)" not in html
@@ -79,6 +85,26 @@ def test_the_scene_list_is_the_pictures_that_exist():
     one of them pass by running on nothing."""
     assert SCENE in SCENES
     assert os.path.join(ROOT, "scene", "beacon-hill.js") in SCENES
+    assert sorted(budget.SCENE_FILES) == SCENES, "the gate takes turns between exactly these"
+
+
+def test_the_pictures_take_turns_a_day_each(rdb):
+    """A day each, in the accounting zone, straight across a year's end: a count of days
+    since some epoch, not the day of the year, or 31 December and 1 January match."""
+    import calendar
+    for days in (((2026, 10, 17), (2026, 10, 18), (2026, 10, 19)), ((2026, 12, 31), (2027, 1, 1), (2027, 1, 2))):
+        picked = [budget.scene_file(calendar.timegm((y, m, d, 17, 0, 0))) for y, m, d in days]
+        assert picked[0] != picked[1] != picked[2] and picked[0] == picked[2], picked
+        assert set(picked) == set(budget.SCENE_FILES)
+
+
+def test_the_gate_inlines_today_s_picture_and_only_that(rdb, client, day, monkeypatch):
+    names = {"cooldown-scene.js": "Red Line", "beacon-hill.js": "Beacon Hill"}
+    for path in budget.SCENE_FILES:
+        _pick(monkeypatch, path)
+        html = _locked_out(rdb, client, monkeypatch)
+        mine = names[os.path.basename(path)]
+        assert mine in html and [n for n in names.values() if n != mine][0] not in html, path
 
 
 @each_scene
@@ -133,11 +159,20 @@ def test_nothing_in_it_can_be_read_as_template_syntax(path):
     assert not re.search(r"\{\{|\{%|\{#", _js(path))
 
 
-def test_the_deploy_ships_the_picture():
+def test_every_picture_ships_in_both_deployment_shapes():
+    """Each picture reaches the Pi through deploy.sh (copied, and stamped into the manifest the
+    box audits) and each Docker image through a COPY. One shipped only one way would leave the
+    other shape's gate blank every other day with nothing to say why: a missing picture is
+    built to cost the picture and never the gate."""
     sh = open(os.path.join(ROOT, "deploy.sh")).read()
-    assert "scene/cooldown-scene.js; do" in sh
-    assert "$DIR/scene/cooldown-scene.js=scene/cooldown-scene.js" in sh
+    loop = sh.split("for f in app.py", 1)[1].split("; do", 1)[0].split()
     assert "$DIR/scene" in sh.split("mkdir -p", 1)[1].split("\n", 1)[0]
+    docker = {f: open(os.path.join(ROOT, f)).read().splitlines() for f in ("Dockerfile", "Dockerfile.tailscale")}
+    for path in budget.SCENE_FILES:
+        rel = "scene/" + os.path.basename(path)
+        assert rel in loop and f"$DIR/{rel}={rel}" in sh, rel
+        for name, lines in docker.items():
+            assert any(l.startswith("COPY ") and rel in l.split() for l in lines), (name, rel)
 
 
 def test_the_scene_is_not_a_new_route():
@@ -236,16 +271,14 @@ NO_FRAMES = "<script>window.requestAnimationFrame=function(){return 0};</script>
 
 
 @pytest.mark.skipif(CHROME is None, reason="needs headless Chrome")
-@pytest.mark.parametrize("path", [pytest.param(p, marks=pytest.mark.xfail(
-    strict=True, reason="paints only from its animation loop; drop this mark when it paints at mount"))
-    if p == SCENE else p for p in SCENES], ids=os.path.basename)
+@each_scene
 def test_it_paints_before_the_first_animation_frame(rdb, client, day, monkeypatch, path):
     """The loop draws on animation frames, and only every 66 ms. A hidden tab delivers none,
     and headless Chrome under a virtual-time budget gives two or three, all before 66 ms, in
     about one run in four -- which is what made the draws-and-asks-for-nothing check flaky for
-    the Red Line window. A picture painted at mount does not depend on either."""
+    the Red Line window until it, too, painted at mount. A picture that does depends on neither."""
     import json
-    monkeypatch.setattr(budget, "SCENE_FILE", path)
+    _pick(monkeypatch, path)
     html = _locked_out(rdb, client, monkeypatch).replace("<head>", "<head>" + NO_FRAMES, 1).replace("</body>", PROBE + "</body>")
     dom, _ = _serve_and_dump(html)
     probe = json.loads(re.search(r'<pre id="probe">(.*?)</pre>', dom, re.S).group(1))
@@ -256,7 +289,7 @@ def test_it_paints_before_the_first_animation_frame(rdb, client, day, monkeypatc
 @each_scene
 def test_in_a_real_browser_it_draws_and_asks_for_nothing(rdb, client, day, monkeypatch, tmp_path, path):
     import json
-    monkeypatch.setattr(budget, "SCENE_FILE", path)
+    _pick(monkeypatch, path)
     html = _locked_out(rdb, client, monkeypatch).replace("</body>", PROBE + "</body>")
     dom, seen = _serve_and_dump(html)
     probe = json.loads(re.search(r'<pre id="probe">(.*?)</pre>', dom, re.S).group(1))
@@ -268,7 +301,7 @@ def test_in_a_real_browser_it_draws_and_asks_for_nothing(rdb, client, day, monke
     assert zw == zh and zw == int(zw) and zw >= 1, probe
     # The gate already makes its own calls (the traffic background polls /budget/feed).
     # The scene must add none: the same gate with no picture asks for exactly the same.
-    monkeypatch.setattr(budget, "SCENE_FILE", str(tmp_path / "none.js"))
+    _pick(monkeypatch, tmp_path / "none.js")
     _, baseline = _serve_and_dump(_locked_out(rdb, client, monkeypatch))
     assert _paths(seen) == _paths(baseline), (_paths(seen), _paths(baseline))
 

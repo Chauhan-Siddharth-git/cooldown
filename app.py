@@ -983,7 +983,7 @@ BUDGET_PAGE = """
     {% if scene_js %}
     {#- Inlined, not linked: the gate is on the gated site's origin, so a script src is a
         request that site's policy can refuse, and this page has to render offline from
-        the box. The file is ours (scene/cooldown-scene.js), read by scene_js(). -#}
+        the box. The file is ours (scene/*.js, a different one each day), read by scene_js(). -#}
     <script>{{ scene_js }}</script>
     {% raw %}<script>
     (function(){
@@ -2200,21 +2200,29 @@ def _safe_next(site, nxt):
         domains = [".".join(home_host.split(".")[-2:])] if home_host else []   # www.reddit.com -> reddit.com
     return nxt if any(host == d or host.endswith("." + d) for d in domains) else ""
 
-# The lockout window: a pixel-art view from a Red Line car crossing the Longfellow Bridge,
-# drawn on a canvas by this one script, inlined into the gate when you are locked out.
+# The lockout window: a pixel-art picture drawn on a canvas by one script, inlined into the
+# gate when you are locked out. Two take turns, a day each: a Red Line car crossing the
+# Longfellow Bridge, and a Beacon Hill lane. Only today's is inlined, so the page carries one.
 # Self-contained on purpose -- no requests, no fonts, no images -- because the gate loads
 # on the gated site's origin, where anything fetched is one policy away from not arriving.
-# The same property makes it safe to run there: it is same-origin with the gated site, so
-# tests/test_scene.py pins that it never touches the network, storage or cookies.
-# Read per request, so deploying a new copy needs no restart; "" when the file
+# The same property makes them safe to run there: each is same-origin with the gated site,
+# so tests/test_scene.py pins that none touches the network, storage or cookies.
+# Read per request, so deploying a new copy needs no restart; "" when today's file
 # is missing or looks wrong, so a missing picture costs the picture and never the gate.
-SCENE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scene",
-                          "cooldown-scene.js")
+SCENE_FILES = tuple(os.path.join(os.path.dirname(os.path.abspath(__file__)), "scene", f)
+                    for f in ("cooldown-scene.js", "beacon-hill.js"))
+
+
+def scene_file(now=None):
+    """Today's picture. The day is a date key, so it comes from local_acct(): the pictures
+    turn over with the books, not with bedtime, and alternate across a year's end too."""
+    t = local_acct(now)
+    return SCENE_FILES[date(t.tm_year, t.tm_mon, t.tm_mday).toordinal() % len(SCENE_FILES)]
 
 
 def scene_js():
     try:
-        with open(SCENE_FILE, encoding="utf-8") as fh:
+        with open(scene_file(), encoding="utf-8") as fh:
             js = fh.read()
     except OSError:
         return ""

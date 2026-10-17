@@ -289,7 +289,8 @@ let ro=null;
 G.addEventListener('resize',fit);document.addEventListener('visibilitychange',onVis);
 if(mq&&mq.addEventListener)mq.addEventListener('change',onMq);
 if(G.ResizeObserver&&(opts.container||canvas.parentElement)){ro=new G.ResizeObserver(fit);ro.observe(opts.container||canvas.parentElement);}
-applyLook({season:opts.season||'spring',time:opts.time||'dusk'});fit();setStill();
+/* paint now: the loop draws on animation frames 66 ms apart, which a hidden tab or a headless browser may not deliver for a while */
+applyLook({season:opts.season||'spring',time:opts.time||'dusk'});fit();frame(0);setStill();
 return{setLook(l){applyLook(l);if(still){railOff=wt=tick=0;frame(0);}else if(!raf)go();},look:()=>({season,time}),
 stop(){dead=true;halt();G.removeEventListener('resize',fit);document.removeEventListener('visibilitychange',onVis);if(mq&&mq.removeEventListener)mq.removeEventListener('change',onMq);if(ro)ro.disconnect();}};}
 
