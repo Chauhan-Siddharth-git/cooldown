@@ -6,9 +6,11 @@ pinning are not about how it looks but about what it can reach: no network, no s
 cookies, no way out of its <script> element, and a size that does not bloat every locked-out
 page. The art itself is checked by eye (pixel-art/ in the pomodoro project); what is checked
 here is that the gate shows it only when it should, survives it going missing, and that in a
-real browser it draws and asks for nothing.
+real browser it draws and asks for nothing. The rules about the script hold for every file in
+scene/ (beacon-hill.js, a Beacon Hill lane, is the second), whichever one the gate inlines.
 """
 import functools
+import glob
 import http.server
 import os
 import re
@@ -24,11 +26,15 @@ import app as budget
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCENE = os.path.join(ROOT, "scene", "cooldown-scene.js")
+# Every picture the gate could inline, not only the one it inlines today: each runs on the
+# gated site's origin the moment it is wired in, so each is held to the same rules now.
+SCENES = sorted(glob.glob(os.path.join(ROOT, "scene", "*.js")))
 CHROME = shutil.which("google-chrome") or shutil.which("chromium") or shutil.which("chromium-browser")
+each_scene = pytest.mark.parametrize("path", SCENES, ids=os.path.basename)
 
 
-def _js():
-    with open(SCENE, encoding="utf-8") as fh:
+def _js(path=SCENE):
+    with open(path, encoding="utf-8") as fh:
         return fh.read()
 
 
@@ -68,10 +74,27 @@ def test_a_file_that_could_break_out_of_its_script_is_refused(rdb, client, day, 
     assert "alert(1)" not in html
 
 
-def test_the_script_cannot_reach_the_network_or_storage():
+def test_the_scene_list_is_the_pictures_that_exist():
+    """The rules below run once per file in scene/. An empty or stale list would let every
+    one of them pass by running on nothing."""
+    assert SCENE in SCENES
+    assert os.path.join(ROOT, "scene", "beacon-hill.js") in SCENES
+
+
+@each_scene
+def test_every_scene_is_a_drop_in_for_the_window(path):
+    """The gate mounts window.CooldownScene on a 240x168 canvas inside the card; another
+    picture is only a choice of file if it keeps that interface and that size."""
+    js = _js(path)
+    assert "G.CooldownScene={mount,lookFor,SEASONS,TIMES,size:[W,H]}" in js
+    assert re.search(r"\bconst W=240,H=168\b", js)
+
+
+@each_scene
+def test_the_script_cannot_reach_the_network_or_storage(path):
     """It is same-origin with the gated site. Any of these in it is a new capability on
     that origin, and this is the test that says so before it ships."""
-    js = _js()
+    js = _js(path)
     banned = [r"\bfetch\b", r"XMLHttpRequest", r"WebSocket", r"EventSource", r"sendBeacon",
               r"importScripts", r"\bimport\s*\(", r"\beval\b", r"new\s+Function", r"\bFunction\s*\(",
               r"document\.cookie", r"localStorage", r"sessionStorage", r"indexedDB",
@@ -81,29 +104,33 @@ def test_the_script_cannot_reach_the_network_or_storage():
     assert not found, found
 
 
-def test_it_reads_the_clock_in_one_place_only():
+@each_scene
+def test_it_reads_the_clock_in_one_place_only(path):
     """The page picks the look. The one clock read is lookFor()'s default argument; a
     second one means something else is deciding what the picture shows."""
-    js = re.sub(r"/\*.*?\*/", "", _js(), flags=re.S)         # the header comment shows the call
+    js = re.sub(r"/\*.*?\*/", "", _js(path), flags=re.S)     # the header comment shows the call
     assert "Date.now" not in js and "performance.now" not in js
     assert js.count("new Date") == 1
 
 
-def test_it_draws_only_with_whole_pixels_and_no_wash():
-    js = _js()
+@each_scene
+def test_it_draws_only_with_whole_pixels_and_no_wash(path):
+    js = _js(path)
     for bad in (".arc(", ".stroke(", ".fillText(", "globalAlpha", ".ellipse("):
         assert bad not in js, bad
     assert "imageSmoothingEnabled=false" in js
 
 
-def test_it_stays_small_enough_to_inline_in_every_locked_out_gate():
-    assert len(_js().encode()) < 32 * 1024
+@each_scene
+def test_it_stays_small_enough_to_inline_in_every_locked_out_gate(path):
+    assert len(_js(path).encode()) < 32 * 1024
 
 
-def test_nothing_in_it_can_be_read_as_template_syntax():
+@each_scene
+def test_nothing_in_it_can_be_read_as_template_syntax(path):
     """render_gate hands it over as a value, so Jinja never parses it; this guards the day
     someone pastes it into the template instead."""
-    assert not re.search(r"\{\{|\{%|\{#", _js())
+    assert not re.search(r"\{\{|\{%|\{#", _js(path))
 
 
 def test_the_deploy_ships_the_picture():
@@ -203,13 +230,37 @@ def _paths(seen):
     return {p.split("?")[0] for p in seen}
 
 
+# What each picture says it is, so the check below knows it drew the file it was handed.
+NAMES = {"cooldown-scene.js": "Red Line", "beacon-hill.js": "Beacon Hill"}
+NO_FRAMES = "<script>window.requestAnimationFrame=function(){return 0};</script>"
+
+
 @pytest.mark.skipif(CHROME is None, reason="needs headless Chrome")
-def test_in_a_real_browser_it_draws_and_asks_for_nothing(rdb, client, day, monkeypatch, tmp_path):
+@pytest.mark.parametrize("path", [pytest.param(p, marks=pytest.mark.xfail(
+    strict=True, reason="paints only from its animation loop; drop this mark when it paints at mount"))
+    if p == SCENE else p for p in SCENES], ids=os.path.basename)
+def test_it_paints_before_the_first_animation_frame(rdb, client, day, monkeypatch, path):
+    """The loop draws on animation frames, and only every 66 ms. A hidden tab delivers none,
+    and headless Chrome under a virtual-time budget gives two or three, all before 66 ms, in
+    about one run in four -- which is what made the draws-and-asks-for-nothing check flaky for
+    the Red Line window. A picture painted at mount does not depend on either."""
     import json
+    monkeypatch.setattr(budget, "SCENE_FILE", path)
+    html = _locked_out(rdb, client, monkeypatch).replace("<head>", "<head>" + NO_FRAMES, 1).replace("</body>", PROBE + "</body>")
+    dom, _ = _serve_and_dump(html)
+    probe = json.loads(re.search(r'<pre id="probe">(.*?)</pre>', dom, re.S).group(1))
+    assert probe["colours"] > 60, probe
+
+
+@pytest.mark.skipif(CHROME is None, reason="needs headless Chrome")
+@each_scene
+def test_in_a_real_browser_it_draws_and_asks_for_nothing(rdb, client, day, monkeypatch, tmp_path, path):
+    import json
+    monkeypatch.setattr(budget, "SCENE_FILE", path)
     html = _locked_out(rdb, client, monkeypatch).replace("</body>", PROBE + "</body>")
     dom, seen = _serve_and_dump(html)
     probe = json.loads(re.search(r'<pre id="probe">(.*?)</pre>', dom, re.S).group(1))
-    assert probe["role"] == "img" and "Red Line" in probe["aria"], probe
+    assert probe["role"] == "img" and NAMES[os.path.basename(path)] in probe["aria"], probe
     assert (probe["w"], probe["h"]) == (240, 168)
     assert probe["colours"] > 60, "a blank canvas has one colour; the scene has well over sixty"
     # A whole multiple of the native size in DEVICE pixels, on both axes (dpr is 3 here).
