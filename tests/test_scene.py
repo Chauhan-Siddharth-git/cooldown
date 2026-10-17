@@ -1,14 +1,14 @@
 """The lockout window: a pixel-art picture on the gate, once you are locked out.
 
-Two pictures take turns, a day each: a Red Line car (scene/cooldown-scene.js) and a Beacon
-Hill lane (scene/beacon-hill.js). Today's is one script inlined into the gate. That script runs
+Two pictures take turns, switching with every lockout: a Red Line car (scene/cooldown-scene.js)
+and a Beacon Hill lane (scene/beacon-hill.js). The current one is a script inlined into the gate. It runs
 on the GATED SITE's origin -- same-origin with Reddit or YouTube -- so the properties worth
 pinning are not about how it looks but about what it can reach: no network, no storage, no
 cookies, no way out of its <script> element, and a size that does not bloat every locked-out
 page. The art itself is checked by eye (pixel-art/ in the pomodoro project); what is checked
 here is that the gate shows it only when it should, survives it going missing, and that in a
 real browser it draws and asks for nothing. The rules about the script hold for every file in
-scene/, whichever day it is.
+scene/, whichever one is up.
 """
 import functools
 import glob
@@ -40,7 +40,7 @@ def _js(path=SCENE):
 
 
 def _pick(monkeypatch, path):
-    """Make `path` today's picture."""
+    """Make `path` the current picture."""
     monkeypatch.setattr(budget, "scene_file", lambda now=None: str(path))
 
 
@@ -88,17 +88,62 @@ def test_the_scene_list_is_the_pictures_that_exist():
     assert sorted(budget.SCENE_FILES) == SCENES, "the gate takes turns between exactly these"
 
 
-def test_the_pictures_take_turns_a_day_each(rdb):
-    """A day each, in the accounting zone, straight across a year's end: a count of days
-    since some epoch, not the day of the year, or 31 December and 1 January match."""
-    import calendar
-    for days in (((2026, 10, 17), (2026, 10, 18), (2026, 10, 19)), ((2026, 12, 31), (2027, 1, 1), (2027, 1, 2))):
-        picked = [budget.scene_file(calendar.timegm((y, m, d, 17, 0, 0))) for y, m, d in days]
-        assert picked[0] != picked[1] != picked[2] and picked[0] == picked[2], picked
-        assert set(picked) == set(budget.SCENE_FILES)
+POOL = budget.pool_max_budget("main")
+SLICE = budget.SITES["reddit"]["budget_seconds"]
+# Each way enforcement ends a session, set to end it on the next heartbeat: [phase, site, keys].
+LOCKOUTS = {
+    "slice spent": ("day", "reddit", {"spent:main": SLICE - 5}),
+    "bucket drained": ("day", "youtube", {"spent:main": POOL - 10}),
+    "night allowance spent": ("night", "reddit", {"night_spent:main": budget.NIGHT_BUDGET_SECONDS - 10}),
+    "wind-down cap reached": ("winddown", "reddit", None),       # the cap is read under the fixture
+}
 
 
-def test_the_gate_inlines_today_s_picture_and_only_that(rdb, client, day, monkeypatch):
+@pytest.mark.parametrize("kind", LOCKOUTS)
+def test_every_lockout_turns_the_picture(request, client, rdb, session, kind):
+    phase, site, keys = LOCKOUTS[kind]
+    request.getfixturevalue(phase)
+    for k, v in (keys or {"spent:main": budget.effective_cap(site) - 5}).items():
+        rdb.set(k, v)
+    before = budget.scene_file()
+    session(site, last_gap=15)
+    assert client.post(f"/heartbeat?site={site}").status_code == 403, "the setup has to lock you out"
+    assert budget.scene_file() != before
+
+
+def test_a_lockout_turns_it_once_however_often_you_look(client, rdb, day, monkeypatch):
+    """The gate starts a cooldown itself when it finds the bucket drained; after that it only
+    reads. A GET that turned the picture would be state changed by anything that can fetch it,
+    the gated site's own scripts included."""
+    monkeypatch.setattr(budget, "monitor_origin", lambda *a: "http://100.64.0.1:5000")
+    rdb.set("spent:main", POOL)
+    turns = []
+    for _ in range(3):
+        client.get("/budget?site=reddit")
+        turns.append(rdb.get(budget.SCENE_TURN))
+    assert rdb.get("cooldown:main") is not None and turns == ["1", "1", "1"], turns
+    budget.start_cooldown("main", "reddit")              # already running: not a new lockout
+    assert rdb.get(budget.SCENE_TURN) == "1"
+
+
+@pytest.mark.parametrize("kind", LOCKOUTS)
+def test_a_failing_turn_never_changes_what_enforcement_answers(request, client, rdb, session, monkeypatch, kind):
+    """The picture is decoration on the enforcement path. If counting the lockout fails, the
+    session still ends and the answer is still 403 -- and the failure is recorded, not lost."""
+    phase, site, keys = LOCKOUTS[kind]
+    request.getfixturevalue(phase)
+    noted = []
+    monkeypatch.setattr(budget, "_note_error", noted.append)
+    monkeypatch.setattr(budget, "lockout_begins", lambda: 1 / 0)
+    for k, v in (keys or {"spent:main": budget.effective_cap(site) - 5}).items():
+        rdb.set(k, v)
+    session(site, last_gap=15)
+    assert client.post(f"/heartbeat?site={site}").status_code == 403
+    assert rdb.get(f"active_token:{site}") is None
+    assert noted and isinstance(noted[0], ZeroDivisionError)
+
+
+def test_the_gate_inlines_the_current_picture_and_only_that(rdb, client, day, monkeypatch):
     names = {"cooldown-scene.js": "Red Line", "beacon-hill.js": "Beacon Hill"}
     for path in budget.SCENE_FILES:
         _pick(monkeypatch, path)

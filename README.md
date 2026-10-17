@@ -281,10 +281,11 @@ Things to know:
 ### Locked out? A window to look out of
 
 When the gate won't let you in — cooldown, night, or a spent budget — the card ends with
-a small pixel-art window, a different one each day: a Red Line car crossing the Longfellow
-Bridge, or a Beacon Hill lane of brick rowhouses and gas lamps. Either way the season and
-the time of day come from the browser's own clock. Each is one script inlined into the
-page, so it makes no requests and stores nothing. Nothing to play, nothing to score.
+a small pixel-art window, switching each time you are locked out: a Red Line car crossing
+the Longfellow Bridge, or a Beacon Hill lane of brick rowhouses and gas lamps. Either way
+the season and the time of day come from the browser's own clock. Each is one script
+inlined into the page, so it makes no requests and stores nothing. Nothing to play,
+nothing to score.
 
 ## Tests
 
