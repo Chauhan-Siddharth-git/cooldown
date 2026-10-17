@@ -808,6 +808,28 @@ def test_re_entering_during_a_live_session_does_not_reset_the_charge_baseline(rd
         "re-entering during a live session moved the charge baseline forward, "
         "which zeroes the next charge")
 
+def test_the_scripts_the_docs_run_by_path_are_executable_in_git():
+    """CLAUDE.md and the README say ./deploy.sh, ./start.sh, ./rotate-ca.sh; a clone can only
+    run those if git records them executable. deploy.sh never was, so `./deploy.sh code`
+    answered "Permission denied" -- and the obvious local chmod dirties the tree, which
+    deploy.sh then stamps "<rev>-dirty" and the audit flags on the box.
+
+    Read from git's index, not the filesystem: the bits on disk are whatever this clone did.
+    """
+    import re
+    import subprocess
+    docs = "".join(open(os.path.join(ROOT, f), encoding="utf-8").read() for f in ("CLAUDE.md", "README.md"))
+    named = sorted(set(re.findall(r"(?<![\w/.])\./([\w./-]+\.sh)\b", docs)))
+    assert "deploy.sh" in named, f"parsed {named} from the docs -- this test checks nothing"
+    out = subprocess.run(["git", "ls-files", "-s", "--", *named], cwd=ROOT, capture_output=True, text=True)
+    if out.returncode != 0:
+        pytest.skip("not a git checkout")
+    modes = {line.split("\t", 1)[1]: line.split()[0] for line in out.stdout.splitlines()}
+    assert sorted(modes) == named, f"the docs run scripts git does not track: {sorted(set(named) - set(modes))}"
+    not_x = sorted(f for f, m in modes.items() if m != "100755")
+    assert not not_x, f"{not_x} are run as ./script in the docs but tracked without the executable bit"
+
+
 def test_every_stamped_file_is_a_file_deploy_actually_pushes():
     """The deploy manifest must not claim a file that was never sent.
 
