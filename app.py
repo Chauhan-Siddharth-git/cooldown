@@ -842,6 +842,13 @@ BUDGET_PAGE = """
             border:1px solid var(--line);color:var(--fg);font-size:14.5px;font-weight:600;
             text-decoration:none}
         .hint{font-size:12px;color:#5f6773;margin-top:2px}
+        /* The lockout window sits above the card. The card stays the only thing with a
+           width of its own; the scene sizes its canvas to a whole multiple of its native
+           pixels, so nothing here may scale it. */
+        .stack{position:relative;z-index:1;width:100%;display:flex;flex-direction:column;
+            align-items:center;gap:16px}
+        #cd-scene{width:100%;max-width:760px;display:flex;justify-content:center}
+        #cd-scene canvas{border-radius:14px;box-shadow:0 18px 50px rgba(0,0,0,.5)}
         .foot{display:block;margin-top:18px;font-size:12px;color:#5f6773;text-decoration:none}
         .foots{display:flex;gap:18px;justify-content:center;align-items:center;margin-top:18px}
         .infobtn{width:19px;height:19px;padding:0;border-radius:50%;border:1px solid var(--line);
@@ -903,6 +910,8 @@ BUDGET_PAGE = """
 </head>
 <body>
     <canvas id="bp-bg" aria-hidden="true"></canvas>
+    <div class="stack">
+    {% if scene_js %}<div id="cd-scene"><canvas id="cd-scene-c"></canvas></div>{% endif %}
     <div class="card {{ mood }}">
         <div class="kicker"><span class="dot"></span>{% if theme_emoji %}{{ theme_emoji }} {% endif %}{{ overline }}</div>
         {% if countdown %}<div id="cd" class="big" data-secs="{{ countdown }}">·</div>
@@ -984,6 +993,28 @@ BUDGET_PAGE = """
             <button class="dismiss" id="bgInfoClose" type="button">Got it</button>
         </div>
     </div>
+    </div>
+    {% if scene_js %}
+    {#- Inlined, not linked: the gate is on the gated site's origin, so a script src is a
+        request that site's policy can refuse, and this page has to render offline from
+        the box. The file is ours (scene/cooldown-scene.js), read by scene_js(). -#}
+    <script>{{ scene_js }}</script>
+    {% raw %}<script>
+    (function(){
+        var c=document.getElementById("cd-scene-c"), S=window.CooldownScene;
+        if(!c||!S) return;
+        // The look comes from the browser's clock, never the server's: it is a picture of
+        // Boston's light, and lookFor() converts Boston's sunset into whatever zone this
+        // device is in, so it stays right while you travel. Nothing is sent anywhere.
+        var look=S.lookFor(new Date());
+        var scene=S.mount(c,{season:look.season,time:look.time,maxHeight:function(){return innerHeight*.5;}});
+        function sync(){ var n=S.lookFor(new Date()), o=scene.look();
+            if(n.season!==o.season||n.time!==o.time) scene.setLook(n); }
+        setInterval(sync,600000);
+        document.addEventListener("visibilitychange",function(){ if(!document.hidden) sync(); });
+    })();
+    </script>{% endraw %}
+    {% endif %}
     {% if countdown %}
     <script>
     (function(){
@@ -2209,6 +2240,32 @@ def _safe_next(site, nxt):
         domains = [".".join(home_host.split(".")[-2:])] if home_host else []   # www.reddit.com -> reddit.com
     return nxt if any(host == d or host.endswith("." + d) for d in domains) else ""
 
+# The lockout window: a pixel-art view from a Red Line car crossing the Longfellow Bridge,
+# drawn on a canvas by this one script, inlined into the gate when you are locked out.
+# Self-contained on purpose -- no requests, no fonts, no images -- because the gate loads
+# on the gated site's origin, where anything fetched is one policy away from not arriving.
+# The same property makes it safe to run there: it is same-origin with the gated site, so
+# tests/test_scene.py pins that it never touches the network, storage or cookies.
+# Read per request like /play, so deploying a new copy needs no restart; "" when the file
+# is missing or looks wrong, so a missing picture costs the picture and never the gate.
+SCENE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scene",
+                          "cooldown-scene.js")
+
+
+def scene_js():
+    try:
+        with open(SCENE_FILE, encoding="utf-8") as fh:
+            js = fh.read()
+    except OSError:
+        return ""
+    # Markup, i.e. NOT autoescaped: it goes inside <script>. Safe for the reason the theme
+    # CSS is -- every byte is a file in this repo and no request data reaches it -- and the
+    # one thing that could break out of the element is refused here.
+    if "</script" in js.lower() or "<!--" in js:
+        return ""
+    return Markup(js)
+
+
 def render_gate(site, label, *, overline, message, title="", mood="wait",
                 can_enter=False, button_text="", headline="",
                 countdown=0, refresh=0, next_url="",
@@ -2224,7 +2281,8 @@ def render_gate(site, label, *, overline, message, title="", mood="wait",
         refresh=refresh, next_url=next_url,
         show_reflect=show_reflect, reflect_q=reflect_q, ask_worth=ask_worth,
         regret_json=_try(regret_pairs, ""),
-        enter_pause=ENTER_PAUSE_SECONDS)
+        enter_pause=ENTER_PAUSE_SECONDS,
+        scene_js="" if can_enter else _try(scene_js, ""))
 
 @app.route('/budget')
 def budget_page():

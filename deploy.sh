@@ -147,10 +147,10 @@ case "${1:-code}" in
     # installs system files to /usr/local/sbin and `code` shipped four repo files; the
     # rotation tooling fell between them and nothing noticed, because a stale copy on the
     # box is present and executable and therefore looks deployed.
-    "${SSH[@]}" "mkdir -p $DIR/deploy $DIR/play"
+    "${SSH[@]}" "mkdir -p $DIR/deploy $DIR/play $DIR/scene"
     for f in app.py addon.py PLAN.md PI-SETUP.md \
              rotate-ca.sh deploy/gen_ca.sh deploy/gen_allow_hosts.py news_domains.py \
-             play/tetris.html; do
+             scene/cooldown-scene.js play/tetris.html; do
         [ -f "$f" ] || continue
         if [ "$(local_md5 "$f")" = "$(remote_md5 "$f")" ]; then
             echo "unchanged  $f"
@@ -175,7 +175,8 @@ case "${1:-code}" in
     stamp "$DIR/app.py=app.py" "$DIR/addon.py=addon.py" \
           "$DIR/rotate-ca.sh=rotate-ca.sh" "$DIR/deploy/gen_ca.sh=deploy/gen_ca.sh" \
           "$DIR/deploy/gen_allow_hosts.py=deploy/gen_allow_hosts.py" \
-          "$DIR/news_domains.py=news_domains.py" "$DIR/play/tetris.html=play/tetris.html"
+          "$DIR/news_domains.py=news_domains.py" "$DIR/play/tetris.html=play/tetris.html" \
+          "$DIR/scene/cooldown-scene.js=scene/cooldown-scene.js"
     if [ "${#restart[@]}" -gt 0 ]; then
         echo "Restarting: ${restart[*]}"
         "${SSH[@]}" "sudo systemctl restart ${restart[*]} && sleep 2"
