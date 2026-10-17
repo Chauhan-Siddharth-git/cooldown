@@ -67,8 +67,8 @@ HEALTH = {
               "backup_age": 0, "backup_restores": 1, "full_ago": "2 days ago",
               "mode": "full", "checked_ago": 2040,
               "fw_policy": "DROP", "fw_contained": [22, 8080, 8081],
-              "findings_list": [{"id": "worth_silent",
-                                 "detail": "no worth verdict in 5 days across 9 cooldowns"}]},
+              "findings_list": [{"id": "reflect_silent",
+                                 "detail": "no reflection in 3 days across 9 entries"}]},
     # name/mb/pct, copied from _top_processes(). Written as mem_mb/cpu first, which
     # rendered an empty table -- the third mock shape guessed wrong rather than read.
     "procs": [{"name": "mitmdump", "mb": 96, "pct": 3.2},

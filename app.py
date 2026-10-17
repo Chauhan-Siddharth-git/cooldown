@@ -783,13 +783,19 @@ BUDGET_PAGE = """
             --go:#3ecf7c; --wait:#f0a63a; --sleep:#7aa2ff;
         }
         *{box-sizing:border-box}
-        html,body{height:100%;margin:0}
+        /* Not height:100% on body. With a fixed-height flex body and the content centred, a
+           page taller than the screen overflows equally off the TOP and the bottom, and the
+           top cannot be scrolled to: the lockout scene's ad cards were cut off on a phone.
+           min-height plus an auto margin on .stack centres short content and lets tall
+           content start at the top and scroll. tests/test_scene.py checks it in a browser. */
+        html{height:100%}
+        body{margin:0}
         body{
             background:radial-gradient(1200px 620px at 50% -15%, #181c24, var(--bg));
             color:var(--fg);
             font-family:var(--font,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif);
             -webkit-font-smoothing:antialiased;
-            display:flex;align-items:center;justify-content:center;
+            display:flex;align-items:flex-start;justify-content:center;
             min-height:100dvh;padding:24px;
             padding-bottom:max(24px,env(safe-area-inset-bottom));
         }
@@ -846,7 +852,7 @@ BUDGET_PAGE = """
            width of its own; the scene sizes its canvas to a whole multiple of its native
            pixels, so nothing here may scale it. */
         .stack{position:relative;z-index:1;width:100%;display:flex;flex-direction:column;
-            align-items:center;gap:16px}
+            align-items:center;gap:16px;margin:auto}
         #cd-scene{width:100%;max-width:760px;display:flex;justify-content:center}
         #cd-scene canvas{border-radius:14px;box-shadow:0 18px 50px rgba(0,0,0,.5)}
         .foot{display:block;margin-top:18px;font-size:12px;color:#5f6773;text-decoration:none}
@@ -895,14 +901,6 @@ BUDGET_PAGE = """
         .r-list ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:9px}
         .r-list li{display:flex;gap:9px;align-items:flex-start;font-size:14px;color:var(--fg);line-height:1.4}
         .r-list li::before{content:"\\25CB";color:var(--accent)}
-        /* Post-session check-in. Small and skippable — it must never feel like a toll. */
-        .worth{margin-top:20px;padding-top:16px;border-top:1px solid var(--line)}
-        .worth-q{font-size:13.5px;color:var(--muted);margin:0 0 10px}
-        .worth-btns{display:flex;gap:8px}
-        .worth-btns form{flex:1}
-        .wbtn{width:100%;padding:11px;font-size:14px;font-weight:600;border-radius:10px;
-              background:#1c2028;color:var(--fg);border:1px solid var(--line)}
-        .wbtn:active{opacity:.7}
         .pass{background:var(--go);color:#06120b}
         .cont{background:transparent;color:var(--muted);border:1px solid var(--line)}
         .cont:active{opacity:.7}
@@ -965,17 +963,6 @@ BUDGET_PAGE = """
         </div>
         <!-- Absolute links to the BOX, not relative ones onto the gated site: the
              dashboard deliberately no longer exists on this origin. -->
-        {% if ask_worth %}
-        <div class="worth">
-          <p class="worth-q">That session just ended. Was it worth it?</p>
-          <div class="worth-btns">
-            <form action="/budget/worth" method="post"><input type="hidden" name="v" value="yes">
-              <button class="wbtn" type="submit">Yes</button></form>
-            <form action="/budget/worth" method="post"><input type="hidden" name="v" value="no">
-              <button class="wbtn" type="submit">Not really</button></form>
-          </div>
-        </div>
-        {% endif %}
         <div class="foots">{% if mon %}<a class="foot" href="{{ mon }}/stats?from={{ site }}">Usage stats</a><a class="foot" href="{{ mon }}/health?from={{ site }}">Pi health</a>{% endif %}<button class="infobtn" id="bgInfoBtn" type="button" aria-label="What is the moving background?">i</button></div>
         <div class="bgpanel" id="bgPanel">
             <h2>The moving background</h2>
@@ -1007,7 +994,9 @@ BUDGET_PAGE = """
         // Boston's light, and lookFor() converts Boston's sunset into whatever zone this
         // device is in, so it stays right while you travel. Nothing is sent anywhere.
         var look=S.lookFor(new Date());
-        var scene=S.mount(c,{season:look.season,time:look.time,maxHeight:function(){return innerHeight*.5;}});
+        var scene=S.mount(c,{season:look.season,time:look.time,maxHeight:function(){var k=document.querySelector(".card"),d=devicePixelRatio||1;
+            // Fit above the card when there is room; never below 2x (3x on dense screens), and let the page scroll instead.
+            return Math.max(168*(d>=2?3:2)/d,innerHeight-(k?k.offsetHeight:380)-72);}});
         function sync(){ var n=S.lookFor(new Date()), o=scene.look();
             if(n.season!==o.season||n.time!==o.time) scene.setLook(n); }
         setInterval(sync,600000);
@@ -2108,35 +2097,9 @@ def reflection_summary(days=30, now=None):
     return {"rows": out, "total": total, "passes": passes,
             "rate": round(100 * passes / total) if total else 0, "days": days}
 
-# The reflection prompt asks why you are reaching for the feed. It never asks how it went.
-# That is the more interesting half: "when I was tired it was never worth it, when I
-# actually needed it it usually was" is the sentence the whole feature is reaching for,
-# and a pre-session trigger alone cannot produce it. Queued when a session ends, asked
-# once on the next gate screen — you are already stopped, so it costs nothing.
-WORTH_TTL = 2 * 3600
-
-def queue_worth_prompt(site, now=None):
-    now = now if now is not None else time.time()
-    trigger = r.get(f"session_trigger:{pool(site)}") or "-"
-    r.setex("pending_worth", WORTH_TTL, f"{now:.0f} {site} {trigger}")
-
-def log_worth(verdict, now=None):
-    """Record the verdict against the trigger that opened the session. Returns False if
-    there was nothing pending, so a double-tap or a stale form can't invent data."""
-    if verdict not in ("yes", "no"):
-        return False
-    pending = r.get("pending_worth")
-    if not pending:
-        return False
-    r.delete("pending_worth")
-    parts = pending.split()
-    trigger = parts[2] if len(parts) > 2 else "-"
-    now = now if now is not None else time.time()
-    day = time.strftime("%Y-%m-%d", local_acct(now))
-    r.rpush(f"worth:{day}", f"{now:.0f} {trigger} {verdict}")
-    r.expire(f"worth:{day}", HISTORY_TTL)
-    return True
-
+# The record of the old "was it worth it?" question. Nothing writes worth:{day} any more
+# (the question was retired 2026-10-17: it landed right after the feed was cut off and went
+# unanswered), but what was recorded stays readable, and every reader hides itself when empty.
 def worth_summary(days=30, now=None):
     """Per-trigger: how often the time was judged worth it afterwards."""
     now = now if now is not None else time.time()
@@ -2269,7 +2232,7 @@ def scene_js():
 def render_gate(site, label, *, overline, message, title="", mood="wait",
                 can_enter=False, button_text="", headline="",
                 countdown=0, refresh=0, next_url="",
-                show_reflect=False, reflect_q="", ask_worth=False):
+                show_reflect=False, reflect_q=""):
     # One template, many states. `overline` is the uppercase kicker; `countdown` (secs)
     # renders a live ticking timer that reloads at zero; `headline` renders a big static
     # time; `mood` picks the accent colour (go/wait/sleep). `next_url`, when set, makes
@@ -2279,7 +2242,7 @@ def render_gate(site, label, *, overline, message, title="", mood="wait",
         can_enter=can_enter, button_text=button_text, headline=headline,
         countdown=int(countdown),
         refresh=refresh, next_url=next_url,
-        show_reflect=show_reflect, reflect_q=reflect_q, ask_worth=ask_worth,
+        show_reflect=show_reflect, reflect_q=reflect_q,
         regret_json=_try(regret_pairs, ""),
         enter_pause=ENTER_PAUSE_SECONDS,
         scene_js="" if can_enter else _try(scene_js, ""))
@@ -2288,9 +2251,6 @@ def render_gate(site, label, *, overline, message, title="", mood="wait",
 def budget_page():
     site = resolve_site(request.args.get("site"))
     label = SITES[site]["label"]
-    # Only on the screens you land on *because* a session ended — never on the way in.
-    ask_worth = bool(_try(lambda: r.get("pending_worth")))
-
     p = pool(site)
     ph = phase()
     # The addon passes the original URL the user was heading to, so Enter can return
@@ -2306,7 +2266,7 @@ def budget_page():
             if remaining <= 0:
                 return render_gate(site, label, overline=f"{label} · Bedtime", mood="sleep",
                     countdown=secs_until_hour(NIGHT_END_HOUR),
-                    title="Get some sleep", ask_worth=ask_worth,
+                    title="Get some sleep",
                     message=gate_line("night_closed", label=label, end=NIGHT_END_HOUR))
             nshow, nq = reflect_decision()
             return render_gate(site, label, overline=f"{label} · Night mode", mood="sleep",
@@ -2317,7 +2277,7 @@ def budget_page():
         if remaining <= 0:
             return render_gate(site, label, overline=f"{label} · Winding down", mood="wait",
                 countdown=secs_until_hour(NIGHT_START_HOUR),
-                title="Paused for now", ask_worth=ask_worth,
+                title="Paused for now",
                 message=gate_line("winddown_spent", label=label))
         wshow, wq = reflect_decision()
         return render_gate(site, label, overline=f"{label} · Winding down", mood="wait",
@@ -2332,14 +2292,14 @@ def budget_page():
         msg = gate_line("cooldown_escalated" if escalated else "cooldown", label=label)
         return render_gate(site, label, overline=f"{label} · Cooldown", mood="wait",
             countdown=cooldown_remaining,
-            title="Take a break", message=msg, ask_worth=ask_worth)
+            title="Take a break", message=msg)
 
     # One site looping (repeated cap-hits in a short window) -> a short site-specific breather.
     soft_cd = get_soft_cd_remaining(site)
     if soft_cd > 0:
         return render_gate(site, label, overline=f"{label} · Short break", mood="wait",
             countdown=soft_cd,
-            title="Take a breather", ask_worth=ask_worth,
+            title="Take a breather",
             message=gate_line("soft", label=label))
 
     spent = get_spent(site)
@@ -2351,7 +2311,7 @@ def budget_page():
         msg = gate_line("cooldown", label=label)
         return render_gate(site, label, overline=f"{label} · Time's up", mood="wait",
             countdown=get_cooldown_remaining(site),
-            title="Whole bucket spent", message=msg, ask_worth=ask_worth)
+            title="Whole bucket spent", message=msg)
 
     # This site's slice used up, but the bucket still has time for a bigger-cap site.
     if remaining <= 0:
@@ -2360,7 +2320,7 @@ def budget_page():
         steer = f" Still time on {' & '.join(others)}." if others else ""
         return render_gate(site, label, overline=f"{label} · Spent", mood="wait",
             title=f"{label} is done for now", button_text=f"{label} used up",
-            refresh=15, ask_worth=ask_worth,
+            refresh=15,
             message=gate_line("spent", label=label, steer=steer))
 
     # Enter.
@@ -2377,12 +2337,6 @@ def reflect():
     log_reflection(request.form.get("trigger", ""), "pass")
     return jsonify({"status": "ok"})
 
-@app.route('/worth', methods=['POST'])
-def worth():
-    site = resolve_site(request.args.get("site"))
-    _try(lambda: log_worth(request.form.get("v", "")))
-    return redirect(f'/budget?site={site}')
-
 @app.route('/enter', methods=['POST'])
 def enter():
     site = resolve_site(request.args.get("site"))
@@ -2394,9 +2348,6 @@ def enter():
 
     trigger = request.form.get("trigger", "")
     log_reflection(trigger, "enter")
-    # Carried through the session so the "was that worth it?" answer can be attributed
-    # to the reason you gave for starting. Without the join, both halves are just tallies.
-    r.setex(f"session_trigger:{pool(site)}", 6 * 3600, trigger or "-")
     day = time.strftime("%Y-%m-%d", local_acct())
     r.incr(f"entries:{day}")          # drives "skip the prompt on your first session"
     r.expire(f"entries:{day}", 7 * 86400)
@@ -2490,7 +2441,6 @@ def heartbeat():
                 if r.incrbyfloat(f"night_spent:{p}", gap) >= NIGHT_BUDGET_SECONDS:
                     r.delete(f"active_token:{site}")
                     r.delete(f"session:{token}")
-                    queue_worth_prompt(site, now)
                     return jsonify({"status": "blocked", "remaining": 0}), 403
             else:
                 spent = r.incrbyfloat(f"spent:{p}", gap)
@@ -2499,7 +2449,6 @@ def heartbeat():
                     if spent >= pool_max_budget(p):
                         r.delete(f"active_token:{site}")
                         r.delete(f"session:{token}")
-                        queue_worth_prompt(site, now)
                         start_cooldown(p, site, now)
                         return jsonify({"status": "blocked", "remaining": 0}), 403
                     # This site's slice is used up but the bucket isn't -> end just this
@@ -2507,7 +2456,6 @@ def heartbeat():
                     if spent >= SITES[site]["budget_seconds"]:
                         r.delete(f"active_token:{site}")
                         r.delete(f"session:{token}")
-                        queue_worth_prompt(site, now)
                         log_soft_pause(site, now)
                         maybe_cluster_cooldown(site, now)   # short brake if this site is looping
                         return jsonify({"status": "blocked", "remaining": 0}), 403
@@ -2515,7 +2463,6 @@ def heartbeat():
                 elif spent >= effective_cap(site):
                     r.delete(f"active_token:{site}")
                     r.delete(f"session:{token}")
-                    queue_worth_prompt(site, now)
                     return jsonify({"status": "blocked", "remaining": 0}), 403
 
     r.set(f"last_heartbeat:{p}", now)
@@ -4313,10 +4260,6 @@ FINDINGS = {
         "The “why are you here?” prompt hasn't recorded anything in 3 days.",
         "You've entered sites several times, but no answers were saved. Either the prompt isn't showing, or it can't be answered.",
         "Open a gated site and check the prompt appears. If it does, answer it once."),
-    "worth_silent": ("features",
-        "The “was it worth it?” question hasn't been answered in 5 days.",
-        "Not a security issue. The question appears on the screen you land on after a session ends. If you've been skipping it, this is expected.",
-        "Answer it next time it appears. This clears on its own once you do."),
 }
 
 

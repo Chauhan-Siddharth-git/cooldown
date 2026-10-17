@@ -334,13 +334,6 @@ else
     fi
 fi
 
-# Worth verdict: asked on every screen you land on because a session ended, which a
-# cooldown always is. Three cooldowns with no verdict means the question is not reaching
-# a screen -- or reaching one that cannot submit it.
-cooldowns5="$(sum_llen cooldown_events 5)"; worth5="$(sum_llen worth 5)"
-[ "$cooldowns5" -lt 3 ] || [ "$worth5" -gt 0 ] || \
-    note worth_silent "no worth verdict in 5 days across $cooldowns5 cooldowns -- the question is not reaching a screen you land on"
-
 # The dead-man's switch's second clock. The switch warns when the heartbeat falls far
 # behind the passive meter, so a passive meter that has STOPPED reads as "nothing to
 # compare" -- silence, not health. The /stats card that showed the two side by side was
@@ -568,8 +561,8 @@ printf '"deployed_rev":"%s","deploy_drift":%d,"manifest_files":%d,"ca_constraine
        "$([ "${ca_nc:-0}" -gt 0 ] && echo true || echo false)"
 printf '"missing_exec":%d,"not_enabled":%d,"dead_timers":%d,"fw_policy6":"%s",' \
        "${missing_exec:-0}" "${not_enabled:-0}" "${dead_timers:-0}" "${fw_policy6:-unknown}"
-printf '"entries3":%d,"reflect3":%d,"cooldowns5":%d,"worth5":%d,' \
-       "${entries3:-0}" "${reflect3:-0}" "${cooldowns5:-0}" "${worth5:-0}"
+printf '"entries3":%d,"reflect3":%d,' \
+       "${entries3:-0}" "${reflect3:-0}"
 printf '"alert_ok":%s,"alert_age_days":%d,' "${alert_ok:-false}" "${alert_age:--1}"
 printf '"deadman_ok":%s,"deadman_age":%d,' "${dm_ok:-false}" "${dm_age:--1}"
 printf '"findings_list":['

@@ -637,70 +637,33 @@ def test_health_reports_a_dead_heartbeat(rdb, client, monkeypatch):
     assert "No errors" in html               # fixture forces enforcement ok
 
 
-# ---------- 12. the post-session check-in ----------
+# ---------- 12. the post-session question is gone ----------
+# "Was it worth it?" was retired 2026-10-17: it landed right after the feed was cut off and
+# went unanswered, so it recorded nothing and nagged through the audit. What it recorded
+# stays readable (the stats test below); nothing may ask it or write to it again.
 
-def test_the_trigger_is_carried_through_the_session(rdb, client):
-    """Without the join, both halves are just tallies — the whole value is 'when I was
-    tired it was never worth it'."""
-    client.post("/enter?site=reddit", data={"trigger": "tired"})
-    assert rdb.get("session_trigger:main") == "tired"
-
-
-def test_session_end_queues_the_question_and_the_gate_asks_it(rdb, client, day):
-    """Asked on the screen you land on BECAUSE a session ended — here, the cap being
-    spent. Never on the way in: the gate must not become a toll booth."""
-    rdb.set("session_trigger:main", "bored")
+def test_the_gate_never_asks_whether_it_was_worth_it(rdb, client, day):
+    """Not after a session ends, not on the way in, not ever."""
     rdb.set("spent:main", budget.SITES["reddit"]["budget_seconds"] + 1)
-    budget.queue_worth_prompt("reddit")
     html = client.get("/budget?site=reddit").get_data(as_text=True)
-    assert "Was it worth it?" in html
+    assert "Was it worth it?" not in html and "/budget/worth" not in html
+    assert "Enter Reddit" not in html           # the gate rendered, in its spent state
 
 
-def test_the_gate_never_asks_on_the_way_in(rdb, client, day, session):
-    """A live session with budget left renders Enter — no question there."""
-    budget.queue_worth_prompt("reddit")
-    html = client.get("/budget?site=reddit").get_data(as_text=True)
-    assert "Enter Reddit" in html
-    assert "Was it worth it?" not in html
+def test_the_worth_endpoint_no_longer_exists(rdb, client):
+    assert client.post("/worth?site=reddit", data={"v": "no"}).status_code in (404, 405)
+    assert not any(r.rule == "/worth" for r in budget.app.url_map.iter_rules())
 
 
-def test_the_gate_does_not_ask_when_nothing_ended(rdb, client, day):
-    html = client.get("/budget?site=reddit").get_data(as_text=True)
-    assert "Was it worth it?" not in html
-
-
-def test_answering_records_it_against_the_trigger(rdb, client, day):
-    rdb.set("session_trigger:main", "tired")
-    budget.queue_worth_prompt("reddit")
-    client.post("/worth?site=reddit", data={"v": "no"})
-    s = budget.worth_summary()
-    assert s["total"] == 1 and s["yes"] == 0
-    assert s["rows"][0]["key"] == "tired" and s["rows"][0]["pct"] == 0
-
-
-def test_a_second_tap_cannot_invent_data(rdb, client, day):
-    budget.queue_worth_prompt("reddit")
-    assert budget.log_worth("yes") is True
-    assert budget.log_worth("yes") is False        # nothing pending any more
-    assert budget.worth_summary()["total"] == 1
-
-
-def test_a_bogus_verdict_is_ignored(rdb):
-    budget.queue_worth_prompt("reddit")
-    assert budget.log_worth("maybe") is False
-    assert budget.log_worth("<script>") is False
-    assert budget.worth_summary()["total"] == 0
-
-
-def test_every_heartbeat_session_end_queues_the_prompt(rdb):
-    """Four code paths end a budgeted session; a prompt queued at only some of them
-    would quietly bias the data toward whichever cap you hit."""
+def test_a_session_ending_writes_no_worth_record(rdb, client, day):
+    """Every heartbeat session-end path used to queue the question; none may now."""
     src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                             "app.py")).read()
-    hb = src[src.index("def heartbeat("):src.index("@app.route('/remaining')")]
-    ends = hb.count('r.delete(f"session:{token}")')
-    assert ends == 4, f"heartbeat now has {ends} session-end paths"
-    assert hb.count("queue_worth_prompt(site, now)") == ends
+    assert "queue_worth_prompt" not in src and "pending_worth" not in src
+    assert not hasattr(budget, "log_worth")
+    rdb.set("spent:main", budget.SITES["reddit"]["budget_seconds"] + 1)
+    client.get("/budget?site=reddit")
+    assert not rdb.keys("worth:*") and not rdb.exists("pending_worth")
 
 
 def test_stats_pairs_the_reason_with_the_outcome(rdb, client):
@@ -970,9 +933,8 @@ def test_history_survives_long_enough_for_a_year_in_review(rdb):
     assert budget.HISTORY_TTL >= 366 * 86400
     day = time.strftime("%Y-%m-%d")
     budget.log_reflection("tired", "pass")
-    budget.queue_worth_prompt("reddit"); budget.log_worth("no")
     budget.start_cooldown("main", "reddit")
-    for key in (f"reflect:{day}", f"worth:{day}", f"cooldown_events:{day}"):
+    for key in (f"reflect:{day}", f"cooldown_events:{day}"):
         assert rdb.ttl(key) > 365 * 86400, key
 
 

@@ -205,16 +205,16 @@ def test_the_gated_origin_surface_stays_small(rdb):
 
     The cap was written at 8 on 2026-08-02 when the set held 7 -- one slot of slack,
     spent by /worth the next day. It has never been raised, and raising it to fit a
-    change is the failure this test exists to make visible. It is now AT the cap, so
-    the next gated endpoint is the first one that will ever trip this."""
+    change is the failure this test exists to make visible. /worth was retired 2026-10-17,
+    so three slots are free again -- which is not permission to spend them."""
     assert len(addon.BUDGET_ENDPOINTS) <= 8, (
         f"gated-origin surface would grow to {len(addon.BUDGET_ENDPOINTS)}: "
         f"{sorted(addon.BUDGET_ENDPOINTS)}\n"
-        "The budget is fully spent. Raising this number is not the fix -- the options are:\n"
+        "The budget is spent. Raising this number is not the fix -- the options are:\n"
         "  (a) put the endpoint on the box origin (addon.MOVED_TO_BOX) and accept that a\n"
         "      script on a gated site cannot read it, which is usually what you want;\n"
         "  (b) fold it into an endpoint that is already here;\n"
-        "  (c) retire one. /worth is the cheapest to lose -- it is journalling only.\n"
+        "  (c) retire one (/worth went this way on 2026-10-17).\n"
         "Raise the cap only with a written reason, the way the 8 itself was justified.")
 
 

@@ -482,21 +482,13 @@ def test_the_heartbeat_records_the_zone_before_it_refuses_the_request(client, rd
     assert pending.startswith("America/Los_Angeles"), f"zone dropped on the refused path: {pending!r}"
 
 
-def test_every_blocked_screen_asks_whether_it_was_worth_it(client, rdb, monkeypatch):
-    """The verdict is only ever collected on a screen you land on BECAUSE a session
-    ended. Three such screens never asked -- night-closed, wind-down-spent and the short
-    soft-cooldown break -- so a session that ended into any of them produced no verdict
-    and pending_worth expired unanswered.
-
-    Measured on the box: worth:* last recorded 2026-09-10, against ~60 entries in the
-    five days after. regret_by_trigger() reads worth:*, so the regret number shown at the
-    reflection prompt -- the whole point of that prompt -- was frozen on August data and
-    could never update.
-    """
+def test_no_blocked_screen_asks_whether_it_was_worth_it(client, rdb, monkeypatch):
+    """The question was retired 2026-10-17. It used to be the only thing on a screen you
+    land on BECAUSE a session ended, and it went unanswered: it arrived the moment the feed
+    was cut off. A stale pending_worth key (the old queue, 2h TTL) must not revive it."""
     import app as b
 
     def blocked_screens():
-        # (fixture-ish state, site) -> html, for each screen that means "not right now"
         out = {}
         rdb.set("pending_worth", f"{time.time():.0f} reddit bored")
 
@@ -514,17 +506,14 @@ def test_every_blocked_screen_asks_whether_it_was_worth_it(client, rdb, monkeypa
         return out
 
     screens = blocked_screens()
-    # Guard the loop. Without this the test passes if blocked_screens() ever returns
-    # nothing -- which is how an assertion inside a loop stops being an assertion.
+    # Guard the loop: without it this passes if blocked_screens() ever returns nothing.
     assert set(screens) == {"night closed", "winddown spent", "short break"}, sorted(screens)
     for name, html in screens.items():
-        assert "Was it worth it?" in html, f"{name} never asks for the verdict"
+        assert "<html" in html and "worth it" not in html.lower(), f"{name} asks again"
+        assert "/budget/worth" not in html, f"{name} still posts a verdict"
 
 
-def test_entry_screens_still_do_not_ask(client, rdb, day, monkeypatch):
-    """The counterweight. It must never appear above an Enter button -- that turns a
-    check-in into a toll, which is the one thing the design note forbids.
-    """
+def test_entry_screens_do_not_ask_either(client, rdb, day, monkeypatch):
     rdb.set("pending_worth", f"{time.time():.0f} reddit bored")
     html = gate(client, "reddit")
     assert "Enter" in html
@@ -664,15 +653,15 @@ def _health_with_findings(client, monkeypatch, findings):
 
 
 def test_a_feature_finding_is_not_presented_as_a_security_problem(client, rdb, monkeypatch):
-    """The finding that started this: a missing "was it worth it?" answer, shown as
+    """The finding that started this: a missing answer to a question, shown as
     "1 audit finding" under a Security heading. It must say No security problems, and
     appear under Features with its resolution."""
     html = _health_with_findings(client, monkeypatch, [
-        {"id": "worth_silent", "detail": "no worth verdict in 5 days across 4 cooldowns"}])
+        {"id": "reflect_silent", "detail": "no reflection in 3 days across 4 entries"}])
     assert "No security problems" in html
     sec = html.split(">Security<", 1)[1].split('class="srow', 1)[0]
     assert "worth it" not in sec, "a feature finding leaked into the Security row"
-    assert ">Features<" in html and "Answer it next time it appears" in html
+    assert ">Features<" in html and "Open a gated site and check the prompt appears" in html
     assert "journalctl -t cooldown-audit" not in html, "still telling the owner to open a terminal"
 
 
@@ -715,10 +704,10 @@ def test_findings_survive_the_real_audit_reader_to_the_page(client, rdb, tmp_pat
     f.write_text(json.dumps({
         "findings": 1, "checked": time.time() - 120, "ssh_keys": 1, "exposed_ports": "",
         "ca_constrained": True, "ca_days": 3595, "mode": "quick",
-        "findings_list": [{"id": "worth_silent", "detail": "no worth verdict in 5 days"}]}))
+        "findings_list": [{"id": "reflect_silent", "detail": "no reflection in 3 days"}]}))
     monkeypatch.setattr(b, "AUDIT_STATE", str(f))
     b._HEALTH_CACHE.clear()
     html = client.get("/health").data.decode()
-    assert "Answer it next time it appears" in html, "the finding did not reach the page"
+    assert "Open a gated site and check the prompt appears" in html, "the finding did not reach the page"
     assert "can't describe yet" not in html, "fell back to the unexplained-finding message"
     assert "No security problems" in html

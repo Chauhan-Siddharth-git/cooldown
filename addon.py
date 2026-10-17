@@ -1057,7 +1057,7 @@ def session_mode(site):
 # linked to it, and a state-changing endpoint on the gated origin that nothing calls is
 # surface with no benefit. That takes this set from 8 endpoints to 6; CLAUDE.md called the
 # cap of 8 "fully spent", and it is now a quarter empty.
-STATE_CHANGING = ("/enter", "/heartbeat", "/reflect", "/worth")
+STATE_CHANGING = ("/enter", "/heartbeat", "/reflect")
 BUDGET_ENDPOINTS = frozenset(("", "/feed") + STATE_CHANGING)
 
 # Moved to the box's own origin — see the long note in app.py. A script on a gated site
@@ -1380,7 +1380,7 @@ class BudgetAddon:
                     {"Content-Type": "text/plain; charset=utf-8"})
                 return
 
-            # CSRF: the mutating endpoints (/enter, /heartbeat, /reflect, /worth) are
+            # CSRF: the mutating endpoints (/enter, /heartbeat, /reflect) are
             # driven same-origin from the gate page / injected script. A forged request
             # from another site the user is visiting must be refused, so a malicious page
             # can't drive the budget state (or the return redirect).

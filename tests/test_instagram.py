@@ -340,9 +340,9 @@ def test_redis_down_fails_closed_for_the_feed_but_not_for_dms(rdb, monkeypatch, 
 
 
 def test_the_budget_endpoints_are_unchanged():
-    """Six of eight. The SPA hop reuses the heartbeat's 403 -> reload, so no new endpoint."""
+    """Five of eight. The SPA hop reuses the heartbeat's 403 -> reload, so no new endpoint."""
     assert addon.BUDGET_ENDPOINTS == frozenset(("", "/feed", "/enter", "/heartbeat",
-                                                "/reflect", "/worth"))
+                                                "/reflect"))
 
 
 # ---------- responseheaders(): buffer HTML, stream the rest ----------
