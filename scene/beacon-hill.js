@@ -19,7 +19,7 @@ const mix=(a,b,k)=>a.map((v,i)=>v+(b[i]-v)*k);
 const cl=(v,a,b)=>v<a?a:v>b?b:v;
 
 /* left houses: [from z, to z, height, door at the near end (1) or the far end (0), door colour, a hood over it] */
-const LH=[[2,6.45,14,0,'cream',0],[6.45,12.9,13.6,1,'door',1],[12.9,18.2,13.3,1,'wood',0],[18.2,23.1,12.2,0,'door',0],[23.1,28.3,13.4,1,'red',1],
+const LH=[[2,6.45,14,0,'wood',0],[6.45,12.9,13.6,1,'door',1],[12.9,18.2,13.3,1,'door',0],[18.2,23.1,12.2,0,'door',0],[23.1,28.3,13.4,1,'red',1],
 [28.3,33.4,12.1,0,'door',0],[33.4,38.6,12.8,1,'wood',0],[38.6,43.5,11.6,0,'door',1],[43.5,49,12.4,1,'door',0],[49,55,11.8,0,'red',0]];
 /* right side: [from, to, height, kind] 0 house, 1 a garden wall with the tree behind it */
 const RH=[[2,5.2,14,0],[5.2,14,3,1],[14,20,10.5,0],[20,27,11.5,0],[27,35,10,0],[35,44,11,0],[44,55,10.5,0]];
@@ -32,7 +32,7 @@ const CROWN=[[0,146,212],[8,152,208],[16,153,200],[24,150,190],[40,153,188],[56,
 const crownAt=y=>{for(let k=1;k<CROWN.length;k++){const[y1,l1,r1]=CROWN[k];if(y<=y1){const[y0,l0,r0]=CROWN[k-1],t=(y-y0)/(y1-y0);return[l0+(l1-l0)*t,r0+(r1-r0)*t];}}return null;};
 
 /* materials: six anchors from cool shadow through daylight (the fourth) to warm lamp-light, each pair split, so eleven steps */
-const MAT='brick mortar granite trim shutter glass door cobble gap walk snow iron leaf bark slate asphalt plant red pink yellow purple pumpkin wreath blue wood cream'.split(' ');
+const MAT='brick mortar granite trim shutter glass door cobble gap walk snow iron leaf bark slate asphalt plant red pink yellow purple pumpkin wreath blue wood'.split(' ');
 const K={};MAT.forEach((n,i)=>K[n]=i+1);
 const RAMP={brick:['#1e1828','#3a2230','#62303a','#a44c3a','#cc663e','#f09c5c'],mortar:['#2c2a38','#4c4450','#77686a','#a89888','#d0b896','#f4d8a8'],
 granite:['#262a3a','#464c5c','#70747e','#a2a29e','#ccc6b6','#f4e4c4'],trim:['#2c2c3c','#55546a','#8e8c98','#e0dcd4','#f6efe0','#fff6e2'],
@@ -45,8 +45,7 @@ asphalt:['#15161c','#1f2027','#2c2d34','#44454c','#5c5c60','#7e776a'],plant:['#0
 red:['#2c0e16','#4c121c','#7e1a22','#b82a2a','#e2443a','#ff7a5a'],pink:['#2e1a2c','#52283f','#844068','#c46a98','#e494b8','#ffc4d6'],
 yellow:['#2a2412','#4a3e14','#7c6618','#c4a020','#ecc830','#fff07a'],purple:['#1c1428','#2e1c44','#4a2a6c','#6e40a0','#9464c4','#c494e0'],
 pumpkin:['#2a1410','#4c2212','#803814','#c45a1a','#ec8424','#ffb44a'],wreath:['#0b1813','#11251a','#1a3a24','#28562f','#3c723c','#609652'],
-blue:['#0c1026','#141a3a','#1e2858','#2c3c80','#3e529c','#6a7cb8'],wood:['#0d1612','#12201a','#1a3024','#264632','#365c40','#527252'],
-cream:['#2c2418','#54442a','#8a7040','#c8a048','#f0c850','#fff09a']};
+blue:['#0c1026','#141a3a','#1e2858','#2c3c80','#3e529c','#6a7cb8'],wood:['#0d1612','#12201a','#1a3024','#264632','#365c40','#527252']};
 const LEAF={spring:['#152418','#233e26','#3a6230','#5c8e3c','#86b84c','#c0dc78'],summer:['#0e1a14','#183020','#24492a','#3c6e34','#5e9442','#9cc25a'],
 autumn:['#2a1414','#4e2218','#823a1c','#c06424','#e8962e','#fcd060'],winter:RAMP.bark};
 const R11=a=>{const p=a.map(rgb),o=[];for(let i=0;i<11;i++)o.push(i&1?mix(p[i>>1],p[(i>>1)+1],.5):p[i>>1]);return o;};
@@ -134,25 +133,29 @@ put(c,r,m,v,X,Y,z,sd);});}
 function stoop(za,zb){for(let k=2;k>=0;k--){const h=.233*(k+1),xo=XL+.75-.25*k;
 face(za,XL,xo,0,h,K.granite,-.1);fill(xo,za,zb,0,h,K.granite,0);flat(h,XL,xo,za,zb,WI?K.snow:K.granite,WI?.05:.12);
 if(WI)face(za,XL,xo,h-.06,h,K.snow,0);}}
-/* a door set .3 m into the wall: each pixel of the opening is followed in to whatever it meets, the door, the far reveal, the soffit or the sill.
-The first house's is lit from inside its recess, as in the photo. */
-function door(X,za,zb,col,lit_,glow,id){const sd=side(X),rx=X+(X<0?-.3:.3),T=3.4,B=.7,g=glow?.45:0,tm=X<0?K.trim:K.granite;
+/* a door set into the wall (.15 m on the left, .3 on the right): each pixel of the opening is followed in to whatever it meets,
+the door, the far reveal, the soffit or the sill. The door is six-panelled: raised stiles and rails, recessed panels. */
+function door(X,za,zb,col,lit_,id){const sd=side(X),rx=X+(X<0?-.15:.3),T=3.4,B=.7,tm=X<0?K.trim:K.granite;
 fill(X,za-.1,zb+.1,B,T+.1,tm,X<0?0:-.15);fill(X,za-.14,zb+.14,T+.1,T+.22,tm,-.05);if(WI)fill(X,za-.14,zb+.14,T+.22,T+.29,K.snow,.05);
 pX(X,za,zb,B,T,(c,r,Y,z)=>{const zr=z*rx/X,Yr=E-(r+.5-VY)*zr/F;
-if(zr>zb)return brick(c,r,(c+.5-VX)*zb/F,E-(r+.5-VY)*zb/F,zb,(c+.5-VX)*zb/F,id,3,F/zb,g?g-.05:-.25);
-if(Yr>T)return put(c,r,K.trim,g-.35,rx,T,zr,3);if(Yr<B)return put(c,r,K.granite,g,rx,B,zr,0);
-const u=(zr-za)/(zb-za);if(Yr>2.95)return lit_?own(c,r,WARM[(Yr>3.2)|0],zr):put(c,r,K.glass,0,rx,Yr,zr,sd);
-put(c,r,K[col],g+(Math.abs(u-.5)<.06||Math.abs(Yr-1.85)<.04?-.12:0),rx,Yr,zr,sd);});
-const kz=za+(zb-za)*.8;put(Math.round(sx(rx,kz)-.5),Math.round(sy(1.45,kz)-.5),K.yellow,.2,rx,1.45,kz,sd);
-if(WI&&X<0){const wz=(za+zb)/2,s=F/wz;ring(sx(rx,wz),sy(2.25,wz),.26*s,rx,2.25,wz,sd);}}
+if(zr>zb)return brick(c,r,(c+.5-VX)*zb/F,E-(r+.5-VY)*zb/F,zb,(c+.5-VX)*zb/F,id,3,F/zb,-.25);
+if(Yr>T)return put(c,r,K.trim,-.35,rx,T,zr,3);if(Yr<B)return put(c,r,K.granite,0,rx,B,zr,0);
+const u=(zr-za)/(zb-za);if(Yr>3.02&&Math.abs(u-1/3)>.035&&Math.abs(u-2/3)>.035)return lit_?own(c,r,WARM[(Yr>3.22)|0],zr):put(c,r,K.glass,0,rx,Yr,zr,sd);
+if(Yr>2.94)return put(c,r,K.trim,-.1,rx,Yr,zr,sd);
+const fr=u<.12||u>.88||Math.abs(u-.5)<.06||Yr<B+.2||Yr>2.75||Math.abs(Yr-1.65)<.07||Math.abs(Yr-2.25)<.06;put(c,r,K[col],fr?.05:-.06,rx,Yr,zr,sd);});
+const kz=za+(zb-za)*.82;put(Math.round(sx(rx,kz)-.5),Math.round(sy(1.45,kz)-.5),K.yellow,.2,rx,1.45,kz,sd);
+if(WI&&X<0)wreath(rx+.06,2.05,(za+zb)/2,-Math.PI/2,.24,sd,(c,r)=>{const zf=F*X/(c+.5-VX);return zf>=za&&zf<=zb;});}
 /* a slate hood over a door, as on the second house in the photo */
 function hood(za,zb){const a=za-.25,b=zb+.25,o=XL+.38;
 flat(3.66,XL,o,a,b,K.slate,-.2);face(a,XL,o,3.66,3.96,K.slate,0);fill(o,a,b,3.66,3.96,K.slate,.05);
 if(WI){face(a,XL,o,3.9,3.96,K.snow,0);fill(o,a,b,3.9,3.96,K.snow,.05);}}
-/* a wreath with a red bow, snow on its top half */
-function ring(cx,cy,R0,X,Y,z,sd){const ri=R0*.5;for(let r=Math.floor(cy-R0);r<=cy+R0;r++)for(let c=Math.floor(cx-R0);c<=cx+R0;c++){const d=Math.hypot(c+.5-cx,(r+.5-cy)*1.05);if(d>R0||d<ri)continue;
-const sn=r+.5<cy-R0*.25&&hsh(c,r)<.7;put(c,r,sn?K.snow:K.wreath,(hsh(c*3,r)-.5)*.3+(sn?.1:0),X,Y,z,sd);}
-const b=Math.max(1,Math.round(R0*.3)),br=Math.round(cy+R0*.7);for(let j=0;j<b;j++)for(let i=-b;i<=b;i++)if(Math.abs(i)>=j)put(Math.round(cx)+i,br+j-(b>>1),K.red,.1,X,Y,z,sd);}
+/* a wreath hung in its own plane: th 0 faces up the lane at the camera, -PI/2 faces out from the left-hand fronts. Each pixel is
+followed back to that plane, so it foreshortens with whatever it hangs on. Snow along the top, a red bow at the bottom. */
+function wreath(X,Y,z,th,R,sd,clip){const nx=-Math.sin(th),nz=-Math.cos(th),ux=Math.cos(th),uz=-Math.sin(th),cx=sx(X,z),cy=sy(Y,z),hb=R*F/z+2;
+for(let r=Math.floor(cy-hb);r<=cy+hb;r++)for(let c=Math.floor(cx-hb);c<=cx+hb;c++){if(clip&&!clip(c,r))continue;
+const dx=(c+.5-VX)/F,dn=nx*dx+nz;if(Math.abs(dn)<1e-6)continue;const t=(nx*X+nz*z)/dn,px_=t*dx-X,pz=t-z,a=ux*px_+uz*pz,b=E-(r+.5-VY)*t/F-Y,d=Math.hypot(a,b)/R;
+if(Math.abs(a)<=.32*R&&Math.abs(b+.74*R)<=.08*R+.3*Math.abs(a)){put(c,r,K.red,.1,X,Y,z,sd);continue;}
+if(d>1||d<.5)continue;const sn=b>.2*R&&hsh(c,r)<.75;put(c,r,sn?K.snow:K.wreath,(hsh(c*3,r)-.5)*.3+(sn?.1:0)-(d>.88||d<.6?.12:0),X,Y,z,sd);}}
 
 /* windows are 1 m wide with their shutters folded back either side; a house fits two beside its door if it is 5.6 m wide, else one */
 const bays=(z0,z1,dz,dn)=>(z1-z0>=5.6?[1.75,3.55]:[1.75]).map(o=>dn?dz+o:dz-o).filter(b=>b>z0+.45&&b+1<z1-.45);
@@ -162,7 +165,9 @@ wall(XL,z0,z1,0,top,i);fill(XL,z0,z1,0,.45,K.granite,-.05);fill(XL,z0,z1,top-.32
 if(WI)fill(XL,z0,z1,top,top+.12,K.snow,.05);
 if(i%3===1)fwall(z1-.4,XL-1.2,XL-.4,top,top+1.6,i+40);
 const dz=dn?z0+.42:z1-1.42,bz=i?bays(z0,z1,dz,dn):[];
-door(XL,dz,dz+1,col,!day&&(i===0||hsh(i,77)<.5),i===0&&!day,i);if(hd)hood(dz,dz+1);
+door(XL,dz,dz+1,col,!day&&(i===0||hsh(i,77)<.5),i);if(hd)hood(dz,dz+1);
+/* the first door has a lantern on the wall beside it, as the doors in the night photo do */
+if(!i)lamp(XL+.18,dz-.3,2,.5);
 for(let f=0;f<FLOORS.length;f++){const[a,b]=FLOORS[f];if(b>ht-.6)continue;
 bz.forEach((w,k)=>window_(XL,w,w+1,a,b,f,i*10+k));if(f)window_(XL,dz,dz+1,a,b,f,i*10+5);}}
 /* the first house: a downpipe where the photo has one */
@@ -177,7 +182,7 @@ if(kind===1){fill(XR,z0,z1,ht-.14,ht,K.granite,.05);if(WI)fill(XR,z0,z1,ht,ht+.1
 else pX(XR,z0,z1,ht-1.4,ht+.3,(c,r,Y,z)=>{const t=(Y-ht+1.4)/1.7,n=hsh(c*5,r*7);if(n<(1-Math.abs(t-.55)*1.8)*.85)put(c,r,AU&&hsh(c>>1,r>>1)<.6?K.red:K.plant,(hsh(c,r*3)-.5)*.25,XR,Y,z,2);});continue;}
 fill(XR,z0,z1,ht-.3,ht,K.trim,-.2);if(WI)fill(XR,z0,z1,ht,ht+.12,K.snow,.05);
 const n=Math.round((z1-z0)/2.1);for(let k=0;k<n;k++){const za=z0+.5+k*(z1-z0-.6)/n,isD=k===0;
-if(isD)door(XR,za,za+1,'door',!day&&hsh(i,k)<.5,false,i*10+k);
+if(isD)door(XR,za,za+1,'door',!day&&hsh(i,k)<.5,i*10+k);
 for(let f=isD?1:0;f<FLOORS.length;f++){const[a,b]=FLOORS[f];if(b>ht-.6)continue;window_(XR,za+.1,za+1,a,b,f,i*10+k+100);}}}}
 
 /* ---------- the ground ---------- */
@@ -197,21 +202,24 @@ if(AU&&hsh(Math.floor(X*14),Math.floor(z*9))<(z>5&&z<22?.16:.05))m=hsh(Math.floo
 put(c,r,m,v,X,0,z,0);});}
 
 /* ---------- gas lamps ---------- */
-function lamp(X,z,post){const s=F/z,cx=sx(X,z);
-const row=(Y0,Y1,w0,w1,f)=>span(sy(Y1,z),sy(Y0,z),r=>{const Y=E-(r+.5-VY)*z/F,t=(Y-Y0)/(Y1-Y0),w=(w0+(w1-w0)*t)*s/2;span(cx-w,cx+w,c=>f(c,r,Y,(c+.5-cx)/Math.max(w,.5)));});
-if(post){row(0,.12,.3,.26,(c,r,Y,u)=>put(c,r,K.iron,u<-.4?.15:0,X,Y,z,3));row(.12,.9,.22,.15,(c,r,Y,u)=>put(c,r,K.iron,u<-.3?.15:0,X,Y,z,3));
-row(.9,2.42,.12,.1,(c,r,Y,u)=>put(c,r,K.iron,u<-.2?.12:0,X,Y,z,3));row(2.32,2.45,.18,.18,(c,r,Y)=>put(c,r,K.iron,.05,X,Y,z,3));}
-else{const ay=Math.round(sy(3.8,z)-.5);span(sx(XL,z),cx,c=>put(c,ay,K.iron,.05,X,3.8,z,3));row(3.62,3.8,.04,.04,(c,r,Y)=>put(c,r,K.iron,0,X,Y,z,3));}
-row(2.45,2.62,.12,.28,(c,r,Y)=>put(c,r,K.iron,0,X,Y,z,3));
-const gc=day?[rgb('#d8cc9e'),rgb('#fff0b8')]:dusk?[rgb('#ffc868'),rgb('#fff2c4')]:[rgb('#ffb850'),rgb('#fff6dc')];
-row(2.62,3.33,.34,.46,(c,r,Y,u)=>{const fr=Math.abs(u)>.82||(s>9&&Math.abs(u)<.08),fl=Math.abs(u)<.3&&Y>2.72&&Y<2.98;
-if(fr)put(c,r,K.iron,.1,X,Y,z,3);else own(c,r,fl?gc[1]:mix(gc[0],gc[1],Math.max(0,.5-Math.abs(Y-2.85))),z*.3);
-if(fl)flames.push([c,r]);});
-row(3.33,3.38,.5,.5,(c,r,Y)=>put(c,r,K.iron,.1,X,Y,z,3));row(3.38,3.62,.56,.12,(c,r,Y,u)=>put(c,r,WI&&Y>3.44?K.snow:K.iron,WI?.1:u<0?.12:0,X,Y,z,3));
-row(3.62,3.72,.05,.05,(c,r,Y)=>put(c,r,K.iron,0,X,Y,z,3));
-if(WI&&post)ring(cx,sy(2.05,z),.24*s,X,2.05,z,3);
+/* kind 1 on a post, 0 on a bracket off the left-hand fronts, 2 a small lantern on the wall by a door; k scales it.
+Proportions from the near lamp in the dusk photo: the head 31 px from finial to base there, the glass 14 px across,
+dim in its upper part, the mantle low down. */
+function lamp(X,z,kind,k){k=k||1;const s=F/z,cx=sx(X,z),Y0=kind===2?2.2:2.66,b=Y0+.08*k,g1=Y0+.6*k,mY=Y0+.28*k,top=Y0+.9*k;
+const row=(Ya,Yb,w0,w1,f)=>span(sy(Yb,z),sy(Ya,z),r=>{const Y=E-(r+.5-VY)*z/F,t=(Y-Ya)/(Yb-Ya),w=(w0+(w1-w0)*t)*k*s/2;span(cx-w,cx+w,c=>f(c,r,Y,(c+.5-cx)/Math.max(w,.5)));});
+const iron=v=>(c,r,Y,u)=>put(c,r,K.iron,v+(u<-.3?.12:0),X,Y,z,3);
+if(kind===1){row(0,.12,.3,.26,iron(0));row(.12,.9,.22,.15,iron(0));row(.9,2.58,.12,.1,iron(0));row(2.56,2.66,.17,.17,iron(.05));}
+else{const ay=Math.round(sy(top+.05,z)-.5);span(sx(XL,z),cx,c=>put(c,ay,K.iron,.05,X,top+.05,z,3));row(top,top+.05,.04,.04,iron(0));}
+row(Y0,b,.12,.26,iron(0));
+const gc=(day?['#d8cc9e','#fff0b8','#a8a490']:dusk?['#ffc868','#fff2c4','#c89a6a']:['#ffb850','#fff6dc','#d08a48']).map(rgb);
+row(b,g1,.3,.4,(c,r,Y,u)=>{const fr=Math.abs(u)>.86,fl=Math.abs(u)<.3&&Math.abs(Y-mY)<.1*k;
+if(fr)return put(c,r,K.iron,.1,X,Y,z,3);let col=mix(gc[0],gc[1],Math.max(0,.5-Math.abs(Y-mY)/k));if((Y-b)/(g1-b)>.72)col=mix(col,gc[2],.45);
+own(c,r,fl?gc[1]:col,z*.3);if(fl)flames.push([c,r]);});
+row(g1,g1+.04*k,.42,.42,iron(.1));row(g1+.04*k,Y0+.81*k,.44,.08,(c,r,Y,u)=>put(c,r,WI&&Y>g1+.08*k?K.snow:K.iron,WI?.1:u<0?.12:0,X,Y,z,3));
+row(Y0+.81*k,top,.05,.05,iron(0));
+if(WI&&kind===1)wreath(X-.09,2.1,z-.05,Math.PI/3,.22,3);
 /* the halo, in screen space: brightest beside the glass */
-if(!day){const hy=sy(2.95,z),hr=(night?1.2:.85)*s+3;for(let r=Math.floor(hy-hr);r<=hy+hr;r++)for(let c=Math.floor(cx-hr);c<=cx+hr;c++){if(c<0||c>=W||r<0||r>=H)continue;const d=Math.hypot(c+.5-cx,r+.5-hy)/hr;if(d<1)GW[r*W+c]+=(1-d)*(1-d)*(night?1:.6);}}}
+if(!day){const hy=sy(mY,z),hr=((night?1.2:.85)*s+3)*k;for(let r=Math.floor(hy-hr);r<=hy+hr;r++)for(let c=Math.floor(cx-hr);c<=cx+hr;c++){if(c<0||c>=W||r<0||r>=H)continue;const d=Math.hypot(c+.5-cx,r+.5-hy)/hr;if(d<1)GW[r*W+c]+=(1-d)*(1-d)*(night?1:.6);}}}
 
 /* ---------- the tree behind the garden wall ---------- */
 function canopy(){const sparse=SP?.1:AU?.06:.03;let sd=5;const rn=()=>((sd=(sd*16807)%2147483647)/2147483647);
@@ -262,7 +270,7 @@ if(k>0)for(let j=1;j<=Math.round(.9*s);j++){const cant=k>n*.55&&j<=Math.round(.4
 /* ---------- light ---------- */
 /* snow and white paint throw back more of whatever light there is */
 function shade(){const amb=AMB[time]*(WI?(night?1.3:.95):1),alb=[],lk=LK[time],hz=HAZE[time],hc=rgb(WI?(night?'#56606e':day?'#c8d0d8':'#6a6c84'):hz[0]),ha=WI?hz[1]+.15:hz[1];
-const Ls=LAMPS.map(([X,z])=>[X,2.95,z,lk*1.3,10]);if(!day)Ls.push([XL+.25,2.4,5.5,.5,2]);
+const Ls=LAMPS.map(([X,z])=>[X,2.94,z,lk*1.3,10]);Ls.push([XL+.2,2.34,4.73,lk*.75,3]);
 alb[K.snow]=day?.22:.16;alb[K.trim]=.06;
 const tan=day&&!WI?{spring:.95,summer:1.4,autumn:.7}[season]:dusk&&!WI?.12:0,sk=day?.22:.14;
 const RR=[null].concat(MAT.map(n=>R11(n==='leaf'?LEAF[season]:RAMP[n]))),glow=rgb(night?'#ffc870':'#f6b878');
@@ -283,7 +291,7 @@ for(const[X,z,p]of LAMPS)if(z>15)lamp(X,z,p);
 flag();if(!WI)canopy();else bareTree();planters();
 /* the near house on the right, in front of the tree: a downpipe, a door, a window box */
 wall(XR,2,5.2,0,14,20);fill(XR,2,5.2,0,.4,K.granite,-.05);fill(XR,4.5,4.62,0,14,K.trim,-.2);
-door(XR,3.75,4.45,'door',false,false,7);window_(XR,3.6,4.5,3.3,5.5,0,7);
+door(XR,3.75,4.45,'door',false,7);window_(XR,3.6,4.5,3.3,5.5,0,7);
 for(const[X,z,p]of LAMPS)if(z<=15)lamp(X,z,p);
 shade();}
 
