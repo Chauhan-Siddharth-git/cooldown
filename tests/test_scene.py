@@ -235,4 +235,4 @@ def test_in_a_real_browser_the_window_is_inside_the_card_and_not_clipped(rdb, cl
     probe = json.loads(re.search(r'<pre id="probe">(.*?)</pre>', dom, re.S).group(1))
     assert probe["inCard"], probe
     assert min(probe["l"], probe["rr"], probe["t"], probe["bt"]) >= 0, probe
-    assert probe["w"] >= 240, "at least one device pixel per art pixel on a 390 px phone"
+    assert probe["w"] >= 320, "the size it had above the card: 4x on a 390 px phone at dpr 3"

@@ -850,8 +850,12 @@ BUDGET_PAGE = """
            multiple of its native pixels, so nothing here may scale it. */
         .stack{position:relative;z-index:1;width:100%;display:flex;flex-direction:column;
             align-items:center;gap:16px;margin:auto}
-        #cd-scene{width:100%;margin-top:16px;display:flex;justify-content:center}
-        #cd-scene canvas{border-radius:10px}
+        /* Edge to edge across the card (cancels its 28px padding): the picture is zoomed in
+           whole device pixels, so a few lost pixels of width can cost a whole zoom step.
+           The card is as wide as the stack was, so this is the size the window had above it. */
+        .card.win{max-width:760px}
+        #cd-scene{margin:18px -28px 0;display:flex;justify-content:center}
+        #cd-scene canvas{display:block}
         .foot{display:block;margin-top:18px;font-size:12px;color:#5f6773;text-decoration:none}
         .foots{display:flex;gap:18px;justify-content:center;align-items:center;margin-top:18px}
         .infobtn{width:19px;height:19px;padding:0;border-radius:50%;border:1px solid var(--line);
@@ -906,7 +910,7 @@ BUDGET_PAGE = """
 <body>
     <canvas id="bp-bg" aria-hidden="true"></canvas>
     <div class="stack">
-    <div class="card {{ mood }}">
+    <div class="card {{ mood }}{% if scene_js %} win{% endif %}">
         <div class="kicker"><span class="dot"></span>{% if theme_emoji %}{{ theme_emoji }} {% endif %}{{ overline }}</div>
         {% if countdown %}<div id="cd" class="big" data-secs="{{ countdown }}">·</div>
         {% elif headline %}<div class="big">{{ headline }}</div>{% endif %}
